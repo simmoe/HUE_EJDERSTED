@@ -160,6 +160,7 @@
 
     <!-- PAGE 0 · LYD ─────────────────────────────────────────────────────── -->
     <section class="page">
+      <div class="col-header">LYD</div>
       <div class="scroll-inner">
         {#each store.devices as device (device.id)}
           {@const vol = store.volumes[device.id] ?? { level: 0, online: false }}
@@ -197,8 +198,8 @@
 
     <!-- PAGE 1 · LYS ─────────────────────────────────────────────────────── -->
     <section class="page">
+      <div class="col-header">LYS</div>
       <div class="scroll-inner">
-
         {#if store.hueStatus.paired && store.hueRooms.length > 0}
           <!-- Rum-knobs -->
           {#each store.hueRooms as room (room.id)}
@@ -612,10 +613,29 @@
     padding: 40px 0;
   }
 
+  /* ── Column header (hidden in portrait, visible in landscape) ───────────── */
+  .col-header {
+    display: none;
+  }
+
   /* ── Landscape (kiosk) ───────────────────────────────────────────────────── */
   @media (orientation: landscape) {
     nav {
       display: none;
+    }
+
+    .col-header {
+      display: flex;
+      align-items: flex-end;
+      flex-shrink: 0;
+      height: 48px;
+      padding: 0 32px 10px;
+      font-size: 0.7rem;
+      font-weight: 400;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #595959;
+      background: #000;
     }
 
     /* Disable swipe — show both pages side by side */
@@ -627,25 +647,56 @@
 
     .page {
       flex: 0 0 50%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
     .scroll-inner {
+      flex: 1;
+      overflow-y: auto;
+      scroll-snap-type: y mandatory;
       max-width: none;
-      padding: 12px 20px 20px;
-      gap: 12px;
+      padding: 0;
+      gap: 0;
     }
 
     .card {
-      padding: 16px 20px 12px;
-      border-radius: 22px;
+      scroll-snap-align: start;
+      scroll-snap-stop: always;
+      min-height: calc(100dvh - 48px);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      align-items: center;
+      padding: 24px 32px;
+      border-radius: 0;
+      background: none;
+      border: none;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
 
-    .knob-wrap {
+    .card .card-top {
+      align-self: end;
+    }
+
+    .card .knob-wrap {
+      align-self: center;
       max-width: 200px;
     }
 
+    .card .now-playing {
+      align-self: start;
+    }
+
     .pair-wrap {
-      padding-top: 12px;
+      scroll-snap-align: start;
+      min-height: calc(100dvh - 48px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 24px 32px;
     }
   }
 </style>
