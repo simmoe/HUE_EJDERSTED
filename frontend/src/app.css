@@ -1,0 +1,26 @@
+/* Global reset + design tokens */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --black:    #000000;
+  --dark:     #595959;
+  --mid:      #888888;
+  --light:    #ebebeb;
+  --accent:   #0080c8;
+  --surface:  rgba(255, 255, 255, 0.03);
+  --border:   rgba(255, 255, 255, 0.07);
+}
+
+html, body {
+  height: 100%;
+  background: var(--black);
+  color: var(--light);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
+}

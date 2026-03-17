@@ -1,0 +1,408 @@
+"""
+Home Automation Hub — FastAPI backend
+
+• B&O Mozart REST API (volumen)
+• Philips Hue bridge (lysstyrke pr. rum)
+• WebSocket push til alle tilsluttede klienter
+• mDNS auto-opdagelse
+• Serverer SvelteKit static build
+"""
+
+import asyncio
+import json
+import socket
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import httpx
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from zeroconf import ServiceBrowser, Zeroconf
+
+from hue import HueBridge, start_hue_mdns
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).parent
+DEVICES_FILE = BASE_DIR.parent / "devices.json"
+STATIC_DIR = BASE_DIR / "static"
+
+# ─── HTTP client ──────────────────────────────────────────────────────────────
+_http = httpx.AsyncClient(timeout=2.5)
+
+# ─── Device storage ───────────────────────────────────────────────────────────
+def load_devices() -> dict:
+    if DEVICES_FILE.exists():
+        try:
+            return json.loads(DEVICES_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+def save_devices(devices: dict) -> None:
+    DEVICES_FILE.write_text(json.dumps(devices, indent=2))
+
+devices: dict = load_devices()
+devices_lock = asyncio.Lock()
+
+# ─── Volume cache ─────────────────────────────────────────────────────────────
+volume_cache: dict[str, dict] = {}       # device_id → {level, online}
+
+# ─── Now-playing cache ────────────────────────────────────────────────────────
+now_playing_cache: dict[str, dict] = {}  # device_id → {name, artist, album}
+_notify_tasks: dict[str, asyncio.Task] = {}
+
+# ─── Hue ───────────────────────────────────────────────────────────────────────
+hue_bridge: HueBridge                    # initialised in lifespan
+hue_rooms_cache: list[dict] = []
+
+# ─── WebSocket connection manager ─────────────────────────────────────────────
+class ConnectionManager:
+    def __init__(self):
+        self._connections: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self._connections.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        try:
+            self._connections.remove(ws)
+        except ValueError:
+            pass
+
+    async def broadcast(self, msg: dict):
+        data = json.dumps(msg)
+        dead = []
+        for ws in list(self._connections):
+            try:
+                await ws.send_text(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+manager = ConnectionManager()
+
+# ─── B&O Mozart API ───────────────────────────────────────────────────────────
+async def beo_get_volume(ip: str) -> int:
+    r = await _http.get(
+        f"http://{ip}:8080/BeoZone/Zone/Sound/Volume/Speaker/Level"
+    )
+    r.raise_for_status()
+    data = r.json()
+    if isinstance(data, dict):
+        return int(data.get("level", 0))
+    return int(data)
+
+async def beo_set_volume(ip: str, level: int) -> None:
+    r = await _http.put(
+        f"http://{ip}:8080/BeoZone/Zone/Sound/Volume/Speaker/Level",
+        json={"level": level},
+    )
+    r.raise_for_status()
+
+# ─── BeoNotify stream ─────────────────────────────────────────────────────────
+_stream_http = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))
+
+async def beo_notify_listener(dev_id: str, ip: str):
+    """Stream BeoNotify/Notifications og broadcast NOW_PLAYING_STORED_MUSIC."""
+    url = f"http://{ip}:8080/BeoNotify/Notifications"
+    while True:
+        try:
+            async with _stream_http.stream("GET", url) as r:
+                async for line in r.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    n = data.get("notification", {})
+                    if n.get("type") == "NOW_PLAYING_STORED_MUSIC":
+                        nd = n.get("data", {})
+                        state = {
+                            "name": nd.get("name", ""),
+                            "artist": nd.get("artist", ""),
+                            "album": nd.get("album", ""),
+                        }
+                        if now_playing_cache.get(dev_id) != state:
+                            now_playing_cache[dev_id] = state
+                            await manager.broadcast({
+                                "type": "now_playing",
+                                "device_id": dev_id,
+                                **state,
+                            })
+                    elif n.get("type") == "NOW_PLAYING_ENDED":
+                        if dev_id in now_playing_cache:
+                            del now_playing_cache[dev_id]
+                            await manager.broadcast({
+                                "type": "now_playing",
+                                "device_id": dev_id,
+                                "name": "", "artist": "", "album": "",
+                            })
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            await asyncio.sleep(5)
+
+# ─── Background volume polling ────────────────────────────────────────────────
+async def poll_loop():
+    """Poll B&O og Hue hvert 2. sekund og push ændringer via WebSocket."""
+    while True:
+        await asyncio.sleep(2)
+
+        # ── B&O ──────────────────────────────────────────────────────────────
+        async with devices_lock:
+            devs = list(devices.values())
+
+        for dev in devs:
+            dev_id = dev["id"]
+            # Start notify stream task if not already running
+            task = _notify_tasks.get(dev_id)
+            if task is None or task.done():
+                _notify_tasks[dev_id] = asyncio.create_task(
+                    beo_notify_listener(dev_id, dev["ip"])
+                )
+            try:
+                level = await beo_get_volume(dev["ip"])
+                state = {"level": level, "online": True}
+            except Exception:
+                cached_level = volume_cache.get(dev_id, {}).get("level", 0)
+                state = {"level": cached_level, "online": False}
+
+            if volume_cache.get(dev_id) != state:
+                volume_cache[dev_id] = state
+                await manager.broadcast({
+                    "type": "volume_update",
+                    "device_id": dev_id,
+                    **state,
+                })
+
+        # ── Hue ──────────────────────────────────────────────────────────────
+        global hue_rooms_cache
+        if hue_bridge.paired:
+            rooms = await hue_bridge.get_rooms()
+            if rooms != hue_rooms_cache:
+                hue_rooms_cache = rooms
+                await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
+            # Push status ved IP-ændring (første gang bridge opdages)
+        await manager.broadcast({
+            "type": "hue_status",
+            **hue_bridge.status(),
+        })
+
+# ─── mDNS discovery ───────────────────────────────────────────────────────────
+def _device_id(ip: str) -> str:
+    return ip.replace(".", "_")
+
+class BeoListener:
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+
+    def _register(self, ip: str, name: str):
+        dev_id = _device_id(ip)
+
+        async def _add():
+            async with devices_lock:
+                if dev_id not in devices:
+                    device = {
+                        "id": dev_id,
+                        "name": name,
+                        "ip": ip,
+                        "auto_discovered": True,
+                    }
+                    devices[dev_id] = device
+                    save_devices(devices)
+                    await manager.broadcast({"type": "device_added", "device": device})
+
+        asyncio.run_coroutine_threadsafe(_add(), self._loop)
+
+    def add_service(self, zc, type_, name):
+        info = zc.get_service_info(type_, name)
+        if not info or not info.addresses:
+            return
+        ip = socket.inet_ntoa(info.addresses[0])
+        props = info.properties or {}
+        friendly = (
+            (props.get(b"fn") or b"").decode("utf-8", errors="ignore")
+            or (props.get(b"md") or b"").decode("utf-8", errors="ignore")
+            or name.split(".")[0]
+        )
+        self._register(ip, friendly or f"B&O ({ip})")
+
+    def remove_service(self, zc, type_, name):
+        pass
+
+    def update_service(self, zc, type_, name):
+        self.add_service(zc, type_, name)
+
+# ─── App lifespan ─────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global hue_bridge
+    loop = asyncio.get_event_loop()
+
+    hue_bridge = HueBridge()
+    poll_task = asyncio.create_task(poll_loop())
+
+    zc = Zeroconf()
+    beo_listener = BeoListener(loop)
+    ServiceBrowser(zc, "_beoremote._tcp.local.", beo_listener)
+
+    async def on_hue_found(ip: str):
+        await manager.broadcast({"type": "hue_status", **hue_bridge.status()})
+
+    start_hue_mdns(hue_bridge, loop, zc, on_found=on_hue_found)
+
+    yield
+
+    poll_task.cancel()
+    for t in _notify_tasks.values():
+        t.cancel()
+    zc.close()
+    await _http.aclose()
+    await _stream_http.aclose()
+
+# ─── FastAPI app ──────────────────────────────────────────────────────────────
+app = FastAPI(lifespan=lifespan)
+
+# ─── WebSocket ────────────────────────────────────────────────────────────────
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    global hue_rooms_cache
+    await manager.connect(ws)
+    try:
+        # Send initial state on connect
+        async with devices_lock:
+            devs = list(devices.values())
+        await ws.send_text(json.dumps({
+            "type": "init",
+            "devices": devs,
+            "volumes": volume_cache,
+            "hue_status": hue_bridge.status(),
+            "hue_rooms": hue_rooms_cache,
+            "now_playing": now_playing_cache,
+        }))
+
+        async for text in ws.iter_text():
+            try:
+                msg = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+
+            if msg.get("type") == "set_volume":
+                dev_id = str(msg.get("device_id", ""))
+                try:
+                    level = max(0, min(100, int(msg["level"])))
+                except (KeyError, ValueError, TypeError):
+                    continue
+
+                async with devices_lock:
+                    dev = devices.get(dev_id)
+
+                if dev:
+                    try:
+                        await beo_set_volume(dev["ip"], level)
+                        volume_cache[dev_id] = {"level": level, "online": True}
+                        await manager.broadcast({
+                            "type": "volume_update",
+                            "device_id": dev_id,
+                            "level": level,
+                            "online": True,
+                        })
+                    except Exception as e:
+                        await ws.send_text(json.dumps({
+                            "type": "error",
+                            "device_id": dev_id,
+                            "message": str(e),
+                        }))
+            elif msg.get("type") == "set_hue_brightness":
+                room_id = str(msg.get("room_id", ""))
+                try:
+                    brightness = max(0, min(100, int(msg["brightness"])))
+                except (KeyError, ValueError, TypeError):
+                    continue
+                ok = await hue_bridge.set_brightness(room_id, brightness)
+                if ok:
+                    hue_rooms_cache = [
+                        {**r, "brightness": brightness, "on": brightness > 0}
+                        if r["id"] == room_id else r
+                        for r in hue_rooms_cache
+                    ]
+                    await manager.broadcast({
+                        "type": "hue_rooms",
+                        "rooms": hue_rooms_cache,
+                    })
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+
+# ─── REST: device management ──────────────────────────────────────────────────
+@app.get("/api/devices")
+async def get_devices():
+    async with devices_lock:
+        return list(devices.values())
+
+@app.post("/api/devices")
+async def add_device(data: dict):
+    host = (data.get("ip") or "").strip()
+    name = (data.get("name") or "").strip()
+    if not host:
+        return JSONResponse({"error": "ip er påkrævet"}, status_code=400)
+    try:
+        ip = socket.gethostbyname(host)
+    except OSError:
+        return JSONResponse({"error": "Ugyldigt IP eller hostname"}, status_code=400)
+
+    dev_id = _device_id(ip)
+    device = {
+        "id": dev_id,
+        "name": name or f"Enhed ({ip})",
+        "ip": ip,
+        "auto_discovered": False,
+    }
+    async with devices_lock:
+        devices[dev_id] = device
+        save_devices(devices)
+    await manager.broadcast({"type": "device_added", "device": device})
+    return JSONResponse(device, status_code=201)
+
+@app.delete("/api/devices/{device_id}")
+async def delete_device(device_id: str):
+    async with devices_lock:
+        if device_id not in devices:
+            return JSONResponse({"error": "Enhed ikke fundet"}, status_code=404)
+        del devices[device_id]
+        save_devices(devices)
+    volume_cache.pop(device_id, None)
+    await manager.broadcast({"type": "device_removed", "device_id": device_id})
+    return {"success": True}
+
+# ─── REST: Hue bridge ────────────────────────────────────────────────────────
+@app.get("/api/hue/status")
+async def hue_status():
+    return hue_bridge.status()
+
+@app.post("/api/hue/pair")
+async def hue_pair(data: dict = {}):
+    # Tillad manuel IP-override
+    if ip := (data.get("ip") or "").strip():
+        hue_bridge.set_ip(ip)
+    result = await hue_bridge.pair()
+    if result["ok"]:
+        rooms = await hue_bridge.get_rooms()
+        global hue_rooms_cache
+        hue_rooms_cache = rooms
+        await manager.broadcast({"type": "hue_status", **hue_bridge.status()})
+        await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
+    return result
+
+# ─── Static files (SvelteKit build) — mount last ──────────────────────────────
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Home Hub → http://localhost:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")

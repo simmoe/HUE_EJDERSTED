@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>B&amp;O Volume</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0d0d0d;
+      --surface: #1a1a1a;
+      --border:  #2a2a2a;
+      --accent:  #c8a96e;   /* B&O guld */
+      --text:    #e8e8e8;
+      --muted:   #666;
+      --online:  #4caf50;
+      --offline: #f44336;
+      --radius:  14px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      padding: 24px 16px 80px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 36px;
+    }
+    header h1 {
+      font-size: 1.6rem;
+      font-weight: 300;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    header p {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 4px;
+      letter-spacing: 0.08em;
+    }
+
+    #devices {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-width: 520px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 22px 22px;
+      position: relative;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .status-dot.online  { background: var(--online); }
+    .status-dot.offline { background: var(--offline); }
+
+    .device-name {
+      font-size: 1rem;
+      font-weight: 500;
+      flex: 1;
+    }
+    .device-ip {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+
+    .btn-remove {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.2rem;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      transition: color 0.2s, background 0.2s;
+      line-height: 1;
+    }
+    .btn-remove:hover { color: var(--offline); background: rgba(244,67,54,.12); }
+
+    .volume-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .volume-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    /* Slider */
+    input[type=range] {
+      -webkit-appearance: none;
+      flex: 1;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--border);
+      outline: none;
+      cursor: pointer;
+      transition: opacity .2s;
+    }
+    input[type=range]:disabled { opacity: .35; cursor: default; }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 3px rgba(200,169,110,.18);
+      cursor: pointer;
+      transition: transform .1s, box-shadow .1s;
+    }
+    input[type=range]:active::-webkit-slider-thumb {
+      transform: scale(1.15);
+      box-shadow: 0 0 0 6px rgba(200,169,110,.22);
+    }
+
+    .volume-value {
+      font-size: 1.05rem;
+      font-weight: 600;
+      min-width: 38px;
+      text-align: right;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .btn-mute {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 1.1rem;
+      cursor: pointer;
+      padding: 5px 9px;
+      border-radius: 8px;
+      transition: color .2s, border-color .2s, background .2s;
+      line-height: 1;
+    }
+    .btn-mute:hover             { color: var(--text); border-color: var(--accent); }
+    .btn-mute.muted             { color: var(--offline); border-color: var(--offline); background: rgba(244,67,54,.1); }
+    .btn-mute:disabled          { opacity: .35; cursor: default; }
+
+    .error-msg {
+      font-size: 0.72rem;
+      color: var(--offline);
+      margin-top: 10px;
+      min-height: 1em;
+    }
+
+    /* Tilføj enhed */
+    #add-section {
+      max-width: 520px;
+      margin: 30px auto 0;
+    }
+    #add-section h2 {
+      font-size: 0.8rem;
+      font-weight: 400;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .add-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .add-form input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .add-form input:focus { border-color: var(--accent); }
+    .add-form input[name=ip]   { flex: 2; min-width: 130px; }
+    .add-form input[name=name] { flex: 3; min-width: 140px; }
+    .add-form button {
+      background: var(--accent);
+      color: #0d0d0d;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 20px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s;
+    }
+    .add-form button:hover   { opacity: .88; }
+    .add-form button:active  { opacity: .75; }
+    #add-error {
+      width: 100%;
+      font-size: 0.75rem;
+      color: var(--offline);
+      min-height: 1em;
+    }
+
+    .no-devices {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      padding: 30px 0 10px;
+    }
+    .no-devices span { font-size: 2rem; display: block; margin-bottom: 8px; }
+
+    /* Scan-badge */
+    #scan-info {
+      text-align: center;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 18px;
+      letter-spacing: 0.05em;
+    }
+    .pulse {
+      display: inline-block;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>B&amp;O Volume</h1>
+  <p>Højttalerstyring · lokalt netværk</p>
+</header>
+
+<div id="devices"></div>
+
+<p id="scan-info"><span class="pulse">◉</span> Søger efter enheder via mDNS…</p>
+
+<section id="add-section">
+  <h2>Tilføj enhed manuelt</h2>
+  <form class="add-form" id="add-form" autocomplete="off">
+    <input type="text" name="ip"   placeholder="IP-adresse (f.eks. 192.168.1.42)" required />
+    <input type="text" name="name" placeholder="Navn (valgfrit, f.eks. A9 stue)" />
+    <button type="submit">+ Tilføj</button>
+    <p id="add-error"></p>
+  </form>
+</section>
+
+<script>
+  // ─── State ──────────────────────────────────────────────────────────────────
+  const state = {
+    devices: {},      // id → {id, name, ip, auto_discovered}
+    volumes: {},      // id → {level, online}
+    dragging: {},     // id → bool (slider trækkes)
+  };
+
+  // ─── API ────────────────────────────────────────────────────────────────────
+  const api = {
+    async get(url)          { const r = await fetch(url);                   return r.json(); },
+    async post(url, body)   { const r = await fetch(url, {method:"POST",  headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)}); return r.json(); },
+    async put(url, body)    { const r = await fetch(url, {method:"PUT",   headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)}); return r.json(); },
+    async del(url)          { const r = await fetch(url, {method:"DELETE"}); return r.json(); },
+  };
+
+  // ─── Debounce ───────────────────────────────────────────────────────────────
+  function debounce(fn, ms) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+  }
+
+  // ─── Render ─────────────────────────────────────────────────────────────────
+  function render() {
+    const container = document.getElementById("devices");
+    const ids = Object.keys(state.devices);
+
+    if (ids.length === 0) {
+      container.innerHTML = `<div class="no-devices"><span>🔈</span>Ingen højttalere fundet endnu.<br>Tilføj manuelt herunder, eller vent på auto-opdagelse.</div>`;
+      return;
+    }
+
+    ids.forEach(id => {
+      const dev = state.devices[id];
+      const vol = state.volumes[id] || {};
+      const level = (vol.level !== undefined) ? vol.level : 0;
+      const online = vol.online !== false;
+
+      let card = document.getElementById(`card-${id}`);
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "card";
+        card.id = `card-${id}`;
+        card.innerHTML = cardHTML(dev, level, online);
+        container.appendChild(card);
+        attachCardListeners(card, dev);
+      } else {
+        // Opdater kun hvis ikke slider trækkes
+        if (!state.dragging[id]) {
+          const slider = card.querySelector(".slider");
+          const valEl  = card.querySelector(".volume-value");
+          if (slider) slider.value = level;
+          if (valEl)  valEl.textContent = level;
+          updateSliderGradient(slider, level);
+        }
+        const dot  = card.querySelector(".status-dot");
+        const mute = card.querySelector(".btn-mute");
+        if (dot) {
+          dot.classList.toggle("online",  online);
+          dot.classList.toggle("offline", !online);
+        }
+        if (mute) mute.disabled = !online;
+        const slider = card.querySelector(".slider");
+        if (slider) slider.disabled = !online;
+      }
+    });
+
+    // Fjern kort for slettede enheder
+    container.querySelectorAll(".card").forEach(card => {
+      const id = card.id.replace("card-", "");
+      if (!state.devices[id]) card.remove();
+    });
+  }
+
+  function cardHTML(dev, level, online) {
+    return `
+      <div class="card-header">
+        <div class="status-dot ${online ? "online" : "offline"}"></div>
+        <div>
+          <div class="device-name">${esc(dev.name)}</div>
+          <div class="device-ip">${esc(dev.ip)}</div>
+        </div>
+        <button class="btn-remove" title="Fjern enhed" data-id="${esc(dev.id)}">✕</button>
+      </div>
+      <div class="volume-row">
+        <span class="volume-label">Vol</span>
+        <input type="range" class="slider" min="0" max="100" value="${level}" ${!online ? "disabled" : ""} />
+        <span class="volume-value">${level}</span>
+        <button class="btn-mute" title="Mute" ${!online ? "disabled" : ""}>🔇</button>
+      </div>
+      <p class="error-msg"></p>
+    `;
+  }
+
+  function attachCardListeners(card, dev) {
+    const slider  = card.querySelector(".slider");
+    const valEl   = card.querySelector(".volume-value");
+    const muteBtn = card.querySelector(".btn-mute");
+    const errEl   = card.querySelector(".error-msg");
+
+    const sendVolume = debounce(async (level) => {
+      const res = await api.put(`/api/volume/${dev.id}`, { level });
+      if (res.error) showError(errEl, res.error);
+      else           errEl.textContent = "";
+    }, 80);
+
+    slider.addEventListener("input", () => {
+      const v = parseInt(slider.value);
+      valEl.textContent = v;
+      updateSliderGradient(slider, v);
+      state.volumes[dev.id] = { ...state.volumes[dev.id], level: v };
+      state.dragging[dev.id] = true;
+      sendVolume(v);
+    });
+    slider.addEventListener("pointerup",   () => { state.dragging[dev.id] = false; });
+    slider.addEventListener("pointerleave",() => { state.dragging[dev.id] = false; });
+
+    // Mute: gemmer forrige niveau og sætter til 0 (toggle)
+    muteBtn.addEventListener("click", async () => {
+      const cur = state.volumes[dev.id]?.level ?? 0;
+      const target = cur > 0 ? 0 : (state.volumes[dev.id]?._prevLevel || 30);
+      if (cur > 0) state.volumes[dev.id] = { ...state.volumes[dev.id], _prevLevel: cur };
+      slider.value = target;
+      valEl.textContent = target;
+      updateSliderGradient(slider, target);
+      muteBtn.classList.toggle("muted", target === 0);
+      const res = await api.put(`/api/volume/${dev.id}`, { level: target });
+      if (res.error) showError(errEl, res.error);
+    });
+
+    card.querySelector(".btn-remove").addEventListener("click", async () => {
+      await api.del(`/api/devices/${dev.id}`);
+      delete state.devices[dev.id];
+      delete state.volumes[dev.id];
+      render();
+    });
+  }
+
+  function updateSliderGradient(slider, value) {
+    if (!slider) return;
+    const pct = value + "%";
+    slider.style.background = `linear-gradient(to right, #c8a96e ${pct}, #2a2a2a ${pct})`;
+  }
+
+  function showError(el, msg) {
+    el.textContent = msg;
+    setTimeout(() => { el.textContent = ""; }, 4000);
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  }
+
+  // ─── Polling ─────────────────────────────────────────────────────────────────
+  async function refreshDevices() {
+    const list = await api.get("/api/devices");
+    list.forEach(d => { state.devices[d.id] = d; });
+    // Fjern enheder der ikke længere returneres
+    Object.keys(state.devices).forEach(id => {
+      if (!list.find(d => d.id === id)) delete state.devices[id];
+    });
+    render();
+
+    const scanInfo = document.getElementById("scan-info");
+    if (list.length > 0) scanInfo.style.display = "none";
+  }
+
+  async function refreshVolumes() {
+    const ids = Object.keys(state.devices);
+    await Promise.allSettled(ids.map(async id => {
+      const res = await api.get(`/api/volume/${id}`);
+      state.volumes[id] = { ...state.volumes[id], ...res };
+    }));
+    render();
+  }
+
+  // ─── Tilføj enhed form ───────────────────────────────────────────────────────
+  document.getElementById("add-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form  = e.target;
+    const ip    = form.ip.value.trim();
+    const name  = form.name.value.trim();
+    const errEl = document.getElementById("add-error");
+    errEl.textContent = "";
+
+    const res = await api.post("/api/devices", { ip, name });
+    if (res.error) {
+      errEl.textContent = res.error;
+      return;
+    }
+    state.devices[res.id] = res;
+    form.reset();
+    render();
+    // Hent volume med det samme
+    const vol = await api.get(`/api/volume/${res.id}`);
+    state.volumes[res.id] = vol;
+    render();
+  });
+
+  // ─── Boot ────────────────────────────────────────────────────────────────────
+  (async () => {
+    await refreshDevices();
+    await refreshVolumes();
+    setInterval(refreshDevices, 5000);
+    setInterval(refreshVolumes, 3000);
+  })();
+</script>
+</body>
+</html>
