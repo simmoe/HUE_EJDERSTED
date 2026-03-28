@@ -19,10 +19,24 @@
   let dimmed = $state(false);
   let dimTimer: ReturnType<typeof setTimeout>;
 
+  async function setBrightness(level: number) {
+    try { await fetch(`/api/brightness/${level}`, { method: 'PUT' }); } catch {}
+  }
+
   function resetDim() {
+    if (dimmed) setBrightness(255);
     dimmed = false;
     clearTimeout(dimTimer);
-    dimTimer = setTimeout(() => { dimmed = true; }, 30_000);
+    dimTimer = setTimeout(() => { dimmed = true; setBrightness(12); }, 30_000);
+  }
+
+  // ── Clock ──────────────────────────────────────────────────────────────────
+  let clockTime = $state('');
+  let clockInterval: ReturnType<typeof setInterval>;
+
+  function updateClock() {
+    const now = new Date();
+    clockTime = now.toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', hour12: false });
   }
 
   // ── Fullscreen splash ───────────────────────────────────────────────────────
@@ -31,18 +45,22 @@
   function dismissSplash() {
     document.documentElement.requestFullscreen?.().catch(() => {});
     requestWakeLock();
+    // Trigger ADB kiosk setup (landscape, brightness, volume HUD)
+    fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
     showSplash = false;
     resetDim();
   }
 
   onMount(() => {
     store.connect();
+    updateClock();
+    clockInterval = setInterval(updateClock, 1000);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') requestWakeLock();
     });
-    for (const ev of ['pointerdown', 'pointermove', 'keydown'] as const) {
-      document.addEventListener(ev, () => { resetDim(); }, { passive: true });
-    }
+    // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
+    document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
+    return () => clearInterval(clockInterval);
   });
 
   // ── Swipe navigation ────────────────────────────────────────────────────────
@@ -137,6 +155,11 @@
 
   <!-- Dim overlay -->
   <div class="dim-overlay" class:dimmed></div>
+
+  <!-- Clock (above dim) -->
+  {#if dimmed}
+    <div class="clock">{clockTime}</div>
+  {/if}
 
   <!-- Song streamer (above dim) -->
   {#if streamer}
@@ -300,8 +323,31 @@
     z-index: 999;
   }
   .dim-overlay.dimmed {
-    opacity: 0.92;
+    opacity: 1;
     pointer-events: auto;
+  }
+
+  /* ── Clock (Apple Standby style) ──────────────────────────────────────────── */
+  .clock {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    font-size: clamp(10rem, 30vw, 22rem);
+    font-weight: 300;
+    letter-spacing: -0.03em;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+    font-family: 'Roboto', -apple-system, system-ui, sans-serif;
+    animation: clock-in 1.5s ease both;
+  }
+
+  @keyframes clock-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
   }
 
   /* ── Song streamer ────────────────────────────────────────────────────────── */
@@ -350,74 +396,75 @@
     overflow: hidden;
   }
 
-  /* ── Nav ──────────────────────────────────────────────────────────────────── */
+  /* ── Nav (hidden — kiosk) ────────────────────────────────────────────────── */
   nav {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    padding: 28px 28px 0;
+    display: none;
   }
 
-  nav button {
-    background: none;
-    border: none;
+  .conn {
+    display: none;
+  }
+
+  /* ── Column headers ──────────────────────────────────────────────────────── */
+  .col-header {
+    display: flex;
+    align-items: flex-end;
+    flex-shrink: 0;
+    height: 48px;
+    padding: 0 32px 10px;
     font-size: 0.7rem;
     font-weight: 400;
     letter-spacing: 0.22em;
     text-transform: uppercase;
     color: #595959;
-    cursor: pointer;
-    padding: 0;
-    transition: color 0.2s;
+    background: #000;
   }
-  nav button.active { color: #ebebeb; }
 
-  .conn {
-    margin-left: auto;
-    font-size: 0.65rem;
-    color: #595959;
-    animation: fade 1.4s ease-in-out infinite alternate;
-  }
-  @keyframes fade { from { opacity: 1 } to { opacity: 0.2 } }
-
-  /* ── Swipe pages ──────────────────────────────────────────────────────────── */
+  /* ── Pages (side by side, no swipe) ──────────────────────────────────────── */
   .pages {
     flex: 1;
     display: flex;
-    overflow-x: scroll;
+    overflow-x: hidden;
     overflow-y: hidden;
-    scroll-snap-type: x mandatory;
+    scroll-snap-type: none;
     scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
+    gap: 0;
   }
   .pages::-webkit-scrollbar { display: none; }
 
   .page {
-    flex: 0 0 100%;
-    scroll-snap-align: start;
-    overflow-y: auto;
-    overflow-x: hidden;
+    flex: 0 0 50%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   .scroll-inner {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    padding: 24px 20px calc(env(safe-area-inset-bottom, 0px) + 32px);
-    max-width: 480px;
-    margin: 0 auto;
-    width: 100%;
+    overflow-y: auto;
+    scroll-snap-type: y mandatory;
+    max-width: none;
+    padding: 0;
+    gap: 0;
   }
 
   /* ── Cards ────────────────────────────────────────────────────────────────── */
   .card {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 28px;
-    padding: 24px 24px 18px;
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+    min-height: calc(100dvh - 48px);
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    align-items: center;
+    padding: 24px 32px;
+    border-radius: 0;
+    background: none;
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     transition: border-color 1.2s ease;
   }
 
@@ -431,6 +478,7 @@
     align-items: baseline;
     justify-content: space-between;
     margin-bottom: 8px;
+    align-self: end;
   }
 
   .card-name {
@@ -449,11 +497,12 @@
   .card-status.online { color: #0080c8; }
 
   .knob-wrap {
-    max-width: 280px;
+    max-width: 200px;
     margin: 0 auto;
+    align-self: center;
   }
 
-  /* ── Now playing ────────────────────────────────────────────────────────────── */
+  /* ── Now playing ──────────────────────────────────────────────────────────── */
   .now-playing {
     display: flex;
     flex-direction: column;
@@ -461,6 +510,7 @@
     gap: 3px;
     margin-top: 2px;
     padding: 0 8px 4px;
+    align-self: start;
   }
 
   .np-title {
@@ -581,7 +631,10 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    padding-top: 20px;
+    scroll-snap-align: start;
+    min-height: calc(100dvh - 48px);
+    justify-content: center;
+    padding: 24px 32px;
   }
 
   .pair-label {
@@ -604,99 +657,11 @@
     line-height: 1.6;
   }
 
-  /* ── Empty state ──────────────────────────────────────────────────────────── */
   .empty {
     text-align: center;
     color: #595959;
     font-size: 0.85rem;
     line-height: 1.6;
     padding: 40px 0;
-  }
-
-  /* ── Column header (hidden in portrait, visible in landscape) ───────────── */
-  .col-header {
-    display: none;
-  }
-
-  /* ── Landscape (kiosk) ───────────────────────────────────────────────────── */
-  @media (orientation: landscape) {
-    nav {
-      display: none;
-    }
-
-    .col-header {
-      display: flex;
-      align-items: flex-end;
-      flex-shrink: 0;
-      height: 48px;
-      padding: 0 32px 10px;
-      font-size: 0.7rem;
-      font-weight: 400;
-      letter-spacing: 0.22em;
-      text-transform: uppercase;
-      color: #595959;
-      background: #000;
-    }
-
-    /* Disable swipe — show both pages side by side */
-    .pages {
-      overflow-x: hidden;
-      scroll-snap-type: none;
-      gap: 0;
-    }
-
-    .page {
-      flex: 0 0 50%;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    .scroll-inner {
-      flex: 1;
-      overflow-y: auto;
-      scroll-snap-type: y mandatory;
-      max-width: none;
-      padding: 0;
-      gap: 0;
-    }
-
-    .card {
-      scroll-snap-align: start;
-      scroll-snap-stop: always;
-      min-height: calc(100dvh - 48px);
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      align-items: center;
-      padding: 24px 32px;
-      border-radius: 0;
-      background: none;
-      border: none;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-    }
-
-    .card .card-top {
-      align-self: end;
-    }
-
-    .card .knob-wrap {
-      align-self: center;
-      max-width: 200px;
-    }
-
-    .card .now-playing {
-      align-self: start;
-    }
-
-    .pair-wrap {
-      scroll-snap-align: start;
-      min-height: calc(100dvh - 48px);
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      padding: 24px 32px;
-    }
   }
 </style>

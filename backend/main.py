@@ -244,6 +244,19 @@ async def lifespan(app: FastAPI):
     global hue_bridge
     loop = asyncio.get_event_loop()
 
+    # Force Android kiosk settings (landscape, brightness, no rotation)
+    for cmd in [
+        "adb -s 192.168.86.173:34111 shell settings put system accelerometer_rotation 0",
+        "adb -s 192.168.86.173:34111 shell settings put system user_rotation 1",
+        "adb -s 192.168.86.173:34111 shell settings put system screen_brightness_mode 0",
+        "adb -s 192.168.86.173:34111 shell settings put system screen_brightness 255",
+        "adb -s 192.168.86.173:34111 shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny",
+    ]:
+        proc = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
+        await proc.wait()
+
     hue_bridge = HueBridge()
     poll_task = asyncio.create_task(poll_loop())
 
@@ -397,6 +410,37 @@ async def hue_pair(data: dict = {}):
         await manager.broadcast({"type": "hue_status", **hue_bridge.status()})
         await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
     return result
+
+# ─── REST: Screen brightness (ADB) ───────────────────────────────────────────
+@app.put("/api/brightness/{level}")
+async def set_brightness(level: int):
+    level = max(0, min(255, level))
+    proc = await asyncio.create_subprocess_exec(
+        "adb", "-s", "192.168.86.173:34111", "shell",
+        f"settings put system screen_brightness {level}",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    return {"ok": True, "brightness": level}
+
+ADB_SERIAL = "192.168.86.173:34111"
+KIOSK_CMDS = [
+    f"adb -s {ADB_SERIAL} shell settings put system accelerometer_rotation 0",
+    f"adb -s {ADB_SERIAL} shell settings put system user_rotation 1",
+    f"adb -s {ADB_SERIAL} shell settings put system screen_brightness_mode 0",
+    f"adb -s {ADB_SERIAL} shell settings put system screen_brightness 255",
+    f"adb -s {ADB_SERIAL} shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny",
+]
+
+@app.post("/api/kiosk")
+async def trigger_kiosk():
+    for cmd in KIOSK_CMDS:
+        proc = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
+        await proc.wait()
+    return {"ok": True}
 
 # ─── Static files (SvelteKit build) — mount last ──────────────────────────────
 if STATIC_DIR.exists():
