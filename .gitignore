@@ -15,4 +15,8 @@ backend/static/
 
 # Local config (contains credentials)
 hue_config.json
+spotify_config.json
 devices.json
+
+# TLS certs
+certs/

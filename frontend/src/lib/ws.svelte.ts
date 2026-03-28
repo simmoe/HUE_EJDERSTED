@@ -53,25 +53,30 @@ class WSStore {
 
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
-    const url = `ws://${window.location.host}/ws`;
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${proto}://${window.location.host}/ws`;
+    console.log('[WS] connecting to', url);
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
+      console.log('[WS] connected');
       this.connected = true;
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     };
 
     this.ws.onmessage = (e: MessageEvent) => {
       const msg: ServerMsg = JSON.parse(e.data);
+      console.log('[WS] ←', msg.type, msg.type === 'init' ? `(${msg.hue_rooms?.length} rooms, paired=${msg.hue_status?.paired})` : '');
       this._handle(msg);
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (e) => {
+      console.log('[WS] closed', e.code, e.reason);
       this.connected = false;
       this.reconnectTimer = setTimeout(() => this.connect(), 3000);
     };
 
-    this.ws.onerror = () => this.ws?.close();
+    this.ws.onerror = (e) => { console.error('[WS] error', e); this.ws?.close(); };
   }
 
   private _handle(msg: ServerMsg) {

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { store } from '$lib/ws.svelte';
   import VolumeKnob from '$lib/VolumeKnob.svelte';
+  import SpotifyVoice from '$lib/SpotifyVoice.svelte';
 
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
@@ -27,7 +28,7 @@
     if (dimmed) setBrightness(255);
     dimmed = false;
     clearTimeout(dimTimer);
-    dimTimer = setTimeout(() => { dimmed = true; setBrightness(12); }, 30_000);
+    dimTimer = setTimeout(() => { dimmed = true; setBrightness(25); }, 30_000);
   }
 
   // ── Clock ──────────────────────────────────────────────────────────────────
@@ -55,8 +56,13 @@
     store.connect();
     updateClock();
     clockInterval = setInterval(updateClock, 1000);
+    // Re-apply kiosk settings (immersive mode, landscape) on every page load
+    setTimeout(() => fetch('/api/kiosk', { method: 'POST' }).catch(() => {}), 1500);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') requestWakeLock();
+      if (document.visibilityState === 'visible') {
+        requestWakeLock();
+        fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
+      }
     });
     // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
     document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
@@ -216,6 +222,11 @@
         {#if store.devices.length === 0 && store.connected}
           <p class="empty">Ingen højttalere fundet.</p>
         {/if}
+
+        <!-- Spotify Voice -->
+        <article class="card voice-card">
+          <SpotifyVoice />
+        </article>
       </div>
     </section>
 
@@ -337,7 +348,7 @@
     justify-content: center;
     pointer-events: none;
     font-size: clamp(10rem, 30vw, 22rem);
-    font-weight: 300;
+    font-weight: 200;
     letter-spacing: -0.03em;
     color: #fff;
     font-variant-numeric: tabular-nums;
@@ -500,6 +511,12 @@
     max-width: 200px;
     margin: 0 auto;
     align-self: center;
+  }
+
+  .voice-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   /* ── Now playing ──────────────────────────────────────────────────────────── */

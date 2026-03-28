@@ -16,11 +16,12 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
 
 from hue import HueBridge, start_hue_mdns
+from spotify import Spotify
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -55,7 +56,9 @@ _notify_tasks: dict[str, asyncio.Task] = {}
 # ─── Hue ───────────────────────────────────────────────────────────────────────
 hue_bridge: HueBridge                    # initialised in lifespan
 hue_rooms_cache: list[dict] = []
-
+hue_status_cache: dict = {}
+# ─── Spotify ───────────────────────────────────────────────────────────────
+spotify = Spotify()
 # ─── WebSocket connection manager ─────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
@@ -181,17 +184,16 @@ async def poll_loop():
                 })
 
         # ── Hue ──────────────────────────────────────────────────────────────
-        global hue_rooms_cache
+        global hue_rooms_cache, hue_status_cache
+        new_status = hue_bridge.status()
+        if new_status != hue_status_cache:
+            hue_status_cache = new_status
+            await manager.broadcast({"type": "hue_status", **new_status})
         if hue_bridge.paired:
             rooms = await hue_bridge.get_rooms()
             if rooms != hue_rooms_cache:
                 hue_rooms_cache = rooms
                 await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
-            # Push status ved IP-ændring (første gang bridge opdages)
-        await manager.broadcast({
-            "type": "hue_status",
-            **hue_bridge.status(),
-        })
 
 # ─── mDNS discovery ───────────────────────────────────────────────────────────
 def _device_id(ip: str) -> str:
@@ -245,13 +247,7 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
 
     # Force Android kiosk settings (landscape, brightness, no rotation)
-    for cmd in [
-        "adb -s 192.168.86.173:34111 shell settings put system accelerometer_rotation 0",
-        "adb -s 192.168.86.173:34111 shell settings put system user_rotation 1",
-        "adb -s 192.168.86.173:34111 shell settings put system screen_brightness_mode 0",
-        "adb -s 192.168.86.173:34111 shell settings put system screen_brightness 255",
-        "adb -s 192.168.86.173:34111 shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny",
-    ]:
+    for cmd in KIOSK_CMDS:
         proc = await asyncio.create_subprocess_shell(
             cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
@@ -286,6 +282,7 @@ app = FastAPI(lifespan=lifespan)
 async def websocket_endpoint(ws: WebSocket):
     global hue_rooms_cache
     await manager.connect(ws)
+    print(f"[WS] Client connected ({len(manager._connections)} total)")
     try:
         # Send initial state on connect
         async with devices_lock:
@@ -349,6 +346,10 @@ async def websocket_endpoint(ws: WebSocket):
                         "rooms": hue_rooms_cache,
                     })
     except WebSocketDisconnect:
+        print(f"[WS] Client disconnected ({len(manager._connections)-1} remain)")
+        manager.disconnect(ws)
+    except Exception as e:
+        print(f"[WS] Client error: {e}")
         manager.disconnect(ws)
 
 # ─── REST: device management ──────────────────────────────────────────────────
@@ -416,7 +417,7 @@ async def hue_pair(data: dict = {}):
 async def set_brightness(level: int):
     level = max(0, min(255, level))
     proc = await asyncio.create_subprocess_exec(
-        "adb", "-s", "192.168.86.173:34111", "shell",
+        "adb", "-s", ADB_SERIAL, "shell",
         f"settings put system screen_brightness {level}",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
@@ -424,13 +425,14 @@ async def set_brightness(level: int):
     await proc.wait()
     return {"ok": True, "brightness": level}
 
-ADB_SERIAL = "192.168.86.173:34111"
+ADB_SERIAL = "192.168.86.15:39327"
 KIOSK_CMDS = [
     f"adb -s {ADB_SERIAL} shell settings put system accelerometer_rotation 0",
     f"adb -s {ADB_SERIAL} shell settings put system user_rotation 1",
     f"adb -s {ADB_SERIAL} shell settings put system screen_brightness_mode 0",
     f"adb -s {ADB_SERIAL} shell settings put system screen_brightness 255",
-    f"adb -s {ADB_SERIAL} shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny",
+    f"adb -s {ADB_SERIAL} shell settings put global policy_control immersive.full=com.android.chrome",
+    f"adb -s {ADB_SERIAL} shell cmd statusbar collapse",
 ]
 
 @app.post("/api/kiosk")
@@ -442,11 +444,78 @@ async def trigger_kiosk():
         await proc.wait()
     return {"ok": True}
 
+# ─── REST: Spotify ────────────────────────────────────────────────────────────
+@app.get("/api/spotify/status")
+async def spotify_status():
+    return {"configured": spotify.configured, "authenticated": spotify.authenticated}
+
+@app.get("/api/spotify/login")
+async def spotify_login():
+    if not spotify.configured:
+        return JSONResponse({"error": "Spotify not configured"}, status_code=500)
+    return RedirectResponse(spotify.login_url())
+
+@app.get("/api/spotify/callback")
+async def spotify_callback(code: str = ""):
+    if not code:
+        return JSONResponse({"error": "No code"}, status_code=400)
+    ok = await spotify.handle_callback(code)
+    if ok:
+        return RedirectResponse("/")
+    return JSONResponse({"error": "Auth failed"}, status_code=401)
+
+@app.post("/api/spotify/voice")
+async def spotify_voice(data: dict):
+    transcript = (data.get("transcript") or "").strip()
+    if not transcript:
+        return JSONResponse({"error": "No transcript"}, status_code=400)
+    result = await spotify.voice_command(transcript)
+    return result
+
+@app.get("/api/spotify/now-playing")
+async def spotify_now_playing():
+    return await spotify.now_playing() or {}
+
+@app.get("/api/spotify/devices")
+async def spotify_devices():
+    return await spotify.devices()
+
+@app.post("/api/spotify/pause")
+async def spotify_pause():
+    return {"ok": await spotify.pause()}
+
+@app.post("/api/spotify/resume")
+async def spotify_resume():
+    return {"ok": await spotify.resume()}
+
+@app.post("/api/spotify/skip")
+async def spotify_skip():
+    return {"ok": await spotify.skip()}
+
+@app.post("/api/spotify/radio")
+async def spotify_radio():
+    return await spotify.start_radio()
+
+@app.get("/api/spotify/token")
+async def spotify_token():
+    """Return access token for Web Playback SDK."""
+    token = await spotify._ensure_token()
+    if not token:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    return {"token": token}
+
 # ─── Static files (SvelteKit build) — mount last ──────────────────────────────
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    print("Home Hub → http://localhost:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    cert = BASE_DIR.parent / "certs" / "cert.pem"
+    key = BASE_DIR.parent / "certs" / "key.pem"
+    if cert.exists() and key.exists():
+        print("Home Hub → https://localhost:8443")
+        uvicorn.run(app, host="0.0.0.0", port=8443, log_level="warning",
+                    ssl_certfile=str(cert), ssl_keyfile=str(key))
+    else:
+        print("Home Hub → http://localhost:8000")
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
