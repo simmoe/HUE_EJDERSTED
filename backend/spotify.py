@@ -14,12 +14,11 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
 
 # ─── BeoLink multiroom ────────────────────────────────────────────────────────
-# JIDs and IPs for B&O speakers on the network
+# M5 = Spotify Connect master, A9 = BeoLink listener
 BEO_M5_IP = "192.168.86.188"
 BEO_A9_IP = "192.168.86.153"
 BEO_A9_JID = "3034.1200366.32115907@products.bang-olufsen.com"
 BEO_M5_JID = "2714.1200298.33798625@products.bang-olufsen.com"
-BEO_M5_SPOTIFY_SOURCE = f"spotify:{BEO_M5_JID}"
 
 
 def _load() -> dict:
@@ -182,38 +181,27 @@ class Spotify:
         return []
 
     async def _beolink_expand(self) -> None:
-        """Add A9 as BeoLink listener on M5 + volume nudge to wake audio."""
-        import asyncio
+        """Activate A9's own Spotify source — Spotify syncs playback automatically."""
         try:
-            # Add A9 as listener on M5's active source
+            A9_SPOTIFY = f"spotify:{BEO_A9_JID}"
             r = await self._http.post(
-                f"http://{BEO_M5_IP}:8080/BeoZone/Zone/ActiveSources/primaryExperience",
-                json={"listener": {"jid": BEO_A9_JID}},
+                f"http://{BEO_A9_IP}:8080/BeoZone/Zone/ActiveSources",
+                json={"primaryExperience": {"source": {"id": A9_SPOTIFY}}},
             )
             if r.status_code < 300:
-                print("[BeoLink] A9 joined M5 multiroom")
+                print(f"[BeoLink] A9 Spotify source activated")
             else:
-                print(f"[BeoLink] expand failed: {r.status_code} {r.text}")
-
-            # Nudge M5 volume to wake audio (B&O quirk: starts at volume=0 otherwise)
-            await asyncio.sleep(0.5)
-            vol = await self._http.get(f"http://{BEO_M5_IP}:8080/BeoZone/Zone/Sound/Volume")
-            if vol.status_code == 200:
-                level = vol.json().get("volume", {}).get("speaker", {}).get("level", 45)
-                await self._http.put(
-                    f"http://{BEO_M5_IP}:8080/BeoZone/Zone/Sound/Volume/Speaker/Level",
-                    json={"level": level},
-                )
+                print(f"[BeoLink] A9 activate failed: {r.status_code} {r.text}")
         except Exception as e:
             print(f"[BeoLink] expand error: {e}")
 
-    async def _find_m5_device_id(self) -> str | None:
-        """Find the BeoPlay M5's Spotify Connect device ID."""
+    async def _find_speaker_device_id(self) -> str | None:
+        """Find the BeoPlay M5's Spotify Connect device ID (A9 has no Spotify Connect)."""
         devs = await self.devices()
         for d in devs:
             if "m5" in d["name"].lower() or "beoplay m5" in d["name"].lower():
                 return d["id"]
-        # Fallback: pick first Speaker that isn't the SDK device
+        # Fallback: pick first Speaker
         for d in devs:
             if d["type"] == "Speaker":
                 return d["id"]
@@ -221,7 +209,7 @@ class Spotify:
 
     async def resume(self) -> bool:
         """Resume playback on M5 + ensure BeoLink multiroom."""
-        device_id = await self._find_m5_device_id()
+        device_id = await self._find_speaker_device_id()
         ok = await self.play(device_id=device_id)
         await self._beolink_expand()
         return ok
@@ -280,7 +268,7 @@ class Spotify:
         if len(unique) < 2:
             return {"ok": False, "error": "Ingen resultater for denne artist"}
 
-        device_id = await self._find_m5_device_id()
+        device_id = await self._find_speaker_device_id()
         r = await self._http.put(
             f"{API}/me/player/play",
             headers=h,
@@ -300,7 +288,7 @@ class Spotify:
         np = await self.now_playing()
         if not np or not np.get("uri"):
             return {"ok": True}
-        device_id = await self._find_m5_device_id()
+        device_id = await self._find_speaker_device_id()
         r = await self._http.put(
             f"{API}/me/player/play",
             headers=h,
@@ -330,7 +318,7 @@ class Spotify:
 
         # Resume
         if t in ("play", "spil", "afspil", "fortsæt"):
-            device_id = await self._find_m5_device_id()
+            device_id = await self._find_speaker_device_id()
             await self._beolink_expand()
             ok = await self.play(device_id=device_id)
             return {"action": "resume", "ok": ok}
@@ -354,7 +342,7 @@ class Spotify:
         playlists = results.get("playlists", {}).get("items", [])
 
         # Always prefer M5 as target — BeoLink expand BEFORE Spotify play
-        device_id = await self._find_m5_device_id()
+        device_id = await self._find_speaker_device_id()
         await self._beolink_expand()
 
         result: dict | None = None
