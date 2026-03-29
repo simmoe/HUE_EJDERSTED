@@ -134,7 +134,8 @@ Bump ALTID dette tal inden build — ellers ser tabletten den gamle version.
 
 ## 7. ADB kiosk-kommandoer (reference)
 
-Disse kan trigges via `POST /api/kiosk` (ADB-kommandoer fejler stille på Pi da der ingen adb-binary er):
+Disse kan trigges via `POST /api/kiosk`. ADB er installeret på Pi'en og parret med tabletten.
+Backend finder dynamisk tabletens ADB-serial via `_get_adb_serial()` (kører `adb devices`).
 
 ```bash
 ADB="adb -s 192.168.86.15:<PORT>"
@@ -199,7 +200,41 @@ WebSocket-beskeder (JSON):
 
 ---
 
-## 10. Fejlfinding
+## 10. BeoLink multiroom
+
+Begge højttalere (M5 + A9) spiller synkront via BeoLink.
+Oprettes med ét POST-kald der tilføjer A9 som listener på M5's aktive kilde:
+
+```bash
+curl -X POST http://192.168.86.188:8080/BeoZone/Zone/ActiveSources/primaryExperience \
+  -H "Content-Type: application/json" \
+  -d '{"listener":{"jid":"3034.1200366.32115907@products.bang-olufsen.com"}}'
+```
+
+**Volume-nudge**: M5 starter BeoLink med lydstyrke 0 (B&O-quirk). Workaround:
+læs nuværende volume og sæt den igen — det vækker lydudgangen:
+
+```bash
+# Læs M5-volume
+curl http://192.168.86.188:8080/BeoZone/Zone/Sound/Volume
+# Sæt den til samme level (nudge)
+curl -X PUT http://192.168.86.188:8080/BeoZone/Zone/Sound/Volume/Speaker/Level \
+  -H "Content-Type: application/json" -d '{"level":48}'
+```
+
+**Egenskaber**:
+- Idempotent — kan kaldes flere gange uden duplikater
+- Overlever pause/resume og skip track
+- Virker direkte på Spotify-kilde (ingen radio-bridge nødvendig)
+- Implementeret i `backend/spotify.py` → `_beolink_expand()`
+
+**JIDs**:
+- A9: `3034.1200366.32115907@products.bang-olufsen.com`
+- M5: `2714.1200298.33798625@products.bang-olufsen.com`
+
+---
+
+## 11. Fejlfinding
 
 ### "Tablet viser gammelt UI"
 → Service worker cache. Bump `hue-vNN` i `frontend/static/sw.js`, byg, deploy, force-stop Chrome.
@@ -217,14 +252,14 @@ WebSocket-beskeder (JSON):
 → B&O BeoPlay A9 skal være tændt og tilgængelig på `192.168.86.153:8080`. Test: `curl http://192.168.86.153:8080/BeoZone/Zone/Sound/Volume/Speaker/Level`.
 
 ### "Skærm dæmpes ikke / ur vises ikke"
-→ Dim-timer starter efter splash dismiss. Kun `pointerdown` (touch) resetter. ADB brightness-kommandoer kører kun fra Mac (ikke Pi). Tjek at `/api/brightness/{level}` virker.
+→ Dim-timer starter efter splash dismiss. Kun `pointerdown` (touch) resetter. ADB er installeret og parret på Pi — brightness-kommandoer kører fra begge. Tjek at `/api/brightness/{level}` virker.
 
 ### "Spotify virker ikke"
 → Tjek `spotify_config.json` findes på Pi. Tjek auth: `curl -sk https://192.168.86.16:8443/api/spotify/status`. Tokens kan udløbe — re-auth kræver `python3.13 spotify_auth.py` på Mac og kopier config til Pi.
 
 ---
 
-## 11. Git
+## 12. Git
 
 - **Aktiv branch**: `main`
 - **Default branch på GitHub**: `master`
@@ -232,7 +267,7 @@ WebSocket-beskeder (JSON):
 
 ---
 
-## 12. Dependencies
+## 13. Dependencies
 
 **Backend** (`pip install -r backend/requirements.txt`):
 - fastapi, uvicorn[standard], httpx, zeroconf
