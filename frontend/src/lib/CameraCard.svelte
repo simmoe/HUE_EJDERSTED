@@ -51,30 +51,40 @@
 </script>
 
 <Card name="Kamera" status={cameraOn ? 'live' : error ? 'fejl' : 'slukket'} online={cameraOn}>
-  <div class="camera-viewport">
-    <!-- svelte-ignore a11y_media_has_caption -->
-    <video
-      bind:this={videoEl}
-      autoplay
-      playsinline
-      muted
-    ></video>
-  </div>
-
-  <div class="action-row">
-    <button class="action-btn" onclick={toggleCamera}>
-      {cameraOn ? 'stop' : 'start'}
-    </button>
-    <button class="action-btn" onclick={flipCamera} disabled={!cameraOn}>
-      {facingMode === 'environment' ? 'front' : 'bag'}
-    </button>
+  <div class="cam-stack">
+    <div class="camera-viewport">
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video
+        bind:this={videoEl}
+        autoplay
+        playsinline
+        muted
+      ></video>
+    </div>
+    <div class="action-row">
+      <button class="action-btn" onclick={toggleCamera}>
+        {cameraOn ? 'stop' : 'start'}
+      </button>
+      <button class="action-btn" onclick={flipCamera} disabled={!cameraOn}>
+        {facingMode === 'environment' ? 'front' : 'bag'}
+      </button>
+    </div>
   </div>
 </Card>
 
 <style>
+  .cam-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    align-self: center;
+  }
+
   .camera-viewport {
-    width: 240px;
-    height: 240px;
+    width: 100%;
+    max-width: 320px;
+    aspect-ratio: 19 / 9;
     display: flex;
     align-items: center;
     justify-content: center;
