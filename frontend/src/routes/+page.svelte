@@ -161,10 +161,36 @@
   let spotifyPlaying = $state(false);
   let spotifyNextTitle = $state('');
   let spotifyNextArtist = $state('');
-  let nowPlayingEl: HTMLElement;
+
+  // ── Vertical card carousel ──────────────────────────────────────────────
+  let lydInner: HTMLDivElement;
+  let lysInner: HTMLDivElement;
+  let cardAdvancing = $state(false);
+
+  function advanceCard(el: HTMLDivElement) {
+    if (cardAdvancing || !el || el.children.length < 2) return;
+    cardAdvancing = true;
+    const cardH = el.clientHeight;
+    el.scrollTo({ top: cardH, behavior: 'smooth' });
+
+    function onDone() {
+      el.removeEventListener('scrollend', onDone);
+      const first = el.firstElementChild;
+      if (first) el.appendChild(first);
+      el.scrollTo({ top: 0, behavior: 'instant' });
+      cardAdvancing = false;
+    }
+    el.addEventListener('scrollend', onDone, { once: true });
+    setTimeout(() => { if (cardAdvancing) onDone(); }, 600);
+  }
 
   function scrollToNowPlaying() {
-    setTimeout(() => nowPlayingEl?.scrollIntoView({ behavior: 'smooth' }), 300);
+    if (!lydInner) return;
+    // Cycle DOM until .np-card is first child
+    while (lydInner.firstElementChild && !lydInner.firstElementChild.classList.contains('np-card')) {
+      lydInner.appendChild(lydInner.firstElementChild);
+    }
+    lydInner.scrollTo({ top: 0, behavior: 'instant' });
   }
 
   async function togglePlayPause() {
@@ -256,7 +282,29 @@
     <!-- PAGE 0 · LYD ─────────────────────────────────────────────────────── -->
     <section class="page">
       <div class="col-header">LYD</div>
-      <div class="scroll-inner">
+      <div class="scroll-inner" bind:this={lydInner}>
+
+        <!-- Now Playing (default card, always visible) -->
+        <div class="np-card">
+          <div class="np-info">
+            {#if spotifyTitle}
+              <span class="np-card-title">{spotifyTitle}</span>
+              {#if spotifyArtist}<span class="np-card-artist">{spotifyArtist}</span>{/if}
+              {#if spotifyNextTitle}
+                <span class="np-card-next">{spotifyNextTitle}</span>
+              {/if}
+            {/if}
+          </div>
+          <div class="action-row">
+            <button class="action-btn" onclick={togglePlayPause}>
+              {spotifyPlaying ? 'pause' : 'play'}
+            </button>
+            <button class="action-btn" class:active={spotifyRadio} onclick={toggleRadio}>
+              radio
+            </button>
+          </div>
+        </div>
+
         {#each store.devices as device (device.id)}
           {@const vol = store.volumes[device.id] ?? { level: 0, online: false }}
           <Card name={device.name} status={vol.online ? 'online' : 'offline'} online={vol.online} pulse={pulsingDevices[device.id]}>
@@ -296,34 +344,18 @@
           />
         </Card>
 
-        <!-- Now Playing -->
-        {#if spotifyTitle}
-          <div class="np-card" bind:this={nowPlayingEl}>
-            <div class="np-info">
-              <span class="np-card-title">{spotifyTitle}</span>
-              {#if spotifyArtist}<span class="np-card-artist">{spotifyArtist}</span>{/if}
-              {#if spotifyNextTitle}
-                <span class="np-card-next">{spotifyNextTitle}</span>
-              {/if}
-            </div>
-            <div class="action-row">
-              <button class="action-btn" onclick={togglePlayPause}>
-                {spotifyPlaying ? 'pause' : 'play'}
-              </button>
-              <button class="action-btn" class:active={spotifyRadio} disabled={!spotifyTitle} onclick={toggleRadio}>
-                radio
-              </button>
-            </div>
-          </div>
-        {/if}
-
       </div>
+      <button class="card-arrow" onclick={() => advanceCard(lydInner)} aria-label="Næste kort">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
     </section>
 
     <!-- PAGE 1 · LYS ─────────────────────────────────────────────────────── -->
     <section class="page">
       <div class="col-header">LYS</div>
-      <div class="scroll-inner">
+      <div class="scroll-inner" bind:this={lysInner}>
         {#if store.hueStatus.paired && store.hueRooms.length > 0}
           <!-- Rum-knobs -->
           {#each store.hueRooms as room (room.id)}
@@ -375,6 +407,11 @@
         {/if}
 
       </div>
+      <button class="card-arrow" onclick={() => advanceCard(lysInner)} aria-label="Næste kort">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
     </section>
 
     <!-- PAGE 2 · KAMERA ──────────────────────────────────────────────────── -->
@@ -540,6 +577,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
   }
 
   /* ── Advance arrow ────────────────────────────────────────────────────────── */
@@ -572,10 +610,37 @@
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    scroll-snap-type: y mandatory;
+    touch-action: none;
     max-width: none;
     padding: 0;
     gap: 0;
+    scrollbar-width: none;
+  }
+  .scroll-inner::-webkit-scrollbar { display: none; }
+
+  /* ── Card down-arrow ───────────────────────────────────────────────────────────── */
+  .card-arrow {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    color: #595959;
+    transition: color 0.2s;
+  }
+  .card-arrow:active { color: #ebebeb; }
+  .card-arrow svg {
+    width: 18px;
+    height: 18px;
   }
 
   .knob-wrap {
@@ -625,8 +690,6 @@
 
   /* ── Now Playing card ────────────────────────────────────────────────────── */
   .np-card {
-    scroll-snap-align: start;
-    scroll-snap-stop: always;
     min-height: calc(100dvh - 48px);
     max-height: calc(100dvh - 48px);
     overflow: hidden;
@@ -781,7 +844,6 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    scroll-snap-align: start;
     min-height: calc(100dvh - 48px);
     justify-content: center;
     padding: 24px 32px;

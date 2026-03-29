@@ -20,8 +20,6 @@
 
 <style>
   .card {
-    scroll-snap-align: start;
-    scroll-snap-stop: always;
     min-height: calc(100dvh - 48px);
     max-height: calc(100dvh - 48px);
     overflow: hidden;
