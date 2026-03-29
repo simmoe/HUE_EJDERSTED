@@ -128,6 +128,13 @@
   let hueMuteState = $state<Record<string, { muted: boolean; prev: number }>>({});
 
   function toggleHueMute(roomId: string, currentBrightness: number) {
+    const room = store.hueRooms.find(r => r.id === roomId);
+    if (room && !room.any_on) {
+      // Light is off — turn on with stored brightness
+      store.setHueBrightness(roomId, currentBrightness || 50);
+      hueMuteState[roomId] = { muted: false, prev: currentBrightness || 50 };
+      return;
+    }
     const m = hueMuteState[roomId];
     if (m?.muted) {
       hueMuteState[roomId] = { muted: false, prev: m.prev };
@@ -141,6 +148,42 @@
   let spotifyTitle = $state('');
   let spotifyArtist = $state('');
   let spotifyRadio = $state(false);
+  let spotifyPlaying = $state(false);
+  let spotifyNextTitle = $state('');
+  let spotifyNextArtist = $state('');
+  let nowPlayingEl: HTMLElement;
+
+  function scrollToNowPlaying() {
+    setTimeout(() => nowPlayingEl?.scrollIntoView({ behavior: 'smooth' }), 300);
+  }
+
+  async function togglePlayPause() {
+    const endpoint = spotifyPlaying ? '/api/spotify/pause' : '/api/spotify/resume';
+    try {
+      const r = await fetch(endpoint, { method: 'POST' });
+      const data = await r.json();
+      if (data.ok) spotifyPlaying = !spotifyPlaying;
+    } catch {}
+  }
+
+  async function toggleRadio() {
+    if (spotifyRadio) {
+      try { await fetch('/api/spotify/radio', { method: 'DELETE' }); } catch {}
+      spotifyRadio = false;
+      return;
+    }
+    spotifyRadio = true;
+    scrollToNowPlaying();
+    try {
+      const r = await fetch('/api/spotify/radio', { method: 'POST' });
+      const data = await r.json();
+      if (!data.ok) {
+        spotifyRadio = false;
+      }
+    } catch {
+      spotifyRadio = false;
+    }
+  }
 
   let hueManualIp  = $state('');
   let huePairing   = $state(false);
@@ -226,14 +269,37 @@
 
         <!-- Spotify Voice -->
         <Card name="Musik" status={spotifyRadio ? 'Song Radio' : ''} >
-          <SpotifyVoice bind:npTitle={spotifyTitle} bind:npArtist={spotifyArtist} bind:radioActive={spotifyRadio} />
-          {#if spotifyTitle}
-            <div class="now-playing">
-              <span class="np-title">{spotifyTitle}</span>
-              {#if spotifyArtist}<span class="np-artist">{spotifyArtist}</span>{/if}
-            </div>
-          {/if}
+          <SpotifyVoice
+            bind:npTitle={spotifyTitle}
+            bind:npArtist={spotifyArtist}
+            bind:nextTitle={spotifyNextTitle}
+            bind:nextArtist={spotifyNextArtist}
+            bind:isPlaying={spotifyPlaying}
+            bind:radioActive={spotifyRadio}
+            onresult={scrollToNowPlaying}
+          />
         </Card>
+
+        <!-- Now Playing -->
+        {#if spotifyTitle}
+          <div class="np-card" bind:this={nowPlayingEl}>
+            <div class="np-info">
+              <span class="np-card-title">{spotifyTitle}</span>
+              {#if spotifyArtist}<span class="np-card-artist">{spotifyArtist}</span>{/if}
+              {#if spotifyNextTitle}
+                <span class="np-card-next">{spotifyNextTitle}</span>
+              {/if}
+            </div>
+            <div class="action-row">
+              <button class="action-btn" onclick={togglePlayPause}>
+                {spotifyPlaying ? 'pause' : 'play'}
+              </button>
+              <button class="action-btn" class:active={spotifyRadio} disabled={!spotifyTitle} onclick={toggleRadio}>
+                radio
+              </button>
+            </div>
+          </div>
+        {/if}
 
       </div>
     </section>
@@ -514,6 +580,67 @@
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 100%;
+  }
+
+  /* ── Now Playing card ────────────────────────────────────────────────────── */
+  .np-card {
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+    min-height: calc(100dvh - 48px);
+    max-height: calc(100dvh - 48px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+    padding: 24px 32px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .np-info {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+  }
+
+  .np-card-title {
+    font-size: 1.2rem;
+    font-weight: 300;
+    color: #ebebeb;
+    text-align: center;
+    letter-spacing: 0.02em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  .np-card-artist {
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #595959;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  .np-card-next {
+    font-size: 0.7rem;
+    font-weight: 300;
+    color: #888888;
+    text-align: center;
+    margin-top: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+    opacity: 0.6;
   }
 
   /* ── Buttons ──────────────────────────────────────────────────────────────── */

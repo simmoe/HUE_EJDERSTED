@@ -157,7 +157,7 @@ class Spotify:
         if r.status_code == 200:
             data = r.json()
             item = data.get("item", {})
-            return {
+            result = {
                 "name": item.get("name", ""),
                 "artist": ", ".join(a["name"] for a in item.get("artists", [])),
                 "album": item.get("album", {}).get("name", ""),
@@ -165,7 +165,22 @@ class Spotify:
                 "is_playing": data.get("is_playing", False),
                 "uri": item.get("uri", ""),
                 "progress_ms": data.get("progress_ms", 0),
+                "next_name": "",
+                "next_artist": "",
             }
+            try:
+                qr = await self._http.get(f"{API}/me/player/queue", headers=h)
+                if qr.status_code == 200:
+                    queue = qr.json().get("queue", [])
+                    if queue:
+                        nxt = queue[0]
+                        result["next_name"] = nxt.get("name", "")
+                        result["next_artist"] = ", ".join(
+                            a["name"] for a in nxt.get("artists", [])
+                        )
+            except Exception:
+                pass
+            return result
         return None
 
     async def devices(self) -> list:

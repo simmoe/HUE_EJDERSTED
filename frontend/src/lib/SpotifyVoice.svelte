@@ -1,25 +1,32 @@
 <script lang="ts">
   /**
-   * SpotifyVoice — music controls: voice search, play/pause, radio station.
+   * SpotifyVoice — voice search + now-playing polling.
+   * Play/pause & radio controls live in the NowPlaying card on +page.svelte.
    */
   import { onMount } from 'svelte';
 
   let {
     npTitle = $bindable(''),
     npArtist = $bindable(''),
+    nextTitle = $bindable(''),
+    nextArtist = $bindable(''),
+    isPlaying = $bindable(false),
     radioActive = $bindable(false),
+    onresult,
   }: {
     npTitle?: string;
     npArtist?: string;
+    nextTitle?: string;
+    nextArtist?: string;
+    isPlaying?: boolean;
     radioActive?: boolean;
+    onresult?: () => void;
   } = $props();
 
   let listening = $state(false);
   let feedback = $state('');
   let feedbackTimer: ReturnType<typeof setTimeout>;
-  let isPlaying = $state(false);
   let pollInterval: ReturnType<typeof setInterval>;
-  let radioArtist = $state('');
 
   function showFeedback(text: string, duration = 3000) {
     feedback = text;
@@ -35,6 +42,8 @@
         isPlaying = data.is_playing ?? false;
         npTitle = data.name || '';
         npArtist = data.artist || '';
+        nextTitle = data.next_name || '';
+        nextArtist = data.next_artist || '';
       }
     } catch {}
   }
@@ -62,14 +71,17 @@
         showFeedback('pause');
       } else if (data.action === 'skip') {
         showFeedback('skip');
+        onresult?.();
       } else if (data.action === 'previous') {
         showFeedback('forrige');
+        onresult?.();
       } else if (data.action === 'resume') {
         isPlaying = true;
         showFeedback('play');
       } else if (data.name) {
         isPlaying = true;
         showFeedback(data.name);
+        onresult?.();
       } else if (!data.ok) {
         showFeedback('ikke fundet');
       }
@@ -94,44 +106,6 @@
     recognition.onend = () => { listening = false; };
     recognition.start();
   }
-
-  async function togglePlayPause() {
-    const endpoint = isPlaying ? '/api/spotify/pause' : '/api/spotify/resume';
-    try {
-      const r = await fetch(endpoint, { method: 'POST' });
-      const data = await r.json();
-      if (data.ok) isPlaying = !isPlaying;
-    } catch {}
-  }
-
-  async function toggleRadio() {
-    if (radioActive) {
-      // Turn off radio — clear queue
-      try {
-        await fetch('/api/spotify/radio', { method: 'DELETE' });
-      } catch {}
-      radioActive = false;
-      radioArtist = '';
-      return;
-    }
-    radioActive = true;
-    radioArtist = npArtist;
-    try {
-      const r = await fetch('/api/spotify/radio', { method: 'POST' });
-      const data = await r.json();
-      if (data.ok) {
-        radioArtist = data.name?.replace('Radio: ', '') || npArtist;
-      } else {
-        radioActive = false;
-        radioArtist = '';
-        showFeedback(data.error || 'fejl');
-      }
-    } catch {
-      radioActive = false;
-      radioArtist = '';
-      showFeedback('fejl');
-    }
-  }
 </script>
 
 <div class="center-area">
@@ -144,16 +118,6 @@
       <line x1="12" y1="17" x2="12" y2="21" />
     </svg>
   </button>
-
-  <!-- Action row -->
-  <div class="action-row">
-    <button class="action-btn" onclick={togglePlayPause}>
-      {isPlaying ? 'pause' : 'play'}
-    </button>
-    <button class="action-btn" class:active={radioActive} disabled={!npTitle} onclick={toggleRadio}>
-      radio
-    </button>
-  </div>
 
   <!-- Feedback -->
   {#if feedback}
