@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { store } from '$lib/ws.svelte';
+  import Card from '$lib/Card.svelte';
   import VolumeKnob from '$lib/VolumeKnob.svelte';
   import SpotifyVoice from '$lib/SpotifyVoice.svelte';
   import CameraCard from '$lib/CameraCard.svelte';
@@ -195,13 +196,7 @@
       <div class="scroll-inner">
         {#each store.devices as device (device.id)}
           {@const vol = store.volumes[device.id] ?? { level: 0, online: false }}
-          <article class="card" class:pulse={pulsingDevices[device.id]}>
-            <div class="card-top">
-              <span class="card-name">{device.name}</span>
-              <span class="card-status" class:online={vol.online}>
-                {vol.online ? 'online' : 'offline'}
-              </span>
-            </div>
+          <Card name={device.name} status={vol.online ? 'online' : 'offline'} online={vol.online} pulse={pulsingDevices[device.id]}>
             <div class="knob-wrap">
               <VolumeKnob
                 value={muteState[device.id]?.muted ? 0 : vol.level}
@@ -218,7 +213,7 @@
                 {#if np.artist}<span class="np-artist">{np.artist}</span>{/if}
               </div>
             {/if}
-          </article>
+          </Card>
         {/each}
 
         {#if store.devices.length === 0 && store.connected}
@@ -226,9 +221,9 @@
         {/if}
 
         <!-- Spotify Voice -->
-        <article class="card voice-card">
+        <Card name="Musik" status="" >
           <SpotifyVoice />
-        </article>
+        </Card>
 
       </div>
     </section>
@@ -240,23 +235,17 @@
         {#if store.hueStatus.paired && store.hueRooms.length > 0}
           <!-- Rum-knobs -->
           {#each store.hueRooms as room (room.id)}
-            <article class="card">
-              <div class="card-top">
-                <span class="card-name">{room.name}</span>
-                <span class="card-status" class:online={room.any_on}>
-                  {room.any_on ? 'tændt' : 'slukket'}
-                </span>
-              </div>
+            <Card name={room.name} status={room.any_on ? 'tændt' : 'slukket'} online={room.any_on}>
               <div class="knob-wrap">
                 <VolumeKnob
                   value={hueMuteState[room.id]?.muted ? 0 : room.brightness}
-                  muted={hueMuteState[room.id]?.muted ?? false}
-                  disabled={hueMuteState[room.id]?.muted ?? false}
+                  muted={!room.any_on || (hueMuteState[room.id]?.muted ?? false)}
+                  disabled={!room.any_on || (hueMuteState[room.id]?.muted ?? false)}
                   onchange={(v) => store.setHueBrightness(room.id, v)}
                   onmute={() => toggleHueMute(room.id, room.brightness)}
                 />
               </div>
-            </article>
+            </Card>
           {/each}
 
         {:else if store.hueStatus.paired && store.hueRooms.length === 0}
@@ -472,62 +461,10 @@
     gap: 0;
   }
 
-  /* ── Cards ────────────────────────────────────────────────────────────────── */
-  .card {
-    scroll-snap-align: start;
-    scroll-snap-stop: always;
-    min-height: calc(100dvh - 48px);
-    display: grid;
-    grid-template-rows: auto 1fr auto;
-    align-items: center;
-    padding: 24px 32px;
-    border-radius: 0;
-    background: none;
-    border: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    transition: border-color 1.2s ease;
-  }
-
-  .card.pulse {
-    border-color: rgba(0, 128, 200, 0.35);
-    transition: border-color 0.15s ease;
-  }
-
-  .card-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    margin-bottom: 8px;
-    align-self: end;
-  }
-
-  .card-name {
-    font-size: 0.95rem;
-    font-weight: 400;
-    color: #ebebeb;
-  }
-
-  .card-status {
-    font-size: 0.65rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #595959;
-    transition: color 0.3s;
-  }
-  .card-status.online { color: #0080c8; }
-
   .knob-wrap {
     max-width: 200px;
     margin: 0 auto;
     align-self: center;
-  }
-
-  .voice-card {
-    display: flex;
-    align-items: center;
-    justify-content: center;
   }
 
   .camera-page {

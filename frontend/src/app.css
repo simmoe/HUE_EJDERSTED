@@ -48,3 +48,26 @@ html, body {
 }
 .action-btn:active { color: var(--accent); }
 .action-btn:disabled { opacity: 0.3; cursor: default; }
+
+/* ── Shared card header ────────────────────────────────────────────────── */
+.card-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.card-name {
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--light);
+}
+
+.card-status {
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dark);
+  transition: color 0.3s;
+}
+.card-status.online { color: var(--accent); }

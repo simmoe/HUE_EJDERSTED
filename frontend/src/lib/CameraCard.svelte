@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
+  import Card from '$lib/Card.svelte';
 
   let videoEl = $state<HTMLVideoElement | null>(null);
   let stream = $state<MediaStream | null>(null);
@@ -49,7 +50,7 @@
   onDestroy(() => stopCamera());
 </script>
 
-<div class="camera-card">
+<Card name="Kamera" status={cameraOn ? 'live' : error ? 'fejl' : 'slukket'} online={cameraOn}>
   <div class="camera-viewport">
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
@@ -58,11 +59,6 @@
       playsinline
       muted
     ></video>
-    {#if error}
-      <span class="camera-msg">{error}</span>
-    {:else if !cameraOn}
-      <span class="camera-msg">slukket</span>
-    {/if}
   </div>
 
   <div class="action-row">
@@ -73,16 +69,9 @@
       {facingMode === 'environment' ? 'front' : 'bag'}
     </button>
   </div>
-</div>
+</Card>
 
 <style>
-  .camera-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 20px;
-  }
-
   .camera-viewport {
     width: 240px;
     height: 240px;
@@ -98,12 +87,5 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
-  }
-
-  .camera-msg {
-    font-size: 0.7rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--dark);
   }
 </style>

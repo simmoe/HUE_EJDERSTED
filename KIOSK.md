@@ -107,6 +107,9 @@ Første gang skal det self-signed certifikat accepteres i Chrome (Avanceret → 
 
 ## 6. Deploy (Mac → Pi)
 
+> **Regel**: Deploy kun til Pi når en feature er klar til test på tablet.  
+> Under fejlretning og iterativ udvikling: brug `npm run dev` lokalt (Vite på :5173).
+
 ```bash
 # Alt-i-én deploy (git push, pull på Pi, sync static, restart service)
 ./deploy.sh
