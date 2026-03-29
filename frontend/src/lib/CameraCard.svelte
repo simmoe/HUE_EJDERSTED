@@ -50,13 +50,6 @@
 </script>
 
 <div class="camera-card">
-  <div class="camera-top">
-    <span class="camera-label">KAMERA</span>
-    <span class="camera-status" class:active={cameraOn}>
-      {cameraOn ? 'live' : error ? 'fejl' : 'slukket'}
-    </span>
-  </div>
-
   <div class="camera-viewport">
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
@@ -66,17 +59,17 @@
       muted
     ></video>
     {#if error}
-      <span class="camera-error">{error}</span>
+      <span class="camera-msg">{error}</span>
     {:else if !cameraOn}
-      <span class="camera-placeholder">slukket</span>
+      <span class="camera-msg">slukket</span>
     {/if}
   </div>
 
-  <div class="camera-controls">
-    <button class="cam-btn" class:active={cameraOn} onclick={toggleCamera}>
+  <div class="action-row">
+    <button class="action-btn" onclick={toggleCamera}>
       {cameraOn ? 'stop' : 'start'}
     </button>
-    <button class="cam-btn" onclick={flipCamera} disabled={!cameraOn}>
+    <button class="action-btn" onclick={flipCamera} disabled={!cameraOn}>
       {facingMode === 'environment' ? 'front' : 'bag'}
     </button>
   </div>
@@ -87,32 +80,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 100%;
-    gap: 16px;
+    gap: 20px;
   }
-
-  .camera-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    width: 240px;
-  }
-
-  .camera-label {
-    font-size: 0.65rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #888;
-  }
-
-  .camera-status {
-    font-size: 0.6rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #888;
-    transition: color 0.3s;
-  }
-  .camera-status.active { color: #0080c8; }
 
   .camera-viewport {
     width: 240px;
@@ -131,40 +100,10 @@
     object-fit: cover;
   }
 
-  .camera-placeholder, .camera-error {
+  .camera-msg {
     font-size: 0.7rem;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #888;
-  }
-
-  .camera-controls {
-    display: flex;
-    gap: 12px;
-    width: 240px;
-    justify-content: center;
-  }
-
-  .cam-btn {
-    flex: 1;
-    padding: 12px 0;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: none;
-    color: #ebebeb;
-    font-size: 0.75rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: border-color 0.2s, color 0.2s, opacity 0.2s;
-    -webkit-tap-highlight-color: transparent;
-  }
-  .cam-btn.active {
-    border-color: rgba(0, 128, 200, 0.4);
-    color: #0080c8;
-  }
-  .cam-btn:disabled {
-    opacity: 0.3;
-    cursor: default;
+    color: var(--dark);
   }
 </style>

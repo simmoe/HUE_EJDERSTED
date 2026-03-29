@@ -24,3 +24,26 @@ html, body {
   overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
 }
+
+/* ── Shared action buttons ──────────────────────────────────────────────── */
+.action-row {
+  display: flex;
+  gap: 32px;
+}
+
+.action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  font-size: 0.7rem;
+  font-weight: 300;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--dark);
+  padding: 12px 20px;
+  transition: color 0.2s;
+  min-width: 80px;
+}
+.action-btn:active { color: var(--accent); }
+.action-btn:disabled { opacity: 0.3; cursor: default; }

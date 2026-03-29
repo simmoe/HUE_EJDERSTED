@@ -220,31 +220,6 @@
     50%      { opacity: 1;   transform: scale(1.04); }
   }
 
-  /* ── Action row ────────────────────────────────────────────────────────── */
-  .action-row {
-    display: flex;
-    gap: 32px;
-  }
-
-  .action-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-    font-size: 0.7rem;
-    font-weight: 300;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: #595959;
-    padding: 12px 20px;
-    transition: color 0.2s;
-    min-width: 80px;
-  }
-
-  .action-btn:active {
-    color: #0080c8;
-  }
-
   /* ── Now playing ────────────────────────────────────────────────────────── */
   .now-playing {
     display: flex;
