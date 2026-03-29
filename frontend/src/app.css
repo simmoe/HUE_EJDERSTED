@@ -27,7 +27,8 @@ html, body {
 
 /* ── Shared action buttons ──────────────────────────────────────────────── */
 .action-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 32px;
 }
 
