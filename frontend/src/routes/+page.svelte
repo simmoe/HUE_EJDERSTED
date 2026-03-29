@@ -3,6 +3,7 @@
   import { store } from '$lib/ws.svelte';
   import VolumeKnob from '$lib/VolumeKnob.svelte';
   import SpotifyVoice from '$lib/SpotifyVoice.svelte';
+  import CameraCard from '$lib/CameraCard.svelte';
 
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
@@ -179,6 +180,7 @@
   <nav>
     <button class:active={activePage === 0} onclick={() => goTo(0)}>LYD</button>
     <button class:active={activePage === 1} onclick={() => goTo(1)}>LYS</button>
+    <button class:active={activePage === 2} onclick={() => goTo(2)}>KAMERA</button>
     {#if !store.connected}
       <span class="conn">•</span>
     {/if}
@@ -227,6 +229,7 @@
         <article class="card voice-card">
           <SpotifyVoice />
         </article>
+
       </div>
     </section>
 
@@ -290,6 +293,14 @@
           </div>
         {/if}
 
+      </div>
+    </section>
+
+    <!-- PAGE 2 · KAMERA ──────────────────────────────────────────────────── -->
+    <section class="page">
+      <div class="col-header">KAMERA</div>
+      <div class="scroll-inner camera-page">
+        <CameraCard />
       </div>
     </section>
 
@@ -444,7 +455,7 @@
   .pages::-webkit-scrollbar { display: none; }
 
   .page {
-    flex: 0 0 50%;
+    flex: 0 0 33.333%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -517,6 +528,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .camera-page {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 32px;
   }
 
   /* ── Now playing ──────────────────────────────────────────────────────────── */
