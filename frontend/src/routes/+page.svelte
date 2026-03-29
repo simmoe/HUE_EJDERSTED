@@ -74,6 +74,12 @@
   // ── Horizontal page carousel ────────────────────────────────────────────────
   let pagesEl: HTMLDivElement;
   let advancing = $state(false);
+  let nextPageName = $state('');
+
+  function readNextPageName() {
+    const el = pagesEl?.children[2] as HTMLElement | undefined;
+    nextPageName = el?.querySelector('.col-header')?.textContent ?? '';
+  }
 
   function advance() {
     if (advancing || !pagesEl) return;
@@ -88,6 +94,7 @@
       if (first) pagesEl.appendChild(first);
       pagesEl.scrollTo({ left: 0, behavior: 'instant' });
       advancing = false;
+      readNextPageName();
     }
     pagesEl.addEventListener('scrollend', onDone, { once: true });
     // Fallback if scrollend doesn't fire (older browsers)
@@ -166,8 +173,16 @@
   let lydInner: HTMLDivElement;
   let lysInner: HTMLDivElement;
   let cardAdvancing = $state(false);
+  let nextLydCard = $state('');
+  let nextLysCard = $state('');
 
-  function advanceCard(el: HTMLDivElement) {
+  function readNextCardName(el: HTMLDivElement): string {
+    const child = el?.children[1] as HTMLElement | undefined;
+    if (!child) return '';
+    return child.querySelector('.card-name')?.textContent ?? child.dataset.name ?? '';
+  }
+
+  function advanceCard(el: HTMLDivElement, kind: 'lyd' | 'lys') {
     if (cardAdvancing || !el || el.children.length < 2) return;
     cardAdvancing = true;
     const cardH = el.clientHeight;
@@ -179,10 +194,19 @@
       if (first) el.appendChild(first);
       el.scrollTo({ top: 0, behavior: 'instant' });
       cardAdvancing = false;
+      if (kind === 'lyd') nextLydCard = readNextCardName(el);
+      else nextLysCard = readNextCardName(el);
     }
     el.addEventListener('scrollend', onDone, { once: true });
     setTimeout(() => { if (cardAdvancing) onDone(); }, 600);
   }
+
+  // Read initial next-names once DOM is ready
+  $effect(() => {
+    if (pagesEl) readNextPageName();
+    if (lydInner) nextLydCard = readNextCardName(lydInner);
+    if (lysInner) nextLysCard = readNextCardName(lysInner);
+  });
 
   function scrollToNowPlaying() {
     if (!lydInner) return;
@@ -271,6 +295,7 @@
 
   <!-- ── Advance arrow ─────────────────────────────────────────────────────── -->
   <button class="advance-arrow" onclick={advance} aria-label="Næste">
+    <span class="arrow-label">{nextPageName}</span>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <polyline points="9 6 15 12 9 18" />
     </svg>
@@ -285,7 +310,7 @@
       <div class="scroll-inner" bind:this={lydInner}>
 
         <!-- Now Playing (default card, always visible) -->
-        <div class="np-card">
+        <div class="np-card" data-name="Afspiller">
           <div class="np-info">
             {#if spotifyTitle}
               <span class="np-card-title">{spotifyTitle}</span>
@@ -345,7 +370,8 @@
         </Card>
 
       </div>
-      <button class="card-arrow" onclick={() => advanceCard(lydInner)} aria-label="Næste kort">
+      <button class="card-arrow" onclick={() => advanceCard(lydInner, 'lyd')} aria-label="Næste kort">
+        <span class="arrow-label">{nextLydCard}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
@@ -407,7 +433,8 @@
         {/if}
 
       </div>
-      <button class="card-arrow" onclick={() => advanceCard(lysInner)} aria-label="Næste kort">
+      <button class="card-arrow" onclick={() => advanceCard(lysInner, 'lys')} aria-label="Næste kort">
+        <span class="arrow-label">{nextLysCard}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
@@ -587,11 +614,10 @@
     right: 0;
     z-index: 10;
     height: 48px;
-    width: 48px;
     display: flex;
     align-items: flex-end;
-    justify-content: center;
-    padding-bottom: 10px;
+    gap: 4px;
+    padding: 0 12px 10px 0;
     background: none;
     border: none;
     cursor: pointer;
@@ -603,6 +629,7 @@
   .advance-arrow svg {
     width: 18px;
     height: 18px;
+    flex-shrink: 0;
   }
 
   .scroll-inner {
@@ -625,11 +652,10 @@
     left: 50%;
     transform: translateX(-50%);
     z-index: 5;
-    width: 48px;
-    height: 48px;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
+    gap: 2px;
     background: none;
     border: none;
     cursor: pointer;
@@ -641,6 +667,15 @@
   .card-arrow svg {
     width: 18px;
     height: 18px;
+  }
+
+  /* ── Shared arrow label ──────────────────────────────────────────────────────── */
+  .arrow-label {
+    font-size: 0.7rem;
+    font-weight: 400;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
 
   .knob-wrap {
