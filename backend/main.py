@@ -526,6 +526,10 @@ async def spotify_skip():
 async def spotify_radio():
     return await spotify.start_radio()
 
+@app.delete("/api/spotify/radio")
+async def spotify_radio_stop():
+    return await spotify.stop_radio()
+
 @app.get("/api/spotify/token")
 async def spotify_token():
     """Return access token for Web Playback SDK."""

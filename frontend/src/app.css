@@ -47,6 +47,7 @@ html, body {
   min-width: 80px;
 }
 .action-btn:active { color: var(--accent); }
+.action-btn.active { color: var(--accent); }
 .action-btn:disabled { opacity: 0.3; cursor: default; }
 
 /* ── Shared card header ────────────────────────────────────────────────── */

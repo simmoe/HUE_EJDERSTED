@@ -11,6 +11,8 @@
   let npTitle = $state('');
   let npArtist = $state('');
   let pollInterval: ReturnType<typeof setInterval>;
+  let radioActive = $state(false);
+  let radioArtist = $state('');
 
   function showFeedback(text: string, duration = 3000) {
     feedback = text;
@@ -95,14 +97,24 @@
     } catch {}
   }
 
-  async function startRadio() {
+  async function toggleRadio() {
+    if (radioActive) {
+      // Turn off radio — clear queue
+      try {
+        await fetch('/api/spotify/radio', { method: 'DELETE' });
+      } catch {}
+      radioActive = false;
+      radioArtist = '';
+      return;
+    }
     showFeedback('radio…', 8000);
     try {
       const r = await fetch('/api/spotify/radio', { method: 'POST' });
       const data = await r.json();
       if (data.ok) {
-        isPlaying = true;
-        showFeedback(data.name || 'radio');
+        radioActive = true;
+        radioArtist = data.name?.replace('Radio: ', '') || npArtist;
+        feedback = '';
       } else {
         showFeedback(data.error || 'fejl');
       }
@@ -129,7 +141,7 @@
       <button class="action-btn" onclick={togglePlayPause}>
         {isPlaying ? 'pause' : 'play'}
       </button>
-      <button class="action-btn" onclick={startRadio}>
+      <button class="action-btn" class:active={radioActive} disabled={!npTitle} onclick={toggleRadio}>
         radio
       </button>
     </div>
@@ -145,6 +157,9 @@
   <!-- Now playing (bottom) -->
   {#if npTitle}
     <div class="now-playing">
+      {#if radioActive}
+        <span class="np-radio-label">Song Radio</span>
+      {/if}
       <span class="np-title">{npTitle}</span>
       {#if npArtist}<span class="np-artist">{npArtist}</span>{/if}
     </div>
@@ -229,6 +244,14 @@
     padding: 0 8px 4px;
     align-self: end;
     justify-self: center;
+  }
+
+  .np-radio-label {
+    font-size: 0.6rem;
+    font-weight: 300;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #0080c8;
   }
 
   .np-title {

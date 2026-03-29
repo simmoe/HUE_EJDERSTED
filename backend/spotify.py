@@ -165,6 +165,7 @@ class Spotify:
                 "image": (item.get("album", {}).get("images", [{}])[0].get("url", "") if item.get("album", {}).get("images") else ""),
                 "is_playing": data.get("is_playing", False),
                 "uri": item.get("uri", ""),
+                "progress_ms": data.get("progress_ms", 0),
             }
         return None
 
@@ -226,38 +227,87 @@ class Spotify:
         return ok
 
     async def start_radio(self) -> dict:
-        """Start a radio station based on the currently playing track."""
+        """Build a radio queue via /search — the only reliable method post-2024."""
+        import random
         h = await self._headers()
         if not h:
             return {"ok": False, "error": "Ikke logget ind"}
         np = await self.now_playing()
         if not np or not np.get("uri"):
             return {"ok": False, "error": "Intet spiller"}
-        track_id = np["uri"].split(":")[-1]
-        r = await self._http.get(
-            f"{API}/recommendations",
-            headers=h,
-            params={"seed_tracks": track_id, "limit": 50, "market": "DK"},
-        )
-        if r.status_code != 200:
-            return {"ok": False, "error": "Kunne ikke hente anbefalinger"}
-        uris = [t["uri"] for t in r.json().get("tracks", [])]
-        if not uris:
-            return {"ok": False, "error": "Ingen anbefalinger"}
-        # Prepend current track so it keeps playing
-        uris.insert(0, np["uri"])
+
+        artist_name = np.get("artist", "")
+        track_name = np.get("name", "")
+        current_uri = np["uri"]
+        progress_ms = np.get("progress_ms", 0)
+
+        uris: list[str] = []
+
+        async def _search(q: str, pages: int = 5) -> list[str]:
+            """Paginate /search (limit=10 per page for dev-mode apps)."""
+            found: list[str] = []
+            for off in range(0, pages * 10, 10):
+                r = await self._http.get(
+                    f"{API}/search", headers=h,
+                    params={"q": q, "type": "track", "limit": 10,
+                            "offset": off, "market": "DK"},
+                )
+                if r.status_code != 200:
+                    break
+                for t in r.json().get("tracks", {}).get("items", []):
+                    found.append(t["uri"])
+            return found
+
+        # 1) Search: "artist track" — best similarity signal
+        if artist_name and track_name:
+            uris.extend(await _search(f"{artist_name} {track_name}", pages=3))
+
+        # 2) Search: just artist name — fills with discography
+        if artist_name:
+            uris.extend(await _search(f"{artist_name}", pages=3))
+
+        # Deduplicate, remove current track, shuffle
+        seen: set[str] = set()
+        unique: list[str] = []
+        for u in uris:
+            if u not in seen and u != current_uri:
+                seen.add(u)
+                unique.append(u)
+        random.shuffle(unique)
+        # Prepend current track so playback continues seamlessly
+        unique.insert(0, current_uri)
+
+        if len(unique) < 2:
+            return {"ok": False, "error": "Ingen resultater for denne artist"}
+
         device_id = await self._find_m5_device_id()
-        ok = await self.play(device_id=device_id)  # ensure active
+        r = await self._http.put(
+            f"{API}/me/player/play",
+            headers=h,
+            params={"device_id": device_id} if device_id else {},
+            json={"uris": unique[:50], "offset": {"position": 0}, "position_ms": progress_ms},
+        )
+        ok = r.status_code in (200, 204)
         if ok:
-            # Queue via play with full URI list
-            ok = await self._http.put(
-                f"{API}/me/player/play",
-                headers=h,
-                params={"device_id": device_id} if device_id else {},
-                json={"uris": uris},
-            )
-            ok = ok.status_code in (200, 204)
-        return {"ok": ok, "name": f"Radio: {np.get('artist', '')}", "tracks": len(uris)}
+            await self._beolink_expand()
+        return {"ok": ok, "name": f"Radio: {artist_name}", "tracks": len(unique[:50])}
+
+    async def stop_radio(self) -> dict:
+        """Clear radio queue — play only the current track from its current position."""
+        h = await self._headers()
+        if not h:
+            return {"ok": False, "error": "Ikke logget ind"}
+        np = await self.now_playing()
+        if not np or not np.get("uri"):
+            return {"ok": True}
+        device_id = await self._find_m5_device_id()
+        r = await self._http.put(
+            f"{API}/me/player/play",
+            headers=h,
+            params={"device_id": device_id} if device_id else {},
+            json={"uris": [np["uri"]], "position_ms": np.get("progress_ms", 0)},
+        )
+        return {"ok": r.status_code in (200, 204)}
 
     async def voice_command(self, transcript: str) -> dict:
         """Parse a voice transcript and execute the most likely intent."""
