@@ -181,33 +181,28 @@ class Spotify:
         return []
 
     async def _beolink_expand(self) -> None:
-        """Establish BeoLink multiroom: radio (linkable) → add A9 → Spotify takes over."""
+        """Add A9 as BeoLink listener on M5 + volume nudge to wake audio."""
         import asyncio
         try:
-            # Step 1: Clear A9's stuck source (e.g. toslink/turntable)
-            await self._http.delete(
-                f"http://{BEO_A9_IP}:8080/BeoZone/Zone/ActiveSources/primaryExperience"
-            )
-            await asyncio.sleep(1)
-
-            # Step 2: Start radio on M5 (linkable source → enables BeoLink)
-            await self._http.post(
-                f"http://{BEO_M5_IP}:8080/BeoZone/Zone/ActiveSources/primaryExperience",
-                json={"listener": {"jid": BEO_M5_JID},
-                      "source": {"id": f"radio:{BEO_M5_JID}"}},
-            )
-            await asyncio.sleep(2)
-
-            # Step 3: Add A9 as listener while radio is active
+            # Add A9 as listener on M5's active source
             r = await self._http.post(
                 f"http://{BEO_M5_IP}:8080/BeoZone/Zone/ActiveSources/primaryExperience",
                 json={"listener": {"jid": BEO_A9_JID}},
             )
             if r.status_code < 300:
-                print("[BeoLink] A9 joined M5 multiroom (via radio bridge)")
+                print("[BeoLink] A9 joined M5 multiroom")
             else:
                 print(f"[BeoLink] expand failed: {r.status_code} {r.text}")
-            await asyncio.sleep(1)
+
+            # Nudge M5 volume to wake audio (B&O quirk: starts at volume=0 otherwise)
+            await asyncio.sleep(0.5)
+            vol = await self._http.get(f"http://{BEO_M5_IP}:8080/BeoZone/Zone/Sound/Volume")
+            if vol.status_code == 200:
+                level = vol.json().get("volume", {}).get("speaker", {}).get("level", 45)
+                await self._http.put(
+                    f"http://{BEO_M5_IP}:8080/BeoZone/Zone/Sound/Volume/Speaker/Level",
+                    json={"level": level},
+                )
         except Exception as e:
             print(f"[BeoLink] expand error: {e}")
 
@@ -224,9 +219,11 @@ class Spotify:
         return devs[0]["id"] if devs else None
 
     async def resume(self) -> bool:
-        """Simple resume — no BeoLink setup (assumes already expanded)."""
+        """Resume playback on M5 + ensure BeoLink multiroom."""
         device_id = await self._find_m5_device_id()
-        return await self.play(device_id=device_id)
+        ok = await self.play(device_id=device_id)
+        await self._beolink_expand()
+        return ok
 
     async def start_radio(self) -> dict:
         """Start a radio station based on the currently playing track."""
