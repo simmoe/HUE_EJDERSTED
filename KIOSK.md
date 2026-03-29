@@ -9,20 +9,30 @@
 
 En Samsung Android-tablet kører Chrome i fuldskærmskiosk-mode og viser en
 touch-baseret home automation UI (lysstyring via Philips Hue + volumenkontrol
-for B&O-højttaler). Backend er en FastAPI Python-server der kører på en Mac.
+for B&O-højttalere + Spotify voice control). Backend er en FastAPI Python-server
+der kører på en Raspberry Pi 5 (produktion) eller en Mac (udvikling).
 
 ---
 
 ## 2. Netværk
 
-| Enhed | IP | Port |
-|---|---|---|
-| Mac (server) | `192.168.86.158` | `8000` |
-| Android-tablet (Samsung) | `192.168.86.173` | ADB: `34111` |
-| Philips Hue Bridge | `192.168.86.25` | HTTPS (clipv2) |
-| B&O BeoPlay A9 | `192.168.86.153` | `8080` (Mozart API) |
+Alle enheder har faste IP'er via Google Home DHCP-reservationer.
 
-ADB serial: **`192.168.86.173:34111`** (trådløs debugging).
+| Enhed | IP | Port | Bemærkning |
+|---|---|---|---|
+| Raspberry Pi 5 (prod server) | `192.168.86.16` | `8443` (HTTPS) | SSH: simmoe / k18Medh18 |
+| Mac (dev) | `192.168.86.13` | `8443` (HTTPS) | Kun til udvikling |
+| Android-tablet (Samsung) | `192.168.86.15` | ADB: variabel | Trådløs ADB port skifter ved genstart |
+| Philips Hue Bridge | `192.168.86.25` | HTTPS (clipv2) | |
+| B&O BeoPlay A9 | `192.168.86.153` | `8080` (Mozart API) | |
+| B&O BeoSound M5 | `192.168.86.188` | `8080` (Mozart API) | BeoLink multiroom med A9 |
+
+**ADB**: Tabletens trådløse debugging-port skifter ved hver genstart.
+Find ny port i tabletens Developer Options → Wireless debugging.
+Eksempel: `adb connect 192.168.86.15:36873`
+
+**HTTPS**: Serveren kører HTTPS med self-signed certifikat (port 8443).
+Pi bruger certs i `certs/`, Mac bruger mkcert-genererede certs.
 
 ---
 
@@ -33,7 +43,8 @@ ADB serial: **`192.168.86.173:34111`** (trådløs debugging).
 ├── backend/
 │   ├── main.py          ← FastAPI server (start her)
 │   ├── hue.py           ← Hue bridge integration
-│   ├── static/          ← SvelteKit build-output (serveres af FastAPI)
+│   ├── spotify.py       ← Spotify Web API + BeoLink multiroom
+│   ├── static/          ← SvelteKit build-output (serveres af FastAPI, IKKE i git)
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/             ← SvelteKit 5 kildekode
@@ -41,65 +52,79 @@ ADB serial: **`192.168.86.173:34111`** (trådløs debugging).
 │   │   └── sw.js        ← Service worker (cache-version!)
 │   ├── package.json
 │   └── svelte.config.js
+├── certs/               ← TLS-certifikater (IKKE i git)
+├── deploy.sh            ← Deploy-script: Mac → Pi
 ├── devices.json         ← Persisteret B&O-enhedsliste
-├── hue_config.json      ← Hue bridge IP + username (parret)
+├── hue_config.json      ← Hue bridge IP + username (IKKE i git)
+├── spotify_config.json  ← Spotify OAuth tokens (IKKE i git)
 ├── KIOSK.md             ← Denne fil
 └── requirements.txt
 ```
 
 ---
 
-## 4. Hurtigstart — "genstart kiosk"
+## 4. Produktion — Raspberry Pi
 
-Kør disse trin fra projektets rodmappe:
+Serveren kører som systemd-service på Pi'en og starter automatisk ved boot.
 
 ```bash
-# 0. Gå til projektrod
-cd /Users/simon/Documents/Git/HUE_EJDERSTED
+# Tjek status
+sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl status hue --no-pager"
 
-# 1. Forbind ADB (hvis ikke allerede tilsluttet)
-adb connect 192.168.86.173:34111
+# Genstart
+sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
 
-# 2. Stop evt. kørende server
-lsof -ti:8000 | xargs kill -9 2>/dev/null
-
-# 3. Start server
-python3.13 backend/main.py
-# → "Home Hub → http://localhost:8000"
-# Serveren kører kiosk ADB-kommandoer automatisk ved opstart (lifespan)
-
-# 4. Åbn Chrome på tablet
-adb -s 192.168.86.173:34111 shell am start \
-  -a android.intent.action.VIEW \
-  -d "http://192.168.86.158:8000"
+# Se logs
+sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo journalctl -u hue -f"
 ```
 
-Det er det. Serveren sætter automatisk landskab, lysstyrke 255 og slår volume-HUD fra via ADB ved startup (se `lifespan` i `backend/main.py`).
+**Kiosk URL (tablet)**: `https://192.168.86.16:8443`
 
 ---
 
-## 5. Frontend-deploy (hvis kode er ændret)
+## 5. Hurtigstart — "genstart kiosk"
+
+Kør disse trin fra projektets rodmappe på Mac'en:
 
 ```bash
-cd /Users/simon/Documents/Git/HUE_EJDERSTED/frontend
+cd /Users/simon/Documents/Git/HUE_EJDERSTED
 
-# 1. Bump service worker cache-version (VIGTIGT — ellers cacher browseren gammelt)
-#    Find nuværende version, f.eks. hue-v17, og sæt den til hue-v18:
-sed -i '' 's/hue-v17/hue-v18/g' static/sw.js
+# 1. Forbind ADB (porten skifter — tjek tablet Developer Options)
+adb connect 192.168.86.15:<PORT>
 
-# 2. Byg frontend (output → backend/static/)
+# 2. Sæt landscape + immersive + åbn Chrome
+ADB="192.168.86.15:<PORT>"
+adb -s $ADB shell settings put system accelerometer_rotation 0
+adb -s $ADB shell settings put system user_rotation 1
+adb -s $ADB shell settings put global policy_control "immersive.full=com.android.chrome"
+adb -s $ADB shell am force-stop com.android.chrome
+adb -s $ADB shell am start -a android.intent.action.VIEW -d "https://192.168.86.16:8443"
+```
+
+Første gang skal det self-signed certifikat accepteres i Chrome (Avanceret → Fortsæt).
+
+---
+
+## 6. Deploy (Mac → Pi)
+
+```bash
+# Alt-i-én deploy (git push, pull på Pi, sync static, restart service)
+./deploy.sh
+
+# Med frontend rebuild først
+./deploy.sh --build
+```
+
+Manuelt:
+```bash
+cd frontend
+sed -i '' 's/hue-v17/hue-v18/g' static/sw.js   # Bump SW-cache!
 npm run build
-
-# 3. Genstart server
 cd ..
-lsof -ti:8000 | xargs kill -9 2>/dev/null
-python3.13 backend/main.py
-
-# 4. Force-reload Chrome på tablet
-adb -s 192.168.86.173:34111 shell am force-stop com.android.chrome
-adb -s 192.168.86.173:34111 shell am start \
-  -a android.intent.action.VIEW \
-  -d "http://192.168.86.158:8000"
+git add -A && git commit -m "deploy" && git push
+sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "cd ~/HUE_EJDERSTED && git pull"
+sshpass -p 'k18Medh18' scp -r backend/static simmoe@192.168.86.16:~/HUE_EJDERSTED/backend/
+sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
 ```
 
 **Cache-version**: Filen `frontend/static/sw.js` har `const CACHE = 'hue-vNN'`.
@@ -107,12 +132,12 @@ Bump ALTID dette tal inden build — ellers ser tabletten den gamle version.
 
 ---
 
-## 6. ADB kiosk-kommandoer (reference)
+## 7. ADB kiosk-kommandoer (reference)
 
-Disse kører automatisk ved serverstart OG kan trigges via `POST /api/kiosk`:
+Disse kan trigges via `POST /api/kiosk` (ADB-kommandoer fejler stille på Pi da der ingen adb-binary er):
 
 ```bash
-ADB="adb -s 192.168.86.173:34111"
+ADB="adb -s 192.168.86.15:<PORT>"
 
 # Lås landskab
 $ADB shell settings put system accelerometer_rotation 0
@@ -124,13 +149,18 @@ $ADB shell settings put system screen_brightness 255
 
 # Fjern volume-HUD overlay
 $ADB shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny
+
+# Immersive mode (fjern system bars)
+$ADB shell settings put global policy_control "immersive.full=com.android.chrome"
 ```
 
 For at genaktivere volume-HUD: `... SYSTEM_ALERT_WINDOW allow`.
 
+**Bemærk**: ADB-port på tabletten skifter ved genstart af trådløs debugging.
+
 ---
 
-## 7. API-endpoints (vigtigste)
+## 8. API-endpoints (vigtigste)
 
 | Metode | Endpoint | Beskrivelse |
 |---|---|---|
@@ -141,6 +171,12 @@ For at genaktivere volume-HUD: `... SYSTEM_ALERT_WINDOW allow`.
 | `POST` | `/api/hue/pair` | Par Hue bridge (tryk fysisk knap først) |
 | `PUT` | `/api/brightness/{level}` | Sæt tablet-skærmlysstyrke via ADB (0–255) |
 | `POST` | `/api/kiosk` | Kør alle ADB kiosk-kommandoer |
+| `GET` | `/api/spotify/status` | Spotify auth status |
+| `POST` | `/api/spotify/voice` | Stemmesøgning (EN/DA) → afspil på M5 + BeoLink A9 |
+| `POST` | `/api/spotify/resume` | Genoptag afspilning |
+| `POST` | `/api/spotify/pause` | Pause afspilning |
+| `POST` | `/api/spotify/radio` | Start radio (anbefalinger baseret på nuværende track) |
+| `GET` | `/api/spotify/now-playing` | Nuværende track info |
 
 WebSocket-beskeder (JSON):
 - `set_volume` → sætter B&O-volumen
@@ -149,7 +185,7 @@ WebSocket-beskeder (JSON):
 
 ---
 
-## 8. Frontend-arkitektur
+## 9. Frontend-arkitektur
 
 - **Svelte 5** med runes (`$state`, `$derived`, `$effect`)
 - **To-panel layout**: LYD (venstre) + LYS (højre), altid side-by-side (50/50)
@@ -163,29 +199,32 @@ WebSocket-beskeder (JSON):
 
 ---
 
-## 9. Fejlfinding
+## 10. Fejlfinding
 
 ### "Tablet viser gammelt UI"
-→ Service worker cache. Bump `hue-vNN` i `frontend/static/sw.js`, byg, genstart, force-stop Chrome.
+→ Service worker cache. Bump `hue-vNN` i `frontend/static/sw.js`, byg, deploy, force-stop Chrome.
 
 ### "ADB: device not found"
-→ `adb connect 192.168.86.173:34111` — trådløs debugging skal være slået til i Developer Options på tabletten. Verificér med `adb devices`.
+→ Tabletens trådløse debugging-port skifter. Tjek ny port i Developer Options → Wireless debugging. `adb connect 192.168.86.15:<NY_PORT>`. Verificér med `adb devices`.
 
 ### "Hue-lamper reagerer ikke"
 → Tjek `hue_config.json` har gyldigt username. Hue bridge IP: `192.168.86.25`. Pair igen: `POST /api/hue/pair` (tryk fysisk knap på bridge først).
 
-### "Server starter ikke"
-→ Tjek port 8000 er fri: `lsof -ti:8000`. Kill eventuel zombie. Kræver Python 3.13: `python3.13 --version`.
+### "Server på Pi starter ikke"
+→ `sudo journalctl -u hue -n 30` for logs. Tjek at `hue.service` er enabled: `sudo systemctl is-enabled hue`. Tjek Python-deps: `pip3 list | grep fastapi`.
 
 ### "Volumenknob virker ikke"
 → B&O BeoPlay A9 skal være tændt og tilgængelig på `192.168.86.153:8080`. Test: `curl http://192.168.86.153:8080/BeoZone/Zone/Sound/Volume/Speaker/Level`.
 
 ### "Skærm dæmpes ikke / ur vises ikke"
-→ Dim-timer starter efter splash dismiss. Kun `pointerdown` (touch) resetter — IKKE keydown (volumeknap holdes af tablet-cover). Tjek at `/api/brightness/{level}` virker: `curl -X PUT http://localhost:8000/api/brightness/12`.
+→ Dim-timer starter efter splash dismiss. Kun `pointerdown` (touch) resetter. ADB brightness-kommandoer kører kun fra Mac (ikke Pi). Tjek at `/api/brightness/{level}` virker.
+
+### "Spotify virker ikke"
+→ Tjek `spotify_config.json` findes på Pi. Tjek auth: `curl -sk https://192.168.86.16:8443/api/spotify/status`. Tokens kan udløbe — re-auth kræver `python3.13 spotify_auth.py` på Mac og kopier config til Pi.
 
 ---
 
-## 10. Git
+## 11. Git
 
 - **Aktiv branch**: `main`
 - **Default branch på GitHub**: `master`
@@ -193,15 +232,22 @@ WebSocket-beskeder (JSON):
 
 ---
 
-## 11. Dependencies
+## 12. Dependencies
 
 **Backend** (`pip install -r backend/requirements.txt`):
-- fastapi, uvicorn, httpx, zeroconf
+- fastapi, uvicorn[standard], httpx, zeroconf
 
 **Frontend** (`cd frontend && npm install`):
 - SvelteKit, Svelte 5, Vite
 
-**System**:
+**Produktion (Pi)**:
+- Python 3.13 (forudinstalleret på Debian 13 trixie)
+- Ingen Node.js nødvendig (frontend er pre-built)
+- systemd service: `hue.service`
+
+**Udvikling (Mac)**:
 - Python 3.13
 - Node.js (til frontend build)
-- ADB (Android Debug Bridge) — skal kunne nå tablet via netværk
+- ADB (Android Debug Bridge)
+- sshpass (`brew install hudochenkov/sshpass/sshpass`)
+- mkcert (til lokale TLS-certs)

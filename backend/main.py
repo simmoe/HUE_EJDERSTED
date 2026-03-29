@@ -413,11 +413,30 @@ async def hue_pair(data: dict = {}):
     return result
 
 # ─── REST: Screen brightness (ADB) ───────────────────────────────────────────
+
+async def _get_adb_serial() -> str | None:
+    """Find the first connected ADB device (tablet IP 192.168.86.15)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "adb", "devices",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        for line in out.decode().splitlines():
+            if "192.168.86.15" in line and "device" in line:
+                return line.split()[0]
+    except Exception:
+        pass
+    return None
+
 @app.put("/api/brightness/{level}")
 async def set_brightness(level: int):
     level = max(0, min(255, level))
+    serial = await _get_adb_serial()
+    if not serial:
+        return {"ok": False, "error": "no ADB device"}
     proc = await asyncio.create_subprocess_exec(
-        "adb", "-s", ADB_SERIAL, "shell",
+        "adb", "-s", serial, "shell",
         f"settings put system screen_brightness {level}",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
@@ -425,19 +444,20 @@ async def set_brightness(level: int):
     await proc.wait()
     return {"ok": True, "brightness": level}
 
-ADB_SERIAL = "192.168.86.15:39327"
-KIOSK_CMDS = [
-    f"adb -s {ADB_SERIAL} shell settings put system accelerometer_rotation 0",
-    f"adb -s {ADB_SERIAL} shell settings put system user_rotation 1",
-    f"adb -s {ADB_SERIAL} shell settings put system screen_brightness_mode 0",
-    f"adb -s {ADB_SERIAL} shell settings put system screen_brightness 255",
-    f"adb -s {ADB_SERIAL} shell settings put global policy_control immersive.full=com.android.chrome",
-    f"adb -s {ADB_SERIAL} shell cmd statusbar collapse",
-]
-
 @app.post("/api/kiosk")
 async def trigger_kiosk():
-    for cmd in KIOSK_CMDS:
+    serial = await _get_adb_serial()
+    if not serial:
+        return {"ok": False, "error": "no ADB device"}
+    cmds = [
+        f"adb -s {serial} shell settings put system accelerometer_rotation 0",
+        f"adb -s {serial} shell settings put system user_rotation 1",
+        f"adb -s {serial} shell settings put system screen_brightness_mode 0",
+        f"adb -s {serial} shell settings put system screen_brightness 255",
+        f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome",
+        f"adb -s {serial} shell cmd statusbar collapse",
+    ]
+    for cmd in cmds:
         proc = await asyncio.create_subprocess_shell(
             cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
