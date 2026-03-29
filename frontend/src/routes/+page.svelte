@@ -630,7 +630,7 @@
     width: 18px;
     height: 18px;
     flex-shrink: 0;
-    transform: translateY(5px);
+    transform: translateY(2px);
   }
 
   .scroll-inner {
