@@ -73,15 +73,23 @@
 
   // ── Swipe navigation ────────────────────────────────────────────────────────
   let pagesEl: HTMLDivElement;
-  let activePage = $state(0);
+  let scrollOffset = $state(0);   // 0 = LYD+LYS visible, 1 = LYS+KAMERA visible
+  const PAGE_COUNT = 3;
 
   function onScroll() {
     if (!pagesEl) return;
-    activePage = Math.round(pagesEl.scrollLeft / pagesEl.clientWidth);
+    const pageW = pagesEl.clientWidth / 2;  // each page = 50% of container
+    scrollOffset = Math.round(pagesEl.scrollLeft / pageW);
   }
 
   function goTo(i: number) {
-    pagesEl?.scrollTo({ left: i * pagesEl.clientWidth, behavior: 'smooth' });
+    const pageW = (pagesEl?.clientWidth ?? 0) / 2;
+    pagesEl?.scrollTo({ left: i * pageW, behavior: 'smooth' });
+  }
+
+  function advance() {
+    const next = scrollOffset < PAGE_COUNT - 2 ? scrollOffset + 1 : 0;
+    goTo(next);
   }
 
   // ── Lyd: mute (ét mute-niveau per enhed) ───────────────────────────────────
@@ -224,15 +232,21 @@
     </div>
   {/if}
 
-  <!-- ── Tab-nav ────────────────────────────────────────────────────────────── -->
+  <!-- ── Tab-nav (hidden in kiosk) ──────────────────────────────────────────── -->
   <nav>
-    <button class:active={activePage === 0} onclick={() => goTo(0)}>LYD</button>
-    <button class:active={activePage === 1} onclick={() => goTo(1)}>LYS</button>
-    <button class:active={activePage === 2} onclick={() => goTo(2)}>KAMERA</button>
+    <button class:active={scrollOffset === 0} onclick={() => goTo(0)}>LYD</button>
+    <button class:active={scrollOffset === 1} onclick={() => goTo(1)}>LYS</button>
     {#if !store.connected}
       <span class="conn">•</span>
     {/if}
   </nav>
+
+  <!-- ── Advance arrow ─────────────────────────────────────────────────────── -->
+  <button class="advance-arrow" onclick={advance} aria-label="Næste">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="9 6 15 12 9 18" />
+    </svg>
+  </button>
 
   <!-- ── Swipe container ───────────────────────────────────────────────────── -->
   <div class="pages" bind:this={pagesEl} onscroll={onScroll}>
@@ -507,23 +521,49 @@
     background: #000;
   }
 
-  /* ── Pages (side by side, no swipe) ──────────────────────────────────────── */
+  /* ── Pages (2-visible, horizontal snap scroll) ──────────────────────────── */
   .pages {
     flex: 1;
     display: flex;
-    overflow-x: hidden;
+    overflow-x: auto;
     overflow-y: hidden;
-    scroll-snap-type: none;
+    scroll-snap-type: x mandatory;
     scrollbar-width: none;
     gap: 0;
   }
   .pages::-webkit-scrollbar { display: none; }
 
   .page {
-    flex: 0 0 33.333%;
+    flex: 0 0 50%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    scroll-snap-align: start;
+  }
+
+  /* ── Advance arrow ────────────────────────────────────────────────────────── */
+  .advance-arrow {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 10;
+    height: 48px;
+    width: 48px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: 10px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    color: #595959;
+    transition: color 0.2s;
+  }
+  .advance-arrow:active { color: #ebebeb; }
+  .advance-arrow svg {
+    width: 18px;
+    height: 18px;
   }
 
   .scroll-inner {
