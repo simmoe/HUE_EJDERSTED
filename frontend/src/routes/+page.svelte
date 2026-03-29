@@ -75,10 +75,11 @@
   let pagesEl: HTMLDivElement;
   let scrollOffset = $state(0);   // 0 = LYD+LYS visible, 1 = LYS+KAMERA visible
   const PAGE_COUNT = 3;
+  let ignoreScroll = false;
 
   function onScroll() {
-    if (!pagesEl) return;
-    const pageW = pagesEl.clientWidth / 2;  // each page = 50% of container
+    if (!pagesEl || ignoreScroll) return;
+    const pageW = pagesEl.clientWidth / 2;
     scrollOffset = Math.round(pagesEl.scrollLeft / pageW);
   }
 
@@ -88,8 +89,20 @@
   }
 
   function advance() {
-    const next = scrollOffset < PAGE_COUNT - 2 ? scrollOffset + 1 : 0;
-    goTo(next);
+    if (scrollOffset < PAGE_COUNT - 2) {
+      goTo(scrollOffset + 1);
+    } else {
+      // At the end — instant jump to start, then animate one step right
+      ignoreScroll = true;
+      pagesEl.scrollTo({ left: 0, behavior: 'instant' });
+      scrollOffset = 0;
+      // Force reflow so the instant jump lands before the smooth scroll
+      void pagesEl.offsetLeft;
+      requestAnimationFrame(() => {
+        ignoreScroll = false;
+        goTo(1);
+      });
+    }
   }
 
   // ── Lyd: mute (ét mute-niveau per enhed) ───────────────────────────────────
