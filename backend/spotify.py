@@ -181,17 +181,31 @@ class Spotify:
         return []
 
     async def _beolink_expand(self) -> None:
-        """Activate A9's own Spotify source — Spotify syncs playback automatically."""
+        """Tell A9 to stream from M5's Spotify source + nudge M5 volume to wake audio."""
+        import asyncio
         try:
-            A9_SPOTIFY = f"spotify:{BEO_A9_JID}"
+            M5_SPOTIFY = f"spotify:{BEO_M5_JID}"
             r = await self._http.post(
                 f"http://{BEO_A9_IP}:8080/BeoZone/Zone/ActiveSources",
-                json={"primaryExperience": {"source": {"id": A9_SPOTIFY}}},
+                json={"primaryExperience": {"source": {
+                    "id": M5_SPOTIFY,
+                    "product": {"jid": BEO_M5_JID, "friendlyName": "Beoplay M5"},
+                }}},
             )
             if r.status_code < 300:
-                print(f"[BeoLink] A9 Spotify source activated")
+                print("[BeoLink] A9 joined M5 Spotify source")
             else:
-                print(f"[BeoLink] A9 activate failed: {r.status_code} {r.text}")
+                print(f"[BeoLink] A9 join failed: {r.status_code} {r.text}")
+
+            # Nudge M5 volume to wake audio stream to A9
+            await asyncio.sleep(0.5)
+            vol = await self._http.get(f"http://{BEO_M5_IP}:8080/BeoZone/Zone/Sound/Volume")
+            if vol.status_code == 200:
+                level = vol.json().get("volume", {}).get("speaker", {}).get("level", 45)
+                await self._http.put(
+                    f"http://{BEO_M5_IP}:8080/BeoZone/Zone/Sound/Volume/Speaker/Level",
+                    json={"level": level},
+                )
         except Exception as e:
             print(f"[BeoLink] expand error: {e}")
 

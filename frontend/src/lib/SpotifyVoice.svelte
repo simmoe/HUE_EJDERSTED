@@ -4,14 +4,21 @@
    */
   import { onMount } from 'svelte';
 
+  let {
+    npTitle = $bindable(''),
+    npArtist = $bindable(''),
+    radioActive = $bindable(false),
+  }: {
+    npTitle?: string;
+    npArtist?: string;
+    radioActive?: boolean;
+  } = $props();
+
   let listening = $state(false);
   let feedback = $state('');
   let feedbackTimer: ReturnType<typeof setTimeout>;
   let isPlaying = $state(false);
-  let npTitle = $state('');
-  let npArtist = $state('');
   let pollInterval: ReturnType<typeof setInterval>;
-  let radioActive = $state(false);
   let radioArtist = $state('');
 
   function showFeedback(text: string, duration = 3000) {
@@ -107,75 +114,56 @@
       radioArtist = '';
       return;
     }
-    showFeedback('radio…', 8000);
+    radioActive = true;
+    radioArtist = npArtist;
     try {
       const r = await fetch('/api/spotify/radio', { method: 'POST' });
       const data = await r.json();
       if (data.ok) {
-        radioActive = true;
         radioArtist = data.name?.replace('Radio: ', '') || npArtist;
-        feedback = '';
       } else {
+        radioActive = false;
+        radioArtist = '';
         showFeedback(data.error || 'fejl');
       }
     } catch {
+      radioActive = false;
+      radioArtist = '';
       showFeedback('fejl');
     }
   }
 </script>
 
-<div class="music-grid">
-  <div class="center-area">
-    <!-- Voice button (hero) -->
-    <button class="voice-btn" class:listening onclick={startListening}>
-      <span class="voice-ring"></span>
-      <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="2" width="6" height="12" rx="3" />
-        <path d="M5 10a7 7 0 0 0 14 0" />
-        <line x1="12" y1="17" x2="12" y2="21" />
-      </svg>
+<div class="center-area">
+  <!-- Voice button (hero) -->
+  <button class="voice-btn" class:listening onclick={startListening}>
+    <span class="voice-ring"></span>
+    <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 10a7 7 0 0 0 14 0" />
+      <line x1="12" y1="17" x2="12" y2="21" />
+    </svg>
+  </button>
+
+  <!-- Action row -->
+  <div class="action-row">
+    <button class="action-btn" onclick={togglePlayPause}>
+      {isPlaying ? 'pause' : 'play'}
     </button>
-
-    <!-- Action row -->
-    <div class="action-row">
-      <button class="action-btn" onclick={togglePlayPause}>
-        {isPlaying ? 'pause' : 'play'}
-      </button>
-      <button class="action-btn" class:active={radioActive} disabled={!npTitle} onclick={toggleRadio}>
-        radio
-      </button>
-    </div>
-
-    <!-- Feedback -->
-    {#if feedback}
-      <span class="feedback">{feedback}</span>
-    {:else if listening}
-      <span class="feedback listening-text">lytter</span>
-    {/if}
+    <button class="action-btn" class:active={radioActive} disabled={!npTitle} onclick={toggleRadio}>
+      radio
+    </button>
   </div>
 
-  <!-- Now playing (bottom) -->
-  {#if npTitle}
-    <div class="now-playing">
-      {#if radioActive}
-        <span class="np-radio-label">Song Radio</span>
-      {/if}
-      <span class="np-title">{npTitle}</span>
-      {#if npArtist}<span class="np-artist">{npArtist}</span>{/if}
-    </div>
+  <!-- Feedback -->
+  {#if feedback}
+    <span class="feedback">{feedback}</span>
+  {:else if listening}
+    <span class="feedback listening-text">lytter</span>
   {/if}
 </div>
 
 <style>
-  .music-grid {
-    display: grid;
-    grid-template-rows: 1fr auto;
-    align-items: center;
-    width: 100%;
-    height: 100%;
-    min-height: calc(100dvh - 48px);
-  }
-
   .center-area {
     display: flex;
     flex-direction: column;
@@ -233,46 +221,6 @@
   @keyframes ring-pulse {
     0%, 100% { opacity: 0.3; transform: scale(1); }
     50%      { opacity: 1;   transform: scale(1.04); }
-  }
-
-  /* ── Now playing ────────────────────────────────────────────────────────── */
-  .now-playing {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    padding: 0 8px 4px;
-    align-self: end;
-    justify-self: center;
-  }
-
-  .np-radio-label {
-    font-size: 0.6rem;
-    font-weight: 300;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: #0080c8;
-  }
-
-  .np-title {
-    font-size: 0.8rem;
-    color: #ebebeb;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 260px;
-  }
-
-  .np-artist {
-    font-size: 0.65rem;
-    letter-spacing: 0.06em;
-    color: #595959;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 260px;
   }
 
   /* ── Feedback ──────────────────────────────────────────────────────────── */

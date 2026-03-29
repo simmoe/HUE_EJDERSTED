@@ -138,6 +138,10 @@
     }
   }
 
+  let spotifyTitle = $state('');
+  let spotifyArtist = $state('');
+  let spotifyRadio = $state(false);
+
   let hueManualIp  = $state('');
   let huePairing   = $state(false);
   let huePairError = $state('');
@@ -221,8 +225,14 @@
         {/if}
 
         <!-- Spotify Voice -->
-        <Card name="Musik" status="" >
-          <SpotifyVoice />
+        <Card name="Musik" status={spotifyRadio ? 'Song Radio' : ''} >
+          <SpotifyVoice bind:npTitle={spotifyTitle} bind:npArtist={spotifyArtist} bind:radioActive={spotifyRadio} />
+          {#if spotifyTitle}
+            <div class="now-playing">
+              <span class="np-title">{spotifyTitle}</span>
+              {#if spotifyArtist}<span class="np-artist">{spotifyArtist}</span>{/if}
+            </div>
+          {/if}
         </Card>
 
       </div>

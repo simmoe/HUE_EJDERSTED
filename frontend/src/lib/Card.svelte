@@ -23,8 +23,10 @@
     scroll-snap-align: start;
     scroll-snap-stop: always;
     min-height: calc(100dvh - 48px);
+    max-height: calc(100dvh - 48px);
+    overflow: hidden;
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: 10dvh 70dvh 20dvh;
     align-items: center;
     padding: 24px 32px;
     border-radius: 0;
