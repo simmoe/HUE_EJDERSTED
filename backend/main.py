@@ -247,11 +247,21 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
 
     # Force Android kiosk settings (landscape, brightness, no rotation)
-    for cmd in KIOSK_CMDS:
-        proc = await asyncio.create_subprocess_shell(
-            cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-        )
-        await proc.wait()
+    serial = await _get_adb_serial()
+    if serial:
+        kiosk_cmds = [
+            f"adb -s {serial} shell settings put system accelerometer_rotation 0",
+            f"adb -s {serial} shell settings put system user_rotation 1",
+            f"adb -s {serial} shell settings put system screen_brightness_mode 0",
+            f"adb -s {serial} shell settings put system screen_brightness 255",
+            f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome",
+            f"adb -s {serial} shell cmd statusbar collapse",
+        ]
+        for cmd in kiosk_cmds:
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
 
     hue_bridge = HueBridge()
     poll_task = asyncio.create_task(poll_loop())
