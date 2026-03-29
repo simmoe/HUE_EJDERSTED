@@ -43,3 +43,15 @@ else
   $SSH "echo '$PI_PASS' | sudo -S journalctl -u hue --no-pager -n 10 2>&1"
   exit 1
 fi
+
+# Refresh tablet browser (force-stop Chrome + reopen kiosk URL via ADB on Pi)
+echo "→ Refreshing tablet..."
+$SSH "ADB_SERIAL=\$(adb devices | grep -v 'List' | grep 'device$' | head -1 | awk '{print \$1}') && \
+  if [ -n \"\$ADB_SERIAL\" ]; then \
+    adb -s \$ADB_SERIAL shell am force-stop com.android.chrome && \
+    sleep 1 && \
+    adb -s \$ADB_SERIAL shell am start -a android.intent.action.VIEW -d 'https://192.168.86.16:8443' && \
+    echo '✓ Tablet refreshed'; \
+  else \
+    echo '⚠ Ingen tablet fundet via ADB'; \
+  fi"
