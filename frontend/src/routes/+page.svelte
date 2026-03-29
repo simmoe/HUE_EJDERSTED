@@ -71,38 +71,27 @@
     return () => clearInterval(clockInterval);
   });
 
-  // ── Swipe navigation ────────────────────────────────────────────────────────
+  // ── Horizontal page carousel ────────────────────────────────────────────────
   let pagesEl: HTMLDivElement;
-  let scrollOffset = $state(0);   // 0 = LYD+LYS visible, 1 = LYS+KAMERA visible
-  const PAGE_COUNT = 3;
-  let ignoreScroll = false;
-
-  function onScroll() {
-    if (!pagesEl || ignoreScroll) return;
-    const pageW = pagesEl.clientWidth / 2;
-    scrollOffset = Math.round(pagesEl.scrollLeft / pageW);
-  }
-
-  function goTo(i: number) {
-    const pageW = (pagesEl?.clientWidth ?? 0) / 2;
-    pagesEl?.scrollTo({ left: i * pageW, behavior: 'smooth' });
-  }
+  let advancing = $state(false);
 
   function advance() {
-    if (scrollOffset < PAGE_COUNT - 2) {
-      goTo(scrollOffset + 1);
-    } else {
-      // At the end — instant jump to start, then animate one step right
-      ignoreScroll = true;
+    if (advancing || !pagesEl) return;
+    advancing = true;
+    const pageW = pagesEl.clientWidth / 2;  // each page = 50%
+    pagesEl.scrollTo({ left: pageW, behavior: 'smooth' });
+
+    // When scroll finishes: move first page to end, reset scroll instantly
+    function onDone() {
+      pagesEl.removeEventListener('scrollend', onDone);
+      const first = pagesEl.firstElementChild;
+      if (first) pagesEl.appendChild(first);
       pagesEl.scrollTo({ left: 0, behavior: 'instant' });
-      scrollOffset = 0;
-      // Force reflow so the instant jump lands before the smooth scroll
-      void pagesEl.offsetLeft;
-      requestAnimationFrame(() => {
-        ignoreScroll = false;
-        goTo(1);
-      });
+      advancing = false;
     }
+    pagesEl.addEventListener('scrollend', onDone, { once: true });
+    // Fallback if scrollend doesn't fire (older browsers)
+    setTimeout(() => { if (advancing) onDone(); }, 600);
   }
 
   // ── Lyd: mute (ét mute-niveau per enhed) ───────────────────────────────────
@@ -247,8 +236,8 @@
 
   <!-- ── Tab-nav (hidden in kiosk) ──────────────────────────────────────────── -->
   <nav>
-    <button class:active={scrollOffset === 0} onclick={() => goTo(0)}>LYD</button>
-    <button class:active={scrollOffset === 1} onclick={() => goTo(1)}>LYS</button>
+    <button>LYD</button>
+    <button>LYS</button>
     {#if !store.connected}
       <span class="conn">•</span>
     {/if}
@@ -262,7 +251,7 @@
   </button>
 
   <!-- ── Swipe container ───────────────────────────────────────────────────── -->
-  <div class="pages" bind:this={pagesEl} onscroll={onScroll}>
+  <div class="pages" bind:this={pagesEl}>
 
     <!-- PAGE 0 · LYD ─────────────────────────────────────────────────────── -->
     <section class="page">
@@ -534,15 +523,15 @@
     background: #000;
   }
 
-  /* ── Pages (2-visible, horizontal snap scroll) ──────────────────────────── */
+  /* ── Pages (2-visible, horizontal carousel) ───────────────────────────── */
   .pages {
     flex: 1;
     display: flex;
     overflow-x: auto;
     overflow-y: hidden;
-    scroll-snap-type: x mandatory;
     scrollbar-width: none;
     gap: 0;
+    touch-action: none;            /* prevent manual swipe — arrow only */
   }
   .pages::-webkit-scrollbar { display: none; }
 
@@ -551,7 +540,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    scroll-snap-align: start;
   }
 
   /* ── Advance arrow ────────────────────────────────────────────────────────── */
