@@ -46,8 +46,10 @@ fi
 
 # Refresh tablet browser (force-stop Chrome + reopen kiosk URL via ADB on Pi)
 echo "→ Refreshing tablet..."
-$SSH "ADB_SERIAL=\$(adb devices | grep -v 'List' | grep 'device$' | head -1 | awk '{print \$1}') && \
-  if [ -n \"\$ADB_SERIAL\" ]; then \
+$SSH "ADB_SERIAL='192.168.86.15:5555' && \
+  adb connect \$ADB_SERIAL 2>/dev/null; \
+  STATE=\$(adb -s \$ADB_SERIAL get-state 2>/dev/null) && \
+  if [ \"\$STATE\" = 'device' ]; then \
     adb -s \$ADB_SERIAL shell am force-stop com.android.chrome && \
     sleep 1 && \
     adb -s \$ADB_SERIAL shell am start -a android.intent.action.VIEW -d 'https://192.168.86.16:8443' && \

@@ -246,22 +246,12 @@ async def lifespan(app: FastAPI):
     global hue_bridge
     loop = asyncio.get_event_loop()
 
-    # Force Android kiosk settings (landscape, brightness, no rotation)
+    # Force Android kiosk settings on startup (reuses /api/kiosk logic)
     serial = await _get_adb_serial()
     if serial:
-        kiosk_cmds = [
-            f"adb -s {serial} shell settings put system accelerometer_rotation 0",
-            f"adb -s {serial} shell settings put system user_rotation 1",
-            f"adb -s {serial} shell settings put system screen_brightness_mode 0",
-            f"adb -s {serial} shell settings put system screen_brightness 255",
-            f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome",
-            f"adb -s {serial} shell cmd statusbar collapse",
-        ]
-        for cmd in kiosk_cmds:
-            proc = await asyncio.create_subprocess_shell(
-                cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-            )
-            await proc.wait()
+        print(f"[ADB] Tablet connected: {serial}")
+        # Trigger full kiosk lockdown via the endpoint handler
+        await trigger_kiosk()
 
     hue_bridge = HueBridge()
     poll_task = asyncio.create_task(poll_loop())
@@ -422,10 +412,14 @@ async def hue_pair(data: dict = {}):
         await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
     return result
 
+# ─── ADB constants ────────────────────────────────────────────────────────────
+TABLET_IP = "192.168.86.15"
+ADB_SERIAL = f"{TABLET_IP}:5555"          # fast port — sat via `adb tcpip 5555`
+
 # ─── REST: Screen brightness (ADB) ───────────────────────────────────────────
 
 async def _get_adb_serial() -> str | None:
-    """Find the first connected ADB device (tablet IP 192.168.86.15)."""
+    """Return ADB serial for the tablet, auto-reconnecting if needed."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "adb", "devices",
@@ -433,8 +427,16 @@ async def _get_adb_serial() -> str | None:
         )
         out, _ = await proc.communicate()
         for line in out.decode().splitlines():
-            if "192.168.86.15" in line and "device" in line:
+            if TABLET_IP in line and "device" in line:
                 return line.split()[0]
+        # Not connected — try reconnect on fixed port
+        proc = await asyncio.create_subprocess_exec(
+            "adb", "connect", ADB_SERIAL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        if b"connected" in out:
+            return ADB_SERIAL
     except Exception:
         pass
     return None
@@ -460,12 +462,23 @@ async def trigger_kiosk():
     if not serial:
         return {"ok": False, "error": "no ADB device"}
     cmds = [
+        # Display & orientation
         f"adb -s {serial} shell settings put system accelerometer_rotation 0",
         f"adb -s {serial} shell settings put system user_rotation 1",
         f"adb -s {serial} shell settings put system screen_brightness_mode 0",
         f"adb -s {serial} shell settings put system screen_brightness 255",
         f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome",
         f"adb -s {serial} shell cmd statusbar collapse",
+        # Mute everything
+        f"adb -s {serial} shell media volume --stream 1 --set 0",
+        f"adb -s {serial} shell media volume --stream 2 --set 0",
+        f"adb -s {serial} shell media volume --stream 3 --set 0",
+        f"adb -s {serial} shell media volume --stream 4 --set 0",
+        f"adb -s {serial} shell media volume --stream 5 --set 0",
+        f"adb -s {serial} shell settings put global zen_mode 2",
+        # Prevent updates & restarts
+        f"adb -s {serial} shell settings put global stay_on_while_plugged_in 3",
+        f"adb -s {serial} shell settings put global heads_up_notifications_enabled 0",
     ]
     for cmd in cmds:
         proc = await asyncio.create_subprocess_shell(
