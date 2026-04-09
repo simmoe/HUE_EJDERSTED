@@ -360,6 +360,14 @@ class Spotify:
                 break
         query = query.removesuffix(" på").removesuffix(" on")
 
+        # Album keyword — "album X" forces album search
+        force_album = False
+        for album_prefix in ("album ", "albummet ", "albumet "):
+            if query.startswith(album_prefix):
+                query = query[len(album_prefix):]
+                force_album = True
+                break
+
         results = await self.search(query, types="track,artist,album,playlist", limit=3)
         if not results:
             return {"action": "search", "ok": False, "query": query}
@@ -376,20 +384,26 @@ class Spotify:
 
         result: dict | None = None
 
-        if tracks:
+        if force_album and albums:
+            album = albums[0]
+            ok = await self.play(context_uri=album["uri"], device_id=device_id)
+            result = {"action": "play_album", "ok": ok, "name": album["name"],
+                      "artist": ", ".join(a["name"] for a in album.get("artists", []))}
+        elif tracks and not force_album:
             track = tracks[0]
             ok = await self.play(uri=track["uri"], device_id=device_id)
             result = {"action": "play_track", "ok": ok,
                       "name": track["name"],
                       "artist": ", ".join(a["name"] for a in track.get("artists", []))}
-        elif artists:
+        elif artists and not force_album:
             artist = artists[0]
             ok = await self.play(context_uri=artist["uri"], device_id=device_id)
             result = {"action": "play_artist", "ok": ok, "name": artist["name"]}
         elif albums:
             album = albums[0]
             ok = await self.play(context_uri=album["uri"], device_id=device_id)
-            result = {"action": "play_album", "ok": ok, "name": album["name"]}
+            result = {"action": "play_album", "ok": ok, "name": album["name"],
+                      "artist": ", ".join(a["name"] for a in album.get("artists", []))}
         elif playlists:
             pl = playlists[0]
             ok = await self.play(context_uri=pl["uri"], device_id=device_id)

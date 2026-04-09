@@ -16,6 +16,7 @@ export interface HueRoom {
   brightness: number;
   on: boolean;
   any_on: boolean;
+  lights: number;
 }
 
 export interface HueStatus {

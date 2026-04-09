@@ -383,14 +383,14 @@
       <div class="col-header">LYS</div>
       <div class="scroll-inner" bind:this={lysInner}>
         {#if store.hueStatus.paired && store.hueRooms.length > 0}
-          <!-- Rum-knobs -->
-          {#each store.hueRooms as room (room.id)}
+          <!-- Rum-knobs (filtrér rum uden pærer fra) -->
+          {#each store.hueRooms.filter(r => r.lights !== 0) as room (room.id)}
             <Card name={room.name} status={room.any_on ? 'tændt' : 'slukket'} online={room.any_on}>
               <div class="knob-wrap">
                 <VolumeKnob
                   value={hueMuteState[room.id]?.muted ? 0 : room.brightness}
                   muted={!room.any_on || (hueMuteState[room.id]?.muted ?? false)}
-                  disabled={!room.any_on || (hueMuteState[room.id]?.muted ?? false)}
+                  disabled={hueMuteState[room.id]?.muted ?? false}
                   onchange={(v) => store.setHueBrightness(room.id, v)}
                   onmute={() => toggleHueMute(room.id, room.brightness)}
                 />

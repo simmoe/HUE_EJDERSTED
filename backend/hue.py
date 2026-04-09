@@ -94,6 +94,7 @@ class HueBridge:
                     "brightness": round(bri / 254 * 100),
                     "on": action.get("on", False),
                     "any_on": state.get("any_on", False),
+                    "lights": len(g.get("lights", [])),
                 })
             def _sort_key(r):
                 n = r["name"].lower()
@@ -102,7 +103,7 @@ class HueBridge:
                 return (2, n)
             return sorted(rooms, key=_sort_key)
         except Exception:
-            return []
+            return None
 
     async def set_brightness(self, group_id: str, brightness: int) -> bool:
         """brightness 0–100"""

@@ -191,7 +191,7 @@ async def poll_loop():
             await manager.broadcast({"type": "hue_status", **new_status})
         if hue_bridge.paired:
             rooms = await hue_bridge.get_rooms()
-            if rooms != hue_rooms_cache:
+            if rooms is not None and rooms != hue_rooms_cache:
                 hue_rooms_cache = rooms
                 await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
 
