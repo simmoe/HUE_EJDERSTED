@@ -9,10 +9,14 @@ PI_PASS="k18Medh18"
 SSH="sshpass -p $PI_PASS ssh $PI_HOST"
 SCP="sshpass -p $PI_PASS scp"
 
-# Rebuild frontend hvis --build flag
+# Rebuild frontend hvis --build flag (sørg for Node: nvm eller PATH)
 if [[ "$1" == "--build" ]]; then
   echo "→ Building frontend..."
-  cd frontend && npm run build && cd ..
+  if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+    # shellcheck source=/dev/null
+    . "$HOME/.nvm/nvm.sh"
+  fi
+  (cd frontend && npm run build)
 fi
 
 # Git push
