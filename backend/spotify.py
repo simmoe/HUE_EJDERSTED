@@ -1,6 +1,7 @@
 """Spotify Web API — OAuth2 PKCE-fri Authorization Code flow + afspilningsstyring."""
 
 import json
+import os
 import time
 import urllib.parse
 from pathlib import Path
@@ -8,10 +9,36 @@ from pathlib import Path
 import httpx
 
 CONFIG_FILE = Path(__file__).parent.parent / "spotify_config.json"
-SCOPES = "streaming user-read-email user-read-playback-state user-modify-playback-state user-read-currently-playing"
+SCOPES = (
+    "streaming user-read-email user-read-playback-state user-modify-playback-state "
+    "user-read-currently-playing user-library-read user-library-modify "
+    "playlist-read-private playlist-modify-private"
+)
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
+
+# ─── Gemini (LLM-powered radio) ──────────────────────────────────────────────
+# Key: env GEMINI_API_KEY or gemini_api_key in spotify_config.json (never commit keys).
+GEMINI_MODEL = "gemini-2.5-flash"
+
+LISTENER_PROFILE = """\
+A musician and deep listener. Taste is rooted in folk, soul, reggae and the \
+singer-songwriter tradition (Bonnie Prince Billy, Joan Armatrading, Bob Dylan, \
+This Is The Kit) but stretches from Arvo Pärt to aggressive metal without \
+contradiction. The common thread is melodic intelligence — the blue note, \
+minor/major tension, bittersweet hooks. Never bright, never obvious.
+Core loves: Jeff Buckley, D'Angelo, Bob Marley, Taj Mahal, H.E.R., Boards of \
+Canada, Cigarettes After Sex, Above & Beyond Acoustic (Zoë Johnston), Nusrat \
+Fateh Ali Khan, This Is The Kit. Recently discovered Burna Boy.
+Open to any language and any continent — qawwali, fado, French rap, Middle \
+Eastern folk, Afrobeats. Values mood continuity above all — a radio playlist \
+should drift naturally, never jolt. Discovery is welcome but should feel like \
+the next logical step.
+Dislikes: generic college rock, try-hard energy, anything normatively loud and \
+empty. Not a Queen or Prince person. No Danish "poetic" rap.
+Emotional register: depth, warmth, darkness, devotion, yearning. The sad/deep \
+song always wins over the happy/sharp one."""
 
 # ─── BeoLink multiroom ────────────────────────────────────────────────────────
 # M5 = Spotify Connect master, A9 = BeoLink listener
@@ -38,6 +65,7 @@ class Spotify:
     def __init__(self):
         self._cfg = _load()
         self._http = httpx.AsyncClient(timeout=5)
+        self._gemini_http = httpx.AsyncClient(timeout=60)
 
     @property
     def configured(self) -> bool:
@@ -243,9 +271,68 @@ class Spotify:
         await self._beolink_expand()
         return ok
 
+    def _gemini_api_key(self) -> str:
+        return (
+            os.environ.get("GEMINI_API_KEY", "")
+            or os.environ.get("GEMINI_KEY", "")
+            or str(self._cfg.get("gemini_api_key") or "")
+        ).strip()
+
+    async def _ask_gemini(self, artist: str, track: str, n: int = 10) -> list[dict]:
+        """Ask Gemini for track recommendations. Returns list of {artist, track}."""
+        key = self._gemini_api_key()
+        if not key:
+            print(
+                "[Gemini] mangler nøgle: sæt GEMINI_API_KEY eller "
+                "gemini_api_key i spotify_config.json"
+            )
+            return []
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{GEMINI_MODEL}:generateContent?key={key}"
+        )
+        prompt = (
+            f'I\'m listening to "{track}" by {artist}.\n'
+            f'Suggest {n} songs that match the mood, style and vibe of this specific recording.\n'
+            f'Think about: tempo, instrumentation, vocal style, era, genre, emotional tone.\n'
+            f'Don\'t just pick songs by the same artist — cast a wide net across artists who share this feel.\n\n'
+            f'LISTENER PROFILE — tailor recommendations to this person:\n'
+            f'{LISTENER_PROFILE}\n\n'
+            f'Return ONLY a JSON array, no markdown, no explanation. '
+            f'Each element: {{"artist": "...", "track": "..."}}'
+        )
+        try:
+            r = await self._gemini_http.post(url, json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.7},
+            })
+            if r.status_code != 200:
+                print(f"[Gemini] error: {r.status_code} {r.text[:200]}")
+                return []
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1]
+            if text.endswith("```"):
+                text = text.rsplit("```", 1)[0]
+            return json.loads(text.strip())
+        except Exception as e:
+            print(f"[Gemini] error: {e}")
+            return []
+
+    async def _find_track_uri(self, artist: str, track: str) -> str | None:
+        """Search Spotify for a specific track by artist+title."""
+        h = await self._headers()
+        if not h:
+            return None
+        r = await self._http.get(f"{API}/search", headers=h, params={
+            "q": f"track:{track} artist:{artist}",
+            "type": "track", "limit": 1, "market": "DK",
+        })
+        items = r.json().get("tracks", {}).get("items", [])
+        return items[0]["uri"] if items else None
+
     async def start_radio(self) -> dict:
-        """Build a radio queue via /search — the only reliable method post-2024."""
-        import random
+        """Build a radio queue via Gemini LLM recommendations + Spotify search."""
         h = await self._headers()
         if not h:
             return {"ok": False, "error": "Ikke logget ind"}
@@ -258,56 +345,34 @@ class Spotify:
         current_uri = np["uri"]
         progress_ms = np.get("progress_ms", 0)
 
-        uris: list[str] = []
+        suggestions = await self._ask_gemini(artist_name, track_name)
+        if not suggestions:
+            return {"ok": False, "error": "Gemini returned no suggestions"}
 
-        async def _search(q: str, pages: int = 5) -> list[str]:
-            """Paginate /search (limit=10 per page for dev-mode apps)."""
-            found: list[str] = []
-            for off in range(0, pages * 10, 10):
-                r = await self._http.get(
-                    f"{API}/search", headers=h,
-                    params={"q": q, "type": "track", "limit": 10,
-                            "offset": off, "market": "DK"},
-                )
-                if r.status_code != 200:
-                    break
-                for t in r.json().get("tracks", {}).get("items", []):
-                    found.append(t["uri"])
-            return found
+        # Resolve each suggestion to a Spotify URI
+        uris: list[str] = [current_uri]
+        for s in suggestions:
+            uri = await self._find_track_uri(s["artist"], s["track"])
+            if uri and uri != current_uri:
+                uris.append(uri)
+                print(f"[Radio] ✓ {s['track']} — {s['artist']}")
+            else:
+                print(f"[Radio] ✗ {s['track']} — {s['artist']}")
 
-        # 1) Search: "artist track" — best similarity signal
-        if artist_name and track_name:
-            uris.extend(await _search(f"{artist_name} {track_name}", pages=3))
-
-        # 2) Search: just artist name — fills with discography
-        if artist_name:
-            uris.extend(await _search(f"{artist_name}", pages=3))
-
-        # Deduplicate, remove current track, shuffle
-        seen: set[str] = set()
-        unique: list[str] = []
-        for u in uris:
-            if u not in seen and u != current_uri:
-                seen.add(u)
-                unique.append(u)
-        random.shuffle(unique)
-        # Prepend current track so playback continues seamlessly
-        unique.insert(0, current_uri)
-
-        if len(unique) < 2:
-            return {"ok": False, "error": "Ingen resultater for denne artist"}
+        if len(uris) < 2:
+            return {"ok": False, "error": "Kunne ikke finde nok sange"}
 
         device_id = await self._find_speaker_device_id()
         r = await self._http.put(
             f"{API}/me/player/play",
             headers=h,
             params={"device_id": device_id} if device_id else {},
-            json={"uris": unique[:50], "offset": {"position": 0}, "position_ms": progress_ms},
+            json={"uris": uris[:50], "offset": {"position": 0}, "position_ms": progress_ms},
         )
         ok = r.status_code in (200, 204)
         if ok:
             await self._beolink_expand()
-        return {"ok": ok, "name": f"Radio: {artist_name}", "tracks": len(unique[:50])}
+        return {"ok": ok, "name": f"Radio: {artist_name}", "tracks": len(uris)}
 
     async def stop_radio(self) -> dict:
         """Clear radio queue — play only the current track from its current position."""
@@ -325,6 +390,127 @@ class Spotify:
             json={"uris": [np["uri"]], "position_ms": np.get("progress_ms", 0)},
         )
         return {"ok": r.status_code in (200, 204)}
+
+    # Default kiosk playlist (POST /me/playlists). Override in spotify_config.json only if needed.
+    _FAVORITES_PLAYLIST_ID_DEFAULT = "0lQTaldhDsvMlLAEctDX81"
+    _FAVORITES_PLAYLIST_NAME = "Ejdersted Favorites"
+    _FAVORITES_PLAYLIST_DESC = "Tracks gemt fra kiosken (plus Liked Songs)."
+
+    def _favorites_playlist_id_resolved(self) -> str:
+        pid = self._cfg.get("favorites_playlist_id")
+        if isinstance(pid, str) and pid.strip():
+            return pid.strip()
+        return self._FAVORITES_PLAYLIST_ID_DEFAULT
+
+    async def _append_favorites_playlist(self, h: dict, track_uri: str) -> None:
+        """Append track; if default playlist is missing (404), create one and persist id."""
+        pl_id = self._favorites_playlist_id_resolved()
+        r = await self._http.post(
+            f"{API}/playlists/{pl_id}/items",
+            headers=h,
+            json={"uris": [track_uri]},
+        )
+        if r.status_code in (200, 201):
+            return
+        if r.status_code != 404:
+            return
+        cr = await self._http.post(
+            f"{API}/me/playlists",
+            headers=h,
+            json={
+                "name": self._FAVORITES_PLAYLIST_NAME,
+                "public": False,
+                "description": self._FAVORITES_PLAYLIST_DESC,
+            },
+        )
+        if cr.status_code != 201:
+            return
+        new_id = cr.json().get("id")
+        if not new_id:
+            return
+        self._cfg["favorites_playlist_id"] = new_id
+        _save(self._cfg)
+        await self._http.post(
+            f"{API}/playlists/{new_id}/items",
+            headers=h,
+            json={"uris": [track_uri]},
+        )
+
+    async def is_track_saved(self, track_uri: str | None = None) -> bool:
+        """Check via GET /me/library/contains whether a track is in Liked Songs."""
+        h = await self._headers()
+        if not h:
+            return False
+        if not track_uri:
+            np = await self.now_playing()
+            if not np or not np.get("uri"):
+                return False
+            track_uri = np["uri"]
+        r = await self._http.get(
+            f"{API}/me/library/contains", headers=h, params={"uris": track_uri})
+        if r.status_code == 200:
+            vals = r.json()
+            return vals[0] if vals else False
+        return False
+
+    async def save_track(self) -> dict:
+        """Toggle save for the currently playing track.
+
+        Uses PUT/DELETE /me/library (Feb 2026 endpoints) for Liked Songs.
+        On save, also adds to the Ejdersted Favorites playlist as a
+        permanent kiosk collection.
+        """
+        h = await self._headers()
+        if not h:
+            return {"ok": False, "error": "Ikke logget ind"}
+        np = await self.now_playing()
+        if not np or not np.get("uri"):
+            return {"ok": False, "error": "Intet spiller"}
+        track_uri = np["uri"]
+        saved = await self.is_track_saved(track_uri)
+        if saved:
+            r = await self._http.delete(
+                f"{API}/me/library", headers=h, params={"uris": track_uri})
+            ok = r.status_code == 200
+            return {"ok": ok, "saved": not ok}
+        else:
+            r = await self._http.put(
+                f"{API}/me/library", headers=h, params={"uris": track_uri})
+            ok = r.status_code == 200
+            if ok:
+                await self._append_favorites_playlist(h, track_uri)
+            return {"ok": ok, "saved": ok}
+
+    async def play_album(self) -> dict:
+        """Play the full album of the currently playing track from track 1."""
+        h = await self._headers()
+        if not h:
+            return {"ok": False, "error": "Ikke logget ind"}
+        np = await self.now_playing()
+        if not np or not np.get("uri"):
+            return {"ok": False, "error": "Intet spiller"}
+
+        # Get the track's album URI
+        track_id = np["uri"].split(":")[-1]
+        r = await self._http.get(f"{API}/tracks/{track_id}", headers=h)
+        if r.status_code != 200:
+            return {"ok": False, "error": "Kunne ikke hente track info"}
+        album_uri = r.json().get("album", {}).get("uri")
+        album_name = r.json().get("album", {}).get("name", "")
+        if not album_uri:
+            return {"ok": False, "error": "Intet album fundet"}
+
+        device_id = await self._find_speaker_device_id()
+        r = await self._http.put(
+            f"{API}/me/player/play",
+            headers=h,
+            params={"device_id": device_id} if device_id else {},
+            json={"context_uri": album_uri},
+        )
+        ok = r.status_code in (200, 204)
+        if ok:
+            await self._beolink_expand()
+        return {"ok": ok, "album": album_name}
 
     async def voice_command(self, transcript: str) -> dict:
         """Parse a voice transcript and execute the most likely intent."""

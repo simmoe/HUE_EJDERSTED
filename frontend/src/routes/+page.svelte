@@ -111,6 +111,10 @@
   let streamerTimer: ReturnType<typeof setTimeout>;
 
   $effect(() => {
+    if (spotifyTitle) checkSaved();
+  });
+
+  $effect(() => {
     for (const [id, np] of Object.entries(store.nowPlaying)) {
       const key = `${np.name}\u2014${np.artist}`;
       if (lastSong[id] && lastSong[id] !== key && np.name) {
@@ -165,9 +169,12 @@
   let spotifyTitle = $state('');
   let spotifyArtist = $state('');
   let spotifyRadio = $state(false);
+  let spotifyRadioLoading = $state(false);
   let spotifyPlaying = $state(false);
   let spotifyNextTitle = $state('');
   let spotifyNextArtist = $state('');
+  let spotifyAlbumActive = $state(false);
+  let spotifySaved = $state(false);
 
   // ── Vertical card carousel ──────────────────────────────────────────────
   let lydInner: HTMLDivElement;
@@ -232,16 +239,46 @@
       spotifyRadio = false;
       return;
     }
-    spotifyRadio = true;
+    spotifyRadioLoading = true;
+    spotifyAlbumActive = false;
     scrollToNowPlaying();
     try {
       const r = await fetch('/api/spotify/radio', { method: 'POST' });
       const data = await r.json();
-      if (!data.ok) {
-        spotifyRadio = false;
-      }
+      spotifyRadio = !!data.ok;
     } catch {
       spotifyRadio = false;
+    } finally {
+      spotifyRadioLoading = false;
+    }
+  }
+
+  async function checkSaved() {
+    try {
+      const r = await fetch('/api/spotify/is-saved');
+      const data = await r.json();
+      spotifySaved = !!data.saved;
+    } catch { spotifySaved = false; }
+  }
+
+  async function toggleSave() {
+    try {
+      const r = await fetch('/api/spotify/save', { method: 'POST' });
+      const data = await r.json();
+      if (data.ok) spotifySaved = data.saved;
+    } catch {}
+  }
+
+  async function playAlbum() {
+    spotifyAlbumActive = true;
+    spotifyRadio = false;
+    scrollToNowPlaying();
+    try {
+      const r = await fetch('/api/spotify/album', { method: 'POST' });
+      const data = await r.json();
+      if (!data.ok) spotifyAlbumActive = false;
+    } catch {
+      spotifyAlbumActive = false;
     }
   }
 
@@ -315,7 +352,17 @@
             {#if spotifyTitle}
               <span class="np-card-title">{spotifyTitle}</span>
               {#if spotifyArtist}<span class="np-card-artist">{spotifyArtist}</span>{/if}
-              {#if spotifyNextTitle}
+              <button class="heart-btn" class:saved={spotifySaved} onclick={toggleSave} aria-label={spotifySaved ? 'Fjern fra liked' : 'Gem sang'}>
+                <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" fill={spotifySaved ? 'currentColor' : 'none'}>
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </button>
+              {#if spotifyNextTitle && (spotifyRadio || spotifyAlbumActive)}
+                <div class="np-next-streamer">
+                  <span class="np-next-title">{spotifyNextTitle}</span>
+                  {#if spotifyNextArtist}<span class="np-next-artist">{spotifyNextArtist}</span>{/if}
+                </div>
+              {:else if spotifyNextTitle}
                 <span class="np-card-next">{spotifyNextTitle}</span>
               {/if}
             {/if}
@@ -324,8 +371,11 @@
             <button class="action-btn" onclick={togglePlayPause}>
               {spotifyPlaying ? 'pause' : 'play'}
             </button>
-            <button class="action-btn" class:active={spotifyRadio} onclick={toggleRadio}>
-              radio
+            <button class="action-btn" class:active={spotifyRadio} class:loading={spotifyRadioLoading} onclick={toggleRadio} disabled={spotifyRadioLoading}>
+              {spotifyRadioLoading ? '· · ·' : 'radio'}
+            </button>
+            <button class="action-btn" class:active={spotifyAlbumActive} onclick={playAlbum}>
+              album
             </button>
           </div>
         </div>
@@ -357,7 +407,7 @@
         {/if}
 
         <!-- Spotify Voice -->
-        <Card name="Musik" status={spotifyRadio ? 'Song Radio' : ''} >
+        <Card name="Musik" status={spotifyRadioLoading ? 'Opbygger radio…' : spotifyRadio ? 'Song Radio' : spotifyAlbumActive ? 'Album' : ''} >
           <SpotifyVoice
             bind:npTitle={spotifyTitle}
             bind:npArtist={spotifyArtist}
@@ -382,7 +432,18 @@
     <section class="page">
       <div class="col-header">LYS</div>
       <div class="scroll-inner" bind:this={lysInner}>
-        {#if store.hueStatus.paired && store.hueRooms.length > 0}
+        {#if !store.connected}
+          <div class="pair-wrap">
+            <p class="pair-label">Hub ikke forbundet</p>
+            <p class="pair-hint">
+              Lys-kortet får live-data via WebSocket fra backend.<br />
+              Start backend: <code>cd backend && python3.13 main.py</code><br />
+              Med Vite-dev: <code>cd frontend && npm run dev</code> → åbn <strong>localhost:5173</strong>.<br />
+              Eller åbn interfacet direkte på <strong>https://localhost:8443</strong> (samme origin som hubben).
+            </p>
+          </div>
+
+        {:else if store.hueStatus.paired && store.hueRooms.length > 0}
           <!-- Rum-knobs (filtrér rum uden pærer fra) -->
           {#each store.hueRooms.filter(r => r.lights !== 0) as room (room.id)}
             <Card name={room.name} status={room.any_on ? 'tændt' : 'slukket'} online={room.any_on}>
@@ -770,6 +831,28 @@
     max-width: 100%;
   }
 
+  .heart-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    padding: 8px;
+    margin-top: 12px;
+    color: #595959;
+    transition: color 0.2s, transform 0.2s;
+  }
+  .heart-btn svg {
+    width: 22px;
+    height: 22px;
+    transition: fill 0.2s, transform 0.15s;
+  }
+  .heart-btn:active svg {
+    transform: scale(1.3);
+  }
+  .heart-btn.saved {
+    color: #e25555;
+  }
+
   .np-card-next {
     font-size: 0.7rem;
     font-weight: 300;
@@ -781,6 +864,44 @@
     white-space: nowrap;
     max-width: 100%;
     opacity: 0.6;
+  }
+
+  .np-next-streamer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    margin-top: 24px;
+    opacity: 0;
+    animation: streamer-in 0.8s ease 0.2s forwards;
+  }
+
+  .np-next-title {
+    font-size: 0.8rem;
+    font-weight: 300;
+    color: #888;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  .np-next-artist {
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #4a4a4a;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  @keyframes streamer-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 
   /* ── Buttons ──────────────────────────────────────────────────────────────── */
@@ -903,6 +1024,11 @@
     font-size: 0.85rem;
     color: #595959;
     line-height: 1.6;
+  }
+
+  .pair-hint code {
+    font-size: 0.78rem;
+    color: #7a7a7a;
   }
 
   .empty {

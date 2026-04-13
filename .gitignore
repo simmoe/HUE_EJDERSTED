@@ -20,3 +20,6 @@ devices.json
 
 # TLS certs
 certs/
+
+# Cursor (local editor)
+.cursor/

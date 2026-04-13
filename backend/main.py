@@ -425,16 +425,15 @@ async def _get_adb_serial() -> str | None:
             "adb", "devices",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
-        out, _ = await proc.communicate()
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         for line in out.decode().splitlines():
             if TABLET_IP in line and "device" in line:
                 return line.split()[0]
-        # Not connected — try reconnect on fixed port
         proc = await asyncio.create_subprocess_exec(
             "adb", "connect", ADB_SERIAL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
-        out, _ = await proc.communicate()
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if b"connected" in out:
             return ADB_SERIAL
     except Exception:
@@ -542,6 +541,18 @@ async def spotify_radio():
 @app.delete("/api/spotify/radio")
 async def spotify_radio_stop():
     return await spotify.stop_radio()
+
+@app.post("/api/spotify/album")
+async def spotify_album():
+    return await spotify.play_album()
+
+@app.post("/api/spotify/save")
+async def spotify_save():
+    return await spotify.save_track()
+
+@app.get("/api/spotify/is-saved")
+async def spotify_is_saved():
+    return {"saved": await spotify.is_track_saved()}
 
 @app.get("/api/spotify/token")
 async def spotify_token():
