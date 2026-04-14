@@ -10,10 +10,12 @@ import httpx
 
 CONFIG_FILE = Path(__file__).parent.parent / "spotify_config.json"
 GEMINI_KEY_FILE = Path(__file__).parent.parent / "gemini_api_key.txt"
+# Web Playback SDK kræver bl.a. `streaming` + `user-read-private` (melody/check_scope web-playback).
+# Efter scope-ændring: besøg /api/spotify/login én gang så refresh_token får de nye rettigheder.
 SCOPES = (
-    "streaming user-read-email user-read-playback-state user-modify-playback-state "
-    "user-read-currently-playing user-library-read user-library-modify "
-    "playlist-read-private playlist-modify-private"
+    "streaming user-read-email user-read-private user-read-playback-state "
+    "user-modify-playback-state user-read-currently-playing user-library-read "
+    "user-library-modify playlist-read-private playlist-modify-private"
 )
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -84,6 +86,8 @@ class Spotify:
             "response_type": "code",
             "redirect_uri": self._cfg["redirect_uri"],
             "scope": SCOPES,
+            # Tving samtykke igen så nye scopes (fx streaming) skrives på refresh_token.
+            "show_dialog": "true",
         }
         return f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
 
