@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"dev:pi": "VITE_HUB_ORIGIN=https://192.168.86.16:8443 vite dev --host 0.0.0.0",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",

@@ -1,12 +1,16 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
+/** Live design mod Pi: sæt VITE_HUB_ORIGIN=https://192.168.86.16:8443 og kør med --host. */
+const HUB = process.env.VITE_HUB_ORIGIN ?? 'https://localhost:8443';
+const HUB_WS = HUB.replace(/^https:/i, 'wss:');
+
 export default defineConfig({
 	plugins: [sveltekit()],
 	server: {
 		proxy: {
-			'/api': { target: 'https://localhost:8443', secure: false },
-			'/ws':  { target: 'wss://localhost:8443', ws: true, secure: false },
+			'/api': { target: HUB, changeOrigin: true, secure: false },
+			'/ws': { target: HUB_WS, ws: true, secure: false },
 		},
 	},
 });
