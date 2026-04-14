@@ -249,7 +249,7 @@ async def lifespan(app: FastAPI):
     # Force Android kiosk settings on startup (reuses /api/kiosk logic)
     serial = await _get_adb_serial()
     if serial:
-        print(f"[ADB] Tablet connected: {serial}")
+        print(f"[ADB] Kiosk phone (Galaxy A12) connected: {serial}")
         # Trigger full kiosk lockdown via the endpoint handler
         await trigger_kiosk()
 
@@ -412,14 +412,14 @@ async def hue_pair(data: dict = {}):
         await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
     return result
 
-# ─── ADB constants ────────────────────────────────────────────────────────────
-TABLET_IP = "192.168.86.15"
-ADB_SERIAL = f"{TABLET_IP}:5555"          # fast port — sat via `adb tcpip 5555`
+# ─── ADB constants (kiosk: Samsung Galaxy A12, se KIOSK.md) ───────────────────
+KIOSK_PHONE_IP = "192.168.86.15"
+ADB_SERIAL = f"{KIOSK_PHONE_IP}:5555"  # fast port — sat via `adb tcpip 5555`
 
 # ─── REST: Screen brightness (ADB) ───────────────────────────────────────────
 
 async def _get_adb_serial() -> str | None:
-    """Return ADB serial for the tablet, auto-reconnecting if needed."""
+    """Return ADB serial for the kiosk phone (Galaxy A12), auto-reconnecting if needed."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "adb", "devices",
@@ -427,7 +427,7 @@ async def _get_adb_serial() -> str | None:
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         for line in out.decode().splitlines():
-            if TABLET_IP in line and "device" in line:
+            if KIOSK_PHONE_IP in line and "device" in line:
                 return line.split()[0]
         proc = await asyncio.create_subprocess_exec(
             "adb", "connect", ADB_SERIAL,

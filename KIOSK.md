@@ -7,10 +7,22 @@
 
 ## 1. Overblik
 
-En Samsung Android-tablet kører Chrome i fuldskærmskiosk-mode og viser en
+En **Samsung Galaxy A12**-telefon kører Chrome i fuldskærmskiosk-mode og viser en
 touch-baseret home automation UI (lysstyring via Philips Hue + volumenkontrol
 for B&O-højttalere + Spotify voice control). Backend er en FastAPI Python-server
 der kører på en Raspberry Pi 5 (produktion) eller en Mac (udvikling).
+
+### Kiosk-skærm — Samsung Galaxy A12
+
+| Specifikation | Værdi |
+|---|---|
+| **Model** | Samsung Galaxy A12 (SM-A125F m.fl.) |
+| **Skærm** | 6,5" PLS LCD, 60 Hz, 20∶9 |
+| **Panelopløsning** | **720 × 1600** px (HD+) |
+| **Kabinet (H×B×D)** | **164 × 75,8 × 8,9** mm |
+| **Layout i UI** | `100dvh` / `device-width` — følger **CSS-pixels** i Chrome (typisk **~800 × 360** i landskab ved 2× devicePixelRatio; kan variere med system/indstillinger). |
+
+Reference: [GSMArena — Galaxy A12](https://www.gsmarena.com/samsung_galaxy_a12-10604.php).
 
 ---
 
@@ -22,13 +34,13 @@ Alle enheder har faste IP'er via Google Home DHCP-reservationer.
 |---|---|---|---|
 | Raspberry Pi 5 (prod server) | `192.168.86.16` | `8443` (HTTPS) | SSH: simmoe / k18Medh18 |
 | Mac (dev) | `192.168.86.13` | `8443` (HTTPS) | Kun til udvikling |
-| Android-tablet (Samsung) | `192.168.86.15` | ADB: variabel | Trådløs ADB port skifter ved genstart |
+| Kiosk-telefon (Samsung Galaxy A12) | `192.168.86.15` | ADB: variabel | Trådløs ADB port skifter ved genstart |
 | Philips Hue Bridge | `192.168.86.25` | HTTPS (clipv2) | |
 | B&O BeoPlay A9 | `192.168.86.153` | `8080` (Mozart API) | |
 | B&O BeoSound M5 | `192.168.86.188` | `8080` (Mozart API) | BeoLink multiroom med A9 |
 
-**ADB**: Tabletens trådløse debugging-port skifter ved hver genstart.
-Find ny port i tabletens Developer Options → Wireless debugging.
+**ADB**: Telefonens trådløse debugging-port skifter ved hver genstart.
+Find ny port i Developer Options → Wireless debugging.
 Eksempel: `adb connect 192.168.86.15:36873`
 
 **HTTPS**: Serveren kører HTTPS med self-signed certifikat (port 8443).
@@ -78,7 +90,7 @@ sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
 sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo journalctl -u hue -f"
 ```
 
-**Kiosk URL (tablet)**: `https://192.168.86.16:8443`
+**Kiosk URL (Galaxy A12 / Chrome)**: `https://192.168.86.16:8443`
 
 ---
 
@@ -89,7 +101,7 @@ Kør disse trin fra projektets rodmappe på Mac'en:
 ```bash
 cd /Users/simon/Documents/Git/HUE_EJDERSTED
 
-# 1. Forbind ADB (porten skifter — tjek tablet Developer Options)
+# 1. Forbind ADB (porten skifter — tjek Developer Options på telefonen)
 adb connect 192.168.86.15:<PORT>
 
 # 2. Sæt landscape + immersive + åbn Chrome
@@ -107,7 +119,7 @@ Første gang skal det self-signed certifikat accepteres i Chrome (Avanceret → 
 
 ## 6. Deploy (Mac → Pi)
 
-> **Regel**: Deploy kun til Pi når en feature er klar til test på tablet.  
+> **Regel**: Deploy kun til Pi når en feature er klar til test på kiosk-telefonen.  
 > Under fejlretning og iterativ udvikling: brug `npm run dev` lokalt (Vite på :5173).
 
 ```bash
@@ -131,14 +143,14 @@ sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
 ```
 
 **Cache-version**: Filen `frontend/static/sw.js` har `const CACHE = 'hue-vNN'`.
-Bump ALTID dette tal inden build — ellers ser tabletten den gamle version.
+Bump ALTID dette tal inden build — ellers ser telefonen den gamle version.
 
 ---
 
 ## 7. ADB kiosk-kommandoer (reference)
 
-Disse kan trigges via `POST /api/kiosk`. ADB er installeret på Pi'en og parret med tabletten.
-Backend finder dynamisk tabletens ADB-serial via `_get_adb_serial()` (kører `adb devices`).
+Disse kan trigges via `POST /api/kiosk`. ADB er installeret på Pi'en og parret med kiosk-telefonen.
+Backend finder dynamisk telefonens ADB-serial via `_get_adb_serial()` (kører `adb devices`).
 
 ```bash
 ADB="adb -s 192.168.86.15:<PORT>"
@@ -160,7 +172,7 @@ $ADB shell settings put global policy_control "immersive.full=com.android.chrome
 
 For at genaktivere volume-HUD: `... SYSTEM_ALERT_WINDOW allow`.
 
-**Bemærk**: ADB-port på tabletten skifter ved genstart af trådløs debugging.
+**Bemærk**: ADB-port på telefonen skifter ved genstart af trådløs debugging.
 
 ---
 
@@ -173,7 +185,7 @@ For at genaktivere volume-HUD: `... SYSTEM_ALERT_WINDOW allow`.
 | `POST` | `/api/devices` | Tilføj B&O-enhed manuelt |
 | `GET` | `/api/hue/status` | Hue bridge status (paired/ip) |
 | `POST` | `/api/hue/pair` | Par Hue bridge (tryk fysisk knap først) |
-| `PUT` | `/api/brightness/{level}` | Sæt tablet-skærmlysstyrke via ADB (0–255) |
+| `PUT` | `/api/brightness/{level}` | Sæt skærmlysstyrke på kiosk-telefon via ADB (0–255) |
 | `POST` | `/api/kiosk` | Kør alle ADB kiosk-kommandoer |
 | `GET` | `/api/spotify/status` | Spotify auth status |
 | `POST` | `/api/spotify/voice` | Stemmesøgning (EN/DA) → afspil på M5 + BeoLink A9 |
@@ -239,11 +251,11 @@ curl -X PUT http://192.168.86.188:8080/BeoZone/Zone/Sound/Volume/Speaker/Level \
 
 ## 11. Fejlfinding
 
-### "Tablet viser gammelt UI"
+### "Kiosk-telefonen viser gammelt UI"
 → Service worker cache. Bump `hue-vNN` i `frontend/static/sw.js`, byg, deploy, force-stop Chrome.
 
 ### "ADB: device not found"
-→ Tabletens trådløse debugging-port skifter. Tjek ny port i Developer Options → Wireless debugging. `adb connect 192.168.86.15:<NY_PORT>`. Verificér med `adb devices`.
+→ Telefonens trådløse debugging-port skifter. Tjek ny port i Developer Options → Wireless debugging. `adb connect 192.168.86.15:<NY_PORT>`. Verificér med `adb devices`.
 
 ### "Hue-lamper reagerer ikke"
 → Tjek `hue_config.json` har gyldigt username. Hue bridge IP: `192.168.86.25`. Pair igen: `POST /api/hue/pair` (tryk fysisk knap på bridge først).

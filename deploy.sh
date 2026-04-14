@@ -54,8 +54,8 @@ else
   exit 1
 fi
 
-# Refresh tablet browser (force-stop Chrome + reopen kiosk URL via ADB on Pi)
-echo "→ Refreshing tablet..."
+# Refresh kiosk phone (Galaxy A12) Chrome — reopen hub URL (ADB on Pi eller serial)
+echo "→ Refreshing kiosk phone…"
 $SSH "ADB_SERIAL='192.168.86.15:5555' && \
   adb connect \$ADB_SERIAL 2>/dev/null; \
   STATE=\$(adb -s \$ADB_SERIAL get-state 2>/dev/null) && \
@@ -63,7 +63,7 @@ $SSH "ADB_SERIAL='192.168.86.15:5555' && \
     adb -s \$ADB_SERIAL shell am force-stop com.android.chrome && \
     sleep 1 && \
     adb -s \$ADB_SERIAL shell am start -a android.intent.action.VIEW -d 'https://192.168.86.16:8443' && \
-    echo '✓ Tablet refreshed'; \
+    echo '✓ Kiosk-telefon opdateret'; \
   else \
-    echo '⚠ Ingen tablet fundet via ADB'; \
+    echo '⚠ Ingen kiosk-telefon via ADB'; \
   fi"

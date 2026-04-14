@@ -1,6 +1,6 @@
 #!/bin/bash
-# Lockdown Android tablet — kør fra Pi via SSH
-# Usage: ssh pi "bash lockdown_tablet.sh"
+# Lockdown kiosk-telefon (Samsung Galaxy A12) — kør fra Pi via SSH
+# Usage: ssh pi "bash lockdown_tablet.sh <adb-serial>"
 
 ADB="$1"
 if [ -z "$ADB" ]; then echo "Usage: $0 <adb-serial>"; exit 1; fi
