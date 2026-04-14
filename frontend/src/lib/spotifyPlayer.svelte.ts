@@ -8,6 +8,37 @@ let ready = $state(false);
 let playerInstance: any = null;
 let initPromise: Promise<void> | null = null;
 
+export type PlaybackState = {
+  trackUri: string | null;
+  paused: boolean;
+  position: number;
+  duration: number;
+};
+
+type StateListener = (s: PlaybackState) => void;
+const stateListeners: Set<StateListener> = new Set();
+
+export function onStateChange(fn: StateListener): () => void {
+  stateListeners.add(fn);
+  return () => stateListeners.delete(fn);
+}
+
+function emitState(raw: any) {
+  if (!raw) {
+    const s: PlaybackState = { trackUri: null, paused: true, position: 0, duration: 0 };
+    for (const fn of stateListeners) fn(s);
+    return;
+  }
+  const cur = raw.track_window?.current_track;
+  const s: PlaybackState = {
+    trackUri: cur?.uri ?? null,
+    paused: raw.paused ?? true,
+    position: raw.position ?? 0,
+    duration: raw.duration ?? 0,
+  };
+  for (const fn of stateListeners) fn(s);
+}
+
 export function getDeviceId(): string | null {
   return deviceId;
 }
@@ -38,19 +69,21 @@ export function waitForWebDevice(maxMs = 15000): Promise<string | null> {
 
 function loadSdk(): Promise<void> {
   const w = window as any;
-  if (w.Spotify) return Promise.resolve();
+  if (w.Spotify?.Player) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('Spotify SDK timeout (20s)')), 20_000);
-    const prev = w.onSpotifyWebPlaybackSDKReady;
-    w.onSpotifyWebPlaybackSDKReady = () => {
-      try {
-        prev?.();
-      } catch {
-        /* */
+    const deadline = Date.now() + 25_000;
+    const tick = () => {
+      if (w.Spotify?.Player) {
+        resolve();
+        return;
       }
-      clearTimeout(t);
-      resolve();
+      if (Date.now() > deadline) {
+        reject(new Error('Spotify SDK timeout (25s) — tjek at sdk.scdn.co ikke blokeres'));
+        return;
+      }
+      setTimeout(tick, 40);
     };
+    tick();
   });
 }
 
@@ -143,6 +176,10 @@ async function doInit(): Promise<void> {
   player.addListener('account_error', ({ message }: { message: string }) => {
     console.error('[Spotify SDK] account error', message);
     readyReject(new Error(message));
+  });
+
+  player.addListener('player_state_changed', (state: any) => {
+    emitState(state);
   });
 
   const connected = await player.connect();

@@ -21,6 +21,8 @@ import {
   init as initSpotifyWebPlayer,
   getDeviceId as getSpotifyWebDeviceId,
   waitForWebDevice,
+  onStateChange,
+  type PlaybackState,
 } from '$lib/spotifyPlayer.svelte';
 
 export type QTrack = { uri: string; name: string; artist: string };
@@ -60,6 +62,27 @@ let docRef: DocumentReference | null = null;
 let unsub: Unsubscribe | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let applyingRemote = false;
+let unsubState: (() => void) | null = null;
+
+function handlePlaybackState(s: PlaybackState) {
+  if (s.paused && playlist.spotifyPlaying) {
+    playlist.spotifyPlaying = false;
+    schedulePush();
+    return;
+  }
+  if (!s.paused && !playlist.spotifyPlaying) {
+    playlist.spotifyPlaying = true;
+  }
+  if (!s.trackUri) return;
+  const q = activeQueue();
+  const idx = activeIndex();
+  if (q[idx]?.uri === s.trackUri) return;
+  const newIdx = q.findIndex((t) => t.uri === s.trackUri);
+  if (newIdx === -1) return;
+  setActiveIndex(newIdx);
+  paintNpFromQueues();
+  scrollToNowPlaying();
+}
 
 function isQTrack(x: unknown): x is QTrack {
   return (
@@ -193,21 +216,30 @@ export async function togglePlayPause() {
       const r = await fetch('/api/spotify/pause', { method: 'POST' });
       const data = await r.json();
       if (data.ok) playlist.spotifyPlaying = false;
-    } catch {
-      /* */
+    } catch (e) {
+      console.warn('[play] pause failed', e);
     }
     schedulePush();
     return;
   }
   const q = activeQueue();
   const idx = activeIndex();
-  if (!q.length || !q[idx]?.uri) return;
+  console.log('[play] mode=%s  queue=%d  idx=%d  uri=%s', playlist.playListMode, q.length, idx, q[idx]?.uri ?? '(none)');
+  if (!q.length || !q[idx]?.uri) {
+    console.warn('[play] empty queue or no uri — aborting');
+    return;
+  }
   const uris = q.slice(idx).map((t) => t.uri).filter((u) => u.startsWith('spotify:track:'));
-  if (!uris.length) return;
+  if (!uris.length) {
+    console.warn('[play] no spotify:track: URIs after filter');
+    return;
+  }
   try {
+    console.log('[play] initSpotifyWebPlayer…');
     await initSpotifyWebPlayer();
     await waitForWebDevice(15000);
     const webDevice = getSpotifyWebDeviceId();
+    console.log('[play] webDevice=%s  sending %d URIs', webDevice ?? '(none)', uris.length);
     const r = await fetch('/api/spotify/play-uris', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -219,9 +251,10 @@ export async function togglePlayPause() {
       }),
     });
     const data = await r.json();
+    console.log('[play] response', data);
     if (data.ok) playlist.spotifyPlaying = true;
-  } catch {
-    /* */
+  } catch (e) {
+    console.warn('[play] error', e);
   }
   schedulePush();
 }
@@ -443,10 +476,15 @@ export async function initPlaylistHub(): Promise<() => void> {
     unsub();
     unsub = null;
   }
+  if (unsubState) {
+    unsubState();
+    unsubState = null;
+  }
   if (pushTimer) {
     clearTimeout(pushTimer);
     pushTimer = null;
   }
+  unsubState = onStateChange(handlePlaybackState);
 
   let cfg: Record<string, unknown>;
   try {
@@ -478,6 +516,10 @@ export async function initPlaylistHub(): Promise<() => void> {
     if (unsub) {
       unsub();
       unsub = null;
+    }
+    if (unsubState) {
+      unsubState();
+      unsubState = null;
     }
     if (pushTimer) {
       clearTimeout(pushTimer);

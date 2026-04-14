@@ -554,7 +554,11 @@ async def spotify_play_uris(data: dict = Body(default_factory=dict)):
     position_ms = int(data.get("position_ms") or 0)
     did = data.get("device_id")
     preferred = did.strip() if isinstance(did, str) else None
-    return {"ok": await spotify.play_uris_queue(uris, offset, position_ms, preferred)}
+    ok, detail = await spotify.play_uris_queue(uris, offset, position_ms, preferred)
+    resp: dict = {"ok": ok}
+    if not ok and detail:
+        resp["detail"] = detail
+    return resp
 
 @app.post("/api/spotify/skip")
 async def spotify_skip():
@@ -608,11 +612,21 @@ async def spotify_is_saved(uri: str | None = None):
 
 @app.get("/api/spotify/token")
 async def spotify_token():
-    """Return access token for Web Playback SDK."""
-    token = await spotify._ensure_token()
+    """Return access token for Web Playback SDK (kræver `streaming` i seneste OAuth-scope)."""
+    token = await spotify.access_token_for_web_playback()
     if not token:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
-    return {"token": token}
+    gs = spotify.granted_scope
+    if gs and "streaming" not in gs.split():
+        return JSONResponse(
+            {
+                "error": "missing_streaming_scope",
+                "granted_scope": gs,
+                "fix": "Åbn /api/spotify/login på denne hub og godkend igen (alle scopes).",
+            },
+            status_code=403,
+        )
+    return {"token": token, "scope": gs or None}
 
 # ─── Static files (SvelteKit build) — mount last ──────────────────────────────
 if STATIC_DIR.exists():

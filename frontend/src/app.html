@@ -3,6 +3,7 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="mobile-web-app-capable" content="yes" />
 		<meta name="apple-mobile-web-app-capable" content="yes" />
 		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
 		<meta name="theme-color" content="#000000" />
@@ -10,8 +11,13 @@
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300&display=swap" rel="stylesheet" />
-		<!-- Spotify Web Playback SDK: Chrome på kiosken bliver Connect-enhed (ingen app på telefon). -->
-		<script src="https://sdk.scdn.co/spotify-player.js" async></script>
+		<!-- Spotify SDK: callback SKAL findes før script indlæses (ellers AnthemError). -->
+		<script>
+			window.onSpotifyWebPlaybackSDKReady = function () {
+				window.__ejderstedSpotifySdkReady = true;
+			};
+		</script>
+		<script src="https://sdk.scdn.co/spotify-player.js"></script>
 		<script>
 			if (typeof crypto !== 'undefined' && !crypto.randomUUID) {
 				crypto.randomUUID = function () {

@@ -78,6 +78,18 @@ class Spotify:
     def authenticated(self) -> bool:
         return bool(self._cfg.get("refresh_token"))
 
+    @property
+    def granted_scope(self) -> str:
+        """Seneste scope-streng fra Spotify (code eller refresh). Tom indtil næste token-svindel."""
+        return str(self._cfg.get("granted_scope") or "").strip()
+
+    async def access_token_for_web_playback(self) -> str | None:
+        """Sikrer access_token; hvis `granted_scope` aldrig er gemt, tvinger én refresh så Spotify returnerer `scope`."""
+        if self._cfg.get("refresh_token") and not (self._cfg.get("granted_scope") or "").strip():
+            self._cfg["expires_at"] = 0
+            _save(self._cfg)
+        return await self._ensure_token()
+
     # ── OAuth flow ────────────────────────────────────────────────────────────
 
     def login_url(self) -> str:
@@ -105,6 +117,8 @@ class Spotify:
         self._cfg["access_token"] = data["access_token"]
         self._cfg["refresh_token"] = data["refresh_token"]
         self._cfg["expires_at"] = time.time() + data["expires_in"] - 60
+        if isinstance(data.get("scope"), str) and data["scope"].strip():
+            self._cfg["granted_scope"] = data["scope"].strip()
         _save(self._cfg)
         return True
 
@@ -126,6 +140,8 @@ class Spotify:
         if "refresh_token" in data:
             self._cfg["refresh_token"] = data["refresh_token"]
         self._cfg["expires_at"] = time.time() + data["expires_in"] - 60
+        if isinstance(data.get("scope"), str) and data["scope"].strip():
+            self._cfg["granted_scope"] = data["scope"].strip()
         _save(self._cfg)
         return self._cfg["access_token"]
 
@@ -207,14 +223,14 @@ class Spotify:
         offset: int = 0,
         position_ms: int = 0,
         preferred_device_id: str | None = None,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Start afspilning udelukkende fra en eksplicit uri-liste (kioskens lokale kø)."""
         uris = [u for u in uris if u and u.startswith("spotify:track:")][:50]
         if not uris:
-            return False
+            return False, "no valid uris"
         h = await self._headers()
         if not h:
-            return False
+            return False, "no auth headers"
         off = max(0, min(offset, len(uris) - 1))
         pref = (preferred_device_id or "").strip() or None
         target = await self._target_device_id()
@@ -241,11 +257,12 @@ class Spotify:
             )
             if r.status_code in (200, 204):
                 await self._beolink_expand()
-                return True
+                return True, ""
             last_snip = f"device_id={device_id!r} HTTP {r.status_code}: {r.text[:350]}"
             print(f"[Spotify] play-uris {last_snip}")
-        print(f"[Spotify] play-uris failed after {len(candidates)} attempt(s). Last: {last_snip}")
-        return False
+        msg = f"failed {len(candidates)} attempt(s). Last: {last_snip}"
+        print(f"[Spotify] play-uris {msg}")
+        return False, msg
 
     async def skip(self) -> bool:
         return await self._post_player_next()
