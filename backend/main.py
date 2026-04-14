@@ -552,7 +552,9 @@ async def spotify_play_uris(data: dict = Body(default_factory=dict)):
     uris = data.get("uris") or []
     offset = int(data.get("offset") or 0)
     position_ms = int(data.get("position_ms") or 0)
-    return {"ok": await spotify.play_uris_queue(uris, offset, position_ms)}
+    did = data.get("device_id")
+    preferred = did.strip() if isinstance(did, str) else None
+    return {"ok": await spotify.play_uris_queue(uris, offset, position_ms, preferred)}
 
 @app.post("/api/spotify/skip")
 async def spotify_skip():

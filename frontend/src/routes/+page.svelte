@@ -17,6 +17,7 @@
     playAlbum,
     handleVoicePayload,
   } from '$lib/playlistHub.svelte';
+  import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
@@ -64,6 +65,8 @@
     fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
     showSplash = false;
     resetDim();
+    // Efter brugertryk: Web Playback SDK må bruge audio; Chrome bliver Connect-enhed «Ejdersted».
+    void initSpotifyWebPlayer();
   }
 
   let stopPlaylistHub: (() => void) | undefined;
@@ -72,6 +75,7 @@
     store.connect();
     updateClock();
     clockInterval = setInterval(updateClock, 1000);
+    void initSpotifyWebPlayer();
     void initPlaylistHub().then((stop) => {
       stopPlaylistHub = stop;
     });
@@ -81,6 +85,7 @@
       if (document.visibilityState === 'visible') {
         requestWakeLock();
         fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
+        void initSpotifyWebPlayer();
       }
     });
     // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)

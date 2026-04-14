@@ -17,6 +17,11 @@ import {
   type Unsubscribe,
   type DocumentReference,
 } from 'firebase/firestore';
+import {
+  init as initSpotifyWebPlayer,
+  getDeviceId as getSpotifyWebDeviceId,
+  waitForWebDevice,
+} from '$lib/spotifyPlayer.svelte';
 
 export type QTrack = { uri: string; name: string; artist: string };
 
@@ -200,10 +205,18 @@ export async function togglePlayPause() {
   const uris = q.slice(idx).map((t) => t.uri).filter((u) => u.startsWith('spotify:track:'));
   if (!uris.length) return;
   try {
+    await initSpotifyWebPlayer();
+    await waitForWebDevice(15000);
+    const webDevice = getSpotifyWebDeviceId();
     const r = await fetch('/api/spotify/play-uris', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uris, offset: 0, position_ms: 0 }),
+      body: JSON.stringify({
+        uris,
+        offset: 0,
+        position_ms: 0,
+        ...(webDevice ? { device_id: webDevice } : {}),
+      }),
     });
     const data = await r.json();
     if (data.ok) playlist.spotifyPlaying = true;

@@ -197,7 +197,13 @@ class Spotify:
         r = await self._http.put(f"{API}/me/player/seek", headers=h, params=params)
         return r.status_code in (200, 204)
 
-    async def play_uris_queue(self, uris: list[str], offset: int = 0, position_ms: int = 0) -> bool:
+    async def play_uris_queue(
+        self,
+        uris: list[str],
+        offset: int = 0,
+        position_ms: int = 0,
+        preferred_device_id: str | None = None,
+    ) -> bool:
         """Start afspilning udelukkende fra en eksplicit uri-liste (kioskens lokale kø)."""
         uris = [u for u in uris if u and u.startswith("spotify:track:")][:50]
         if not uris:
@@ -206,20 +212,36 @@ class Spotify:
         if not h:
             return False
         off = max(0, min(offset, len(uris) - 1))
-        # Samme som pause/skip: aktiv Connect-enhed (fx telefon) først, ellers M5/højttaler.
-        device_id = await self._target_device_id() or await self._find_speaker_device_id()
-        r = await self._http.put(
-            f"{API}/me/player/play",
-            headers=h,
-            params={"device_id": device_id} if device_id else {},
-            json={"uris": uris, "offset": {"position": off}, "position_ms": position_ms},
-        )
-        ok = r.status_code in (200, 204)
-        if not ok:
-            print(f"[Spotify] play-uris HTTP {r.status_code}: {r.text[:400]}")
-        if ok:
-            await self._beolink_expand()
-        return ok
+        pref = (preferred_device_id or "").strip() or None
+        target = await self._target_device_id()
+        speaker = await self._find_speaker_device_id()
+        seen_ids: set[str] = set()
+        candidates: list[str | None] = []
+        for d in (pref, target, speaker):
+            if not d:
+                continue
+            if d in seen_ids:
+                continue
+            seen_ids.add(d)
+            candidates.append(d)
+        candidates.append(None)
+
+        body = {"uris": uris, "offset": {"position": off}, "position_ms": position_ms}
+        last_snip = ""
+        for device_id in candidates:
+            r = await self._http.put(
+                f"{API}/me/player/play",
+                headers=h,
+                params={"device_id": device_id} if device_id else {},
+                json=body,
+            )
+            if r.status_code in (200, 204):
+                await self._beolink_expand()
+                return True
+            last_snip = f"device_id={device_id!r} HTTP {r.status_code}: {r.text[:350]}"
+            print(f"[Spotify] play-uris {last_snip}")
+        print(f"[Spotify] play-uris failed after {len(candidates)} attempt(s). Last: {last_snip}")
+        return False
 
     async def skip(self) -> bool:
         return await self._post_player_next()
