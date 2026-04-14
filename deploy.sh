@@ -38,6 +38,12 @@ if [[ -f gemini_api_key.txt ]]; then
   $SCP gemini_api_key.txt $PI_HOST:~/HUE_EJDERSTED/
 fi
 
+# Firebase m.m. (hub_globals.json — ikke i git)
+if [[ -f hub_globals.json ]]; then
+  echo "→ Syncing hub_globals.json (Firebase + evt. andre globals)..."
+  $SCP hub_globals.json $PI_HOST:~/HUE_EJDERSTED/
+fi
+
 # Restart service
 echo "→ Restarting service..."
 $SSH "echo '$PI_PASS' | sudo -S systemctl restart hue"

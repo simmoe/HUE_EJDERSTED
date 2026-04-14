@@ -1,58 +1,24 @@
 <script lang="ts">
   /**
-   * SpotifyVoice — voice search + now-playing polling.
-   * Play/pause & radio controls live in the NowPlaying card on +page.svelte.
+   * Stemme → hub returnerer kun kø-metadata; afspilning styres på +page.
    */
   import { onMount } from 'svelte';
 
   let {
-    npTitle = $bindable(''),
-    npArtist = $bindable(''),
-    nextTitle = $bindable(''),
-    nextArtist = $bindable(''),
-    isPlaying = $bindable(false),
-    radioActive = $bindable(false),
-    onresult,
+    onvoice,
   }: {
-    npTitle?: string;
-    npArtist?: string;
-    nextTitle?: string;
-    nextArtist?: string;
-    isPlaying?: boolean;
-    radioActive?: boolean;
-    onresult?: () => void;
+    onvoice?: (data: Record<string, unknown>) => void;
   } = $props();
 
   let listening = $state(false);
   let feedback = $state('');
   let feedbackTimer: ReturnType<typeof setTimeout>;
-  let pollInterval: ReturnType<typeof setInterval>;
 
   function showFeedback(text: string, duration = 3000) {
     feedback = text;
     clearTimeout(feedbackTimer);
     feedbackTimer = setTimeout(() => { feedback = ''; }, duration);
   }
-
-  async function pollNowPlaying() {
-    try {
-      const r = await fetch('/api/spotify/now-playing');
-      if (r.ok) {
-        const data = await r.json();
-        isPlaying = data.is_playing ?? false;
-        npTitle = data.name || '';
-        npArtist = data.artist || '';
-        nextTitle = data.next_name || '';
-        nextArtist = data.next_artist || '';
-      }
-    } catch {}
-  }
-
-  onMount(() => {
-    pollNowPlaying();
-    pollInterval = setInterval(pollNowPlaying, 5000);
-    return () => clearInterval(pollInterval);
-  });
 
   async function handleResult(transcript: string) {
     listening = false;
@@ -63,26 +29,22 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript }),
       });
-      const data = await r.json();
+      const data = (await r.json()) as Record<string, unknown>;
+      onvoice?.(data);
       if (data.ok === false && data.error) {
-        showFeedback(data.error);
+        showFeedback(String(data.error));
       } else if (data.action === 'pause') {
-        isPlaying = false;
-        showFeedback('pause');
-      } else if (data.action === 'skip') {
-        showFeedback('skip');
-        onresult?.();
-      } else if (data.action === 'previous') {
-        showFeedback('forrige');
-        onresult?.();
-      } else if (data.action === 'resume') {
-        isPlaying = true;
-        showFeedback('play');
-      } else if (data.name) {
-        isPlaying = true;
+        showFeedback(data.ok ? 'pause' : 'pause fejlede');
+      } else if (data.action === 'local_nav') {
+        showFeedback('');
+      } else if (data.action === 'use_play_button') {
+        showFeedback('Tryk play');
+      } else if (data.action === 'enqueue' || data.action === 'enqueue_queue') {
+        const lab = data.label ?? data.name;
+        showFeedback(typeof lab === 'string' && lab ? lab : 'Tilføjet til kø');
+      } else if (data.name && typeof data.name === 'string') {
         showFeedback(data.name);
-        onresult?.();
-      } else if (!data.ok) {
+      } else if (!data.ok && data.action === 'search') {
         showFeedback('ikke fundet');
       }
     } catch {
@@ -106,11 +68,19 @@
     recognition.onend = () => { listening = false; };
     recognition.start();
   }
+
+  onMount(() => () => clearTimeout(feedbackTimer));
 </script>
 
 <div class="center-area">
-  <!-- Voice button (hero) -->
-  <button class="voice-btn" class:listening onclick={startListening}>
+  <button
+    type="button"
+    class="voice-btn"
+    class:listening
+    onclick={startListening}
+    aria-label="Stemme — søg efter musik"
+    title="Stemme"
+  >
     <span class="voice-ring"></span>
     <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
       <rect x="9" y="2" width="6" height="12" rx="3" />
@@ -119,7 +89,6 @@
     </svg>
   </button>
 
-  <!-- Feedback -->
   {#if feedback}
     <span class="feedback">{feedback}</span>
   {:else if listening}
@@ -136,7 +105,6 @@
     gap: 28px;
   }
 
-  /* ── Voice button ──────────────────────────────────────────────────────── */
   .voice-btn {
     position: relative;
     width: 140px;
@@ -187,7 +155,6 @@
     50%      { opacity: 1;   transform: scale(1.04); }
   }
 
-  /* ── Feedback ──────────────────────────────────────────────────────────── */
   .feedback {
     font-size: 0.75rem;
     font-weight: 300;
@@ -202,8 +169,5 @@
 
   .listening-text {
     color: #0080c8;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    font-size: 0.7rem;
   }
 </style>

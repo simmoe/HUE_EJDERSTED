@@ -161,22 +161,68 @@ class Spotify:
         h = await self._headers()
         if not h:
             return False
-        r = await self._http.put(f"{API}/me/player/pause", headers=h)
+        device_id = await self._target_device_id()
+        params = {"device_id": device_id} if device_id else {}
+        r = await self._http.put(f"{API}/me/player/pause", headers=h, params=params)
         return r.status_code in (200, 204)
+
+    async def _post_player_next(self) -> bool:
+        h = await self._headers()
+        if not h:
+            return False
+        device_id = await self._target_device_id()
+        params = {"device_id": device_id} if device_id else {}
+        r = await self._http.post(f"{API}/me/player/next", headers=h, params=params)
+        return r.status_code in (200, 204)
+
+    async def _post_player_previous(self) -> bool:
+        h = await self._headers()
+        if not h:
+            return False
+        device_id = await self._target_device_id()
+        params = {"device_id": device_id} if device_id else {}
+        r = await self._http.post(f"{API}/me/player/previous", headers=h, params=params)
+        if r.status_code not in (200, 204):
+            print(f"[Spotify] previous HTTP {r.status_code}: {r.text[:300]}")
+        return r.status_code in (200, 204)
+
+    async def _seek_track(self, position_ms: int = 0) -> bool:
+        h = await self._headers()
+        if not h:
+            return False
+        device_id = await self._target_device_id()
+        params: dict = {"position_ms": position_ms}
+        if device_id:
+            params["device_id"] = device_id
+        r = await self._http.put(f"{API}/me/player/seek", headers=h, params=params)
+        return r.status_code in (200, 204)
+
+    async def play_uris_queue(self, uris: list[str], offset: int = 0, position_ms: int = 0) -> bool:
+        """Start afspilning udelukkende fra en eksplicit uri-liste (kioskens lokale kø)."""
+        uris = [u for u in uris if u and u.startswith("spotify:track:")][:50]
+        if not uris:
+            return False
+        h = await self._headers()
+        if not h:
+            return False
+        off = max(0, min(offset, len(uris) - 1))
+        device_id = await self._find_speaker_device_id()
+        r = await self._http.put(
+            f"{API}/me/player/play",
+            headers=h,
+            params={"device_id": device_id} if device_id else {},
+            json={"uris": uris, "offset": {"position": off}, "position_ms": position_ms},
+        )
+        ok = r.status_code in (200, 204)
+        if ok:
+            await self._beolink_expand()
+        return ok
 
     async def skip(self) -> bool:
-        h = await self._headers()
-        if not h:
-            return False
-        r = await self._http.post(f"{API}/me/player/next", headers=h)
-        return r.status_code in (200, 204)
+        return await self._post_player_next()
 
     async def previous(self) -> bool:
-        h = await self._headers()
-        if not h:
-            return False
-        r = await self._http.post(f"{API}/me/player/previous", headers=h)
-        return r.status_code in (200, 204)
+        return await self._post_player_previous()
 
     async def now_playing(self) -> dict | None:
         h = await self._headers()
@@ -219,7 +265,13 @@ class Spotify:
         r = await self._http.get(f"{API}/me/player/devices", headers=h)
         if r.status_code == 200:
             return [
-                {"id": d["id"], "name": d["name"], "type": d["type"], "is_active": d["is_active"]}
+                {
+                    "id": d["id"],
+                    "name": d["name"],
+                    "type": d["type"],
+                    "is_active": d["is_active"],
+                    "is_restricted": d.get("is_restricted", False),
+                }
                 for d in r.json().get("devices", [])
             ]
         return []
@@ -264,6 +316,35 @@ class Spotify:
             if d["type"] == "Speaker":
                 return d["id"]
         return devs[0]["id"] if devs else None
+
+    async def _target_device_id(self) -> str | None:
+        """Device for skip/pause/previous: samme som GET /me/player, ellers aktiv/M5."""
+        h = await self._headers()
+        if not h:
+            return None
+        player_data = None
+        pr = await self._http.get(f"{API}/me/player", headers=h)
+        if pr.status_code == 200:
+            player_data = pr.json()
+            dev = (player_data or {}).get("device") or {}
+            did = dev.get("id")
+            if did and not dev.get("is_restricted"):
+                return did
+        devs = await self.devices()
+        for d in devs:
+            if d.get("is_active") and not d.get("is_restricted"):
+                return d["id"]
+        for d in devs:
+            if d.get("is_active"):
+                return d["id"]
+        did_fb = await self._find_speaker_device_id()
+        if did_fb:
+            return did_fb
+        if player_data:
+            did = (player_data.get("device") or {}).get("id")
+            if did:
+                return did
+        return None
 
     async def resume(self) -> bool:
         """Resume playback on M5 + ensure BeoLink multiroom."""
@@ -331,8 +412,8 @@ class Spotify:
             print(f"[Gemini] error: {e}")
             return []
 
-    async def _find_track_uri(self, artist: str, track: str) -> str | None:
-        """Search Spotify for a specific track by artist+title."""
+    async def _find_track_meta(self, artist: str, track: str) -> dict | None:
+        """Søg ét track; returner uri + visningsfelter til radio-kø."""
         h = await self._headers()
         if not h:
             return None
@@ -340,22 +421,44 @@ class Spotify:
             "q": f"track:{track} artist:{artist}",
             "type": "track", "limit": 1, "market": "DK",
         })
+        if r.status_code != 200:
+            return None
         items = r.json().get("tracks", {}).get("items", [])
-        return items[0]["uri"] if items else None
+        if not items:
+            return None
+        t = items[0]
+        return {
+            "uri": t["uri"],
+            "name": t.get("name") or track,
+            "artist": ", ".join(a["name"] for a in t.get("artists", [])),
+        }
 
-    async def start_radio(self) -> dict:
-        """Build a radio queue via Gemini LLM recommendations + Spotify search."""
+    async def _find_track_uri(self, artist: str, track: str) -> str | None:
+        m = await self._find_track_meta(artist, track)
+        return m["uri"] if m else None
+
+    async def build_radio_queue(
+        self, seed_uri: str, seed_name: str = "", seed_artist: str = ""
+    ) -> dict:
+        """Byg Song Radio-kø ud fra et seed-track (ingen afspilning — kun metadata)."""
         h = await self._headers()
         if not h:
             return {"ok": False, "error": "Ikke logget ind"}
-        np = await self.now_playing()
-        if not np or not np.get("uri"):
-            return {"ok": False, "error": "Intet spiller"}
+        if not seed_uri or not seed_uri.startswith("spotify:track:"):
+            return {"ok": False, "error": "Mangler seed (vælg et track i mikrofon-køen)"}
 
-        artist_name = np.get("artist", "")
-        track_name = np.get("name", "")
-        current_uri = np["uri"]
-        progress_ms = np.get("progress_ms", 0)
+        artist_name = seed_artist
+        track_name = seed_name
+        current_uri = seed_uri
+        if not track_name or not artist_name:
+            tid = seed_uri.split(":")[-1]
+            tr = await self._http.get(f"{API}/tracks/{tid}", headers=h, params={"market": "DK"})
+            if tr.status_code == 200:
+                tj = tr.json()
+                track_name = track_name or tj.get("name", "")
+                artist_name = artist_name or ", ".join(
+                    a["name"] for a in tj.get("artists", [])
+                )
 
         if not self._gemini_api_key():
             return {
@@ -369,47 +472,81 @@ class Spotify:
                 "error": "Radio: Gemini svarede ikke (nøgle/udgående net på Pi?)",
             }
 
-        # Resolve each suggestion to a Spotify URI
-        uris: list[str] = [current_uri]
+        tracks_meta: list[dict] = [
+            {"uri": current_uri, "name": track_name, "artist": artist_name},
+        ]
         for s in suggestions:
-            uri = await self._find_track_uri(s["artist"], s["track"])
-            if uri and uri != current_uri:
-                uris.append(uri)
+            meta = await self._find_track_meta(s["artist"], s["track"])
+            if meta and meta["uri"] != current_uri:
+                tracks_meta.append(meta)
                 print(f"[Radio] ✓ {s['track']} — {s['artist']}")
             else:
                 print(f"[Radio] ✗ {s['track']} — {s['artist']}")
 
-        if len(uris) < 2:
+        if len(tracks_meta) < 2:
             return {"ok": False, "error": "Kunne ikke finde nok sange"}
 
-        device_id = await self._find_speaker_device_id()
-        r = await self._http.put(
-            f"{API}/me/player/play",
-            headers=h,
-            params={"device_id": device_id} if device_id else {},
-            json={"uris": uris[:50], "offset": {"position": 0}, "position_ms": progress_ms},
-        )
-        ok = r.status_code in (200, 204)
-        if ok:
-            await self._beolink_expand()
-        return {"ok": ok, "name": f"Radio: {artist_name}", "tracks": len(uris)}
+        uris = [t["uri"] for t in tracks_meta]
+        return {
+            "ok": True,
+            "name": f"Radio: {artist_name}",
+            "tracks": len(uris),
+            "queue": tracks_meta,
+        }
 
     async def stop_radio(self) -> dict:
-        """Clear radio queue — play only the current track from its current position."""
+        """Kun klient-state; ingen Spotify-kald."""
+        return {"ok": True}
+
+    async def _album_track_rows(self, album_id: str, h: dict) -> list[dict]:
+        rows: list[dict] = []
+        offset = 0
+        while offset < 500:
+            r = await self._http.get(
+                f"{API}/albums/{album_id}/tracks",
+                headers=h,
+                params={"limit": 50, "offset": offset, "market": "DK"},
+            )
+            if r.status_code != 200:
+                break
+            data = r.json()
+            items = data.get("items", [])
+            for item in items:
+                tid = item.get("id")
+                uri = item.get("uri") or (f"spotify:track:{tid}" if tid else "")
+                if not uri:
+                    continue
+                rows.append({
+                    "uri": uri,
+                    "name": item.get("name", ""),
+                    "artist": ", ".join(a["name"] for a in item.get("artists", [])),
+                })
+            if len(items) < 50:
+                break
+            offset += 50
+        return rows
+
+    async def build_album_queue_from_track_uri(self, track_uri: str) -> dict:
+        """Alle spor på albummet for et track-uri (ingen afspilning)."""
         h = await self._headers()
         if not h:
             return {"ok": False, "error": "Ikke logget ind"}
-        np = await self.now_playing()
-        if not np or not np.get("uri"):
-            return {"ok": True}
-        device_id = await self._find_speaker_device_id()
-        r = await self._http.put(
-            f"{API}/me/player/play",
-            headers=h,
-            params={"device_id": device_id} if device_id else {},
-            json={"uris": [np["uri"]], "position_ms": np.get("progress_ms", 0)},
-        )
-        return {"ok": r.status_code in (200, 204)}
+        if not track_uri or "track" not in track_uri:
+            return {"ok": False, "error": "Mangler track"}
+        track_id = track_uri.split(":")[-1]
+        tr = await self._http.get(f"{API}/tracks/{track_id}", headers=h, params={"market": "DK"})
+        if tr.status_code != 200:
+            return {"ok": False, "error": "Kunne ikke hente track"}
+        album = tr.json().get("album") or {}
+        album_uri = album.get("uri") or ""
+        album_name = album.get("name", "")
+        album_id = album_uri.split(":")[-1] if album_uri else ""
+        if not album_id:
+            return {"ok": False, "error": "Intet album fundet"}
+        rows = await self._album_track_rows(album_id, h)
+        if not rows:
+            return {"ok": False, "error": "Tomt album"}
+        return {"ok": True, "album": album_name, "queue": rows}
 
     # Default kiosk playlist (POST /me/playlists). Override in spotify_config.json only if needed.
     _FAVORITES_PLAYLIST_ID_DEFAULT = "0lQTaldhDsvMlLAEctDX81"
@@ -473,20 +610,16 @@ class Spotify:
             return vals[0] if vals else False
         return False
 
-    async def save_track(self) -> dict:
-        """Toggle save for the currently playing track.
-
-        Uses PUT/DELETE /me/library (Feb 2026 endpoints) for Liked Songs.
-        On save, also adds to the Ejdersted Favorites playlist as a
-        permanent kiosk collection.
-        """
+    async def save_track(self, track_uri: str | None = None) -> dict:
+        """Toggle save for et track-uri (kiosk sender uri) eller nuværende afspilning."""
         h = await self._headers()
         if not h:
             return {"ok": False, "error": "Ikke logget ind"}
-        np = await self.now_playing()
-        if not np or not np.get("uri"):
-            return {"ok": False, "error": "Intet spiller"}
-        track_uri = np["uri"]
+        if not track_uri:
+            np = await self.now_playing()
+            if not np or not np.get("uri"):
+                return {"ok": False, "error": "Intet track"}
+            track_uri = np["uri"]
         saved = await self.is_track_saved(track_uri)
         if saved:
             r = await self._http.delete(
@@ -501,64 +634,98 @@ class Spotify:
                 await self._append_favorites_playlist(h, track_uri)
             return {"ok": ok, "saved": ok}
 
-    async def play_album(self) -> dict:
-        """Play the full album of the currently playing track from track 1."""
+    async def build_album_queue_from_album_uri(self, album_uri: str) -> dict:
+        """Alle spor på et album-uri (spotify:album:…)."""
         h = await self._headers()
         if not h:
             return {"ok": False, "error": "Ikke logget ind"}
-        np = await self.now_playing()
-        if not np or not np.get("uri"):
-            return {"ok": False, "error": "Intet spiller"}
+        if not album_uri or "album" not in album_uri:
+            return {"ok": False, "error": "Mangler album-uri"}
+        album_id = album_uri.split(":")[-1]
+        ar = await self._http.get(f"{API}/albums/{album_id}", headers=h, params={"market": "DK"})
+        album_name = ""
+        if ar.status_code == 200:
+            album_name = ar.json().get("name", "")
+        rows = await self._album_track_rows(album_id, h)
+        if not rows:
+            return {"ok": False, "error": "Tomt album"}
+        return {"ok": True, "album": album_name, "queue": rows}
 
-        # Get the track's album URI
-        track_id = np["uri"].split(":")[-1]
-        r = await self._http.get(f"{API}/tracks/{track_id}", headers=h)
-        if r.status_code != 200:
-            return {"ok": False, "error": "Kunne ikke hente track info"}
-        album_uri = r.json().get("album", {}).get("uri")
-        album_name = r.json().get("album", {}).get("name", "")
-        if not album_uri:
-            return {"ok": False, "error": "Intet album fundet"}
-
-        device_id = await self._find_speaker_device_id()
-        r = await self._http.put(
-            f"{API}/me/player/play",
-            headers=h,
-            params={"device_id": device_id} if device_id else {},
-            json={"context_uri": album_uri},
+    async def build_artist_top_queue(self, artist_uri: str) -> dict:
+        h = await self._headers()
+        if not h:
+            return {"ok": False, "error": "Ikke logget ind"}
+        aid = artist_uri.split(":")[-1]
+        r = await self._http.get(
+            f"{API}/artists/{aid}/top-tracks", headers=h, params={"market": "DK"},
         )
-        ok = r.status_code in (200, 204)
-        if ok:
-            await self._beolink_expand()
-        return {"ok": ok, "album": album_name}
+        if r.status_code != 200:
+            return {"ok": False, "error": "Kunne ikke hente artist"}
+        rows: list[dict] = []
+        for tr in r.json().get("tracks", []) or []:
+            rows.append({
+                "uri": tr.get("uri", ""),
+                "name": tr.get("name", ""),
+                "artist": ", ".join(a["name"] for a in tr.get("artists", [])),
+            })
+        rows = [x for x in rows if x["uri"]]
+        if not rows:
+            return {"ok": False, "error": "Ingen top-sange"}
+        return {"ok": True, "queue": rows}
+
+    async def build_playlist_queue(self, playlist_uri: str, limit: int = 80) -> dict:
+        h = await self._headers()
+        if not h:
+            return {"ok": False, "error": "Ikke logget ind"}
+        pid = playlist_uri.split(":")[-1]
+        rows: list[dict] = []
+        offset = 0
+        while len(rows) < limit:
+            r = await self._http.get(
+                f"{API}/playlists/{pid}/tracks",
+                headers=h,
+                params={"limit": 50, "offset": offset, "market": "DK"},
+            )
+            if r.status_code != 200:
+                break
+            for item in r.json().get("items", []):
+                tr = item.get("track") or {}
+                if not tr or tr.get("is_local"):
+                    continue
+                uri = tr.get("uri") or ""
+                if not uri.startswith("spotify:track:"):
+                    continue
+                rows.append({
+                    "uri": uri,
+                    "name": tr.get("name", ""),
+                    "artist": ", ".join(a["name"] for a in tr.get("artists", [])),
+                })
+                if len(rows) >= limit:
+                    break
+            if len(r.json().get("items", [])) < 50:
+                break
+            offset += 50
+        if not rows:
+            return {"ok": False, "error": "Tom playlist"}
+        return {"ok": True, "queue": rows}
 
     async def voice_command(self, transcript: str) -> dict:
-        """Parse a voice transcript and execute the most likely intent."""
+        """Stemme: kun kø-metadata til klienten — ingen afspilning herfra."""
         t = transcript.lower().strip()
 
-        # Stop / pause
         if t in ("stop", "pause", "stil", "stop musik", "pause musik"):
             ok = await self.pause()
             return {"action": "pause", "ok": ok}
 
-        # Skip
         if t in ("skip", "næste", "next", "skip sang"):
-            ok = await self.skip()
-            return {"action": "skip", "ok": ok}
+            return {"action": "local_nav", "ok": True, "delta": 1}
 
-        # Previous
         if t in ("tilbage", "previous", "forrige"):
-            ok = await self.previous()
-            return {"action": "previous", "ok": ok}
+            return {"action": "local_nav", "ok": True, "delta": -1}
 
-        # Resume
-        if t in ("play", "spil", "afspil", "fortsæt"):
-            device_id = await self._find_speaker_device_id()
-            await self._beolink_expand()
-            ok = await self.play(device_id=device_id)
-            return {"action": "resume", "ok": ok}
+        if t in ("play", "spil", "afspil", "fortsæt") and len(t.split()) <= 1:
+            return {"action": "use_play_button", "ok": True}
 
-        # Search & play — strip leading "spil"/"play"/"sæt .. på"
         query = t
         for prefix in ("spil ", "play ", "afspil ", "sæt ", "put on "):
             if t.startswith(prefix):
@@ -566,7 +733,6 @@ class Spotify:
                 break
         query = query.removesuffix(" på").removesuffix(" on")
 
-        # Album keyword — "album X" forces album search
         force_album = False
         for album_prefix in ("album ", "albummet ", "albumet "):
             if query.startswith(album_prefix):
@@ -578,43 +744,63 @@ class Spotify:
         if not results:
             return {"action": "search", "ok": False, "query": query}
 
-        # Prioritise: track → artist → album → playlist
         tracks = results.get("tracks", {}).get("items", [])
         artists = results.get("artists", {}).get("items", [])
         albums = results.get("albums", {}).get("items", [])
         playlists = results.get("playlists", {}).get("items", [])
 
-        # Always prefer M5 as target — BeoLink expand BEFORE Spotify play
-        device_id = await self._find_speaker_device_id()
-        await self._beolink_expand()
-
-        result: dict | None = None
-
         if force_album and albums:
-            album = albums[0]
-            ok = await self.play(context_uri=album["uri"], device_id=device_id)
-            result = {"action": "play_album", "ok": ok, "name": album["name"],
-                      "artist": ", ".join(a["name"] for a in album.get("artists", []))}
-        elif tracks and not force_album:
-            track = tracks[0]
-            ok = await self.play(uri=track["uri"], device_id=device_id)
-            result = {"action": "play_track", "ok": ok,
-                      "name": track["name"],
-                      "artist": ", ".join(a["name"] for a in track.get("artists", []))}
-        elif artists and not force_album:
-            artist = artists[0]
-            ok = await self.play(context_uri=artist["uri"], device_id=device_id)
-            result = {"action": "play_artist", "ok": ok, "name": artist["name"]}
-        elif albums:
-            album = albums[0]
-            ok = await self.play(context_uri=album["uri"], device_id=device_id)
-            result = {"action": "play_album", "ok": ok, "name": album["name"],
-                      "artist": ", ".join(a["name"] for a in album.get("artists", []))}
-        elif playlists:
-            pl = playlists[0]
-            ok = await self.play(context_uri=pl["uri"], device_id=device_id)
-            result = {"action": "play_playlist", "ok": ok, "name": pl["name"]}
-        else:
-            return {"action": "search", "ok": False, "query": query}
+            inner = await self.build_album_queue_from_album_uri(albums[0]["uri"])
+            if not inner.get("ok"):
+                return {**inner, "action": "enqueue_queue"}
+            return {
+                "action": "enqueue_queue",
+                "ok": True,
+                "queue": inner["queue"],
+                "label": inner.get("album", albums[0].get("name", "")),
+            }
 
-        return result
+        if tracks and not force_album:
+            track = tracks[0]
+            return {
+                "action": "enqueue",
+                "ok": True,
+                "uri": track["uri"],
+                "name": track["name"],
+                "artist": ", ".join(a["name"] for a in track.get("artists", [])),
+            }
+
+        if artists and not force_album:
+            inner = await self.build_artist_top_queue(artists[0]["uri"])
+            if not inner.get("ok"):
+                return {**inner, "action": "enqueue_queue"}
+            return {
+                "action": "enqueue_queue",
+                "ok": True,
+                "queue": inner["queue"],
+                "label": artists[0].get("name", ""),
+            }
+
+        if albums:
+            inner = await self.build_album_queue_from_album_uri(albums[0]["uri"])
+            if not inner.get("ok"):
+                return {**inner, "action": "enqueue_queue"}
+            return {
+                "action": "enqueue_queue",
+                "ok": True,
+                "queue": inner["queue"],
+                "label": inner.get("album", albums[0].get("name", "")),
+            }
+
+        if playlists:
+            inner = await self.build_playlist_queue(playlists[0]["uri"])
+            if not inner.get("ok"):
+                return {**inner, "action": "enqueue_queue"}
+            return {
+                "action": "enqueue_queue",
+                "ok": True,
+                "queue": inner["queue"],
+                "label": playlists[0].get("name", ""),
+            }
+
+        return {"action": "search", "ok": False, "query": query}

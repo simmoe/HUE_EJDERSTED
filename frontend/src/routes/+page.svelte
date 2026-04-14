@@ -5,6 +5,18 @@
   import VolumeKnob from '$lib/VolumeKnob.svelte';
   import SpotifyVoice from '$lib/SpotifyVoice.svelte';
   import CameraCard from '$lib/CameraCard.svelte';
+  import {
+    playlist,
+    activeQueue,
+    registerScrollToNowPlaying,
+    initPlaylistHub,
+    togglePlayPause,
+    spotifyNextTrack,
+    spotifyPreviousTrack,
+    toggleRadio,
+    playAlbum,
+    handleVoicePayload,
+  } from '$lib/playlistHub.svelte';
 
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
@@ -54,10 +66,15 @@
     resetDim();
   }
 
+  let stopPlaylistHub: (() => void) | undefined;
+
   onMount(() => {
     store.connect();
     updateClock();
     clockInterval = setInterval(updateClock, 1000);
+    void initPlaylistHub().then((stop) => {
+      stopPlaylistHub = stop;
+    });
     // Re-apply kiosk settings (immersive mode, landscape) on every page load
     setTimeout(() => fetch('/api/kiosk', { method: 'POST' }).catch(() => {}), 1500);
     document.addEventListener('visibilitychange', () => {
@@ -68,7 +85,10 @@
     });
     // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
     document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
-    return () => clearInterval(clockInterval);
+    return () => {
+      clearInterval(clockInterval);
+      stopPlaylistHub?.();
+    };
   });
 
   // ── Horizontal page carousel ────────────────────────────────────────────────
@@ -111,7 +131,7 @@
   let streamerTimer: ReturnType<typeof setTimeout>;
 
   $effect(() => {
-    if (spotifyTitle) checkSaved();
+    if (playlist.spotifyTitle) checkSaved();
   });
 
   $effect(() => {
@@ -166,15 +186,6 @@
     }
   }
 
-  let spotifyTitle = $state('');
-  let spotifyArtist = $state('');
-  let spotifyRadio = $state(false);
-  let spotifyRadioLoading = $state(false);
-  let spotifyRadioError = $state('');
-  let spotifyPlaying = $state(false);
-  let spotifyNextTitle = $state('');
-  let spotifyNextArtist = $state('');
-  let spotifyAlbumActive = $state(false);
   let spotifySaved = $state(false);
 
   // ── Vertical card carousel ──────────────────────────────────────────────
@@ -216,75 +227,42 @@
     if (lysInner) nextLysCard = readNextCardName(lysInner);
   });
 
-  function scrollToNowPlaying() {
+  $effect(() => {
     if (!lydInner) return;
-    // Cycle DOM until .np-card is first child
-    while (lydInner.firstElementChild && !lydInner.firstElementChild.classList.contains('np-card')) {
-      lydInner.appendChild(lydInner.firstElementChild);
-    }
-    lydInner.scrollTo({ top: 0, behavior: 'instant' });
-  }
-
-  async function togglePlayPause() {
-    const endpoint = spotifyPlaying ? '/api/spotify/pause' : '/api/spotify/resume';
-    try {
-      const r = await fetch(endpoint, { method: 'POST' });
-      const data = await r.json();
-      if (data.ok) spotifyPlaying = !spotifyPlaying;
-    } catch {}
-  }
-
-  async function toggleRadio() {
-    if (spotifyRadio) {
-      try { await fetch('/api/spotify/radio', { method: 'DELETE' }); } catch {}
-      spotifyRadio = false;
-      spotifyRadioError = '';
-      return;
-    }
-    spotifyRadioLoading = true;
-    spotifyRadioError = '';
-    spotifyAlbumActive = false;
-    scrollToNowPlaying();
-    try {
-      const r = await fetch('/api/spotify/radio', { method: 'POST' });
-      const data = await r.json();
-      spotifyRadio = !!data.ok;
-      spotifyRadioError = data.ok ? '' : (data.error ?? 'Radio fejlede');
-    } catch {
-      spotifyRadio = false;
-      spotifyRadioError = 'Ingen forbindelse til hub';
-    } finally {
-      spotifyRadioLoading = false;
-    }
-  }
+    registerScrollToNowPlaying(() => {
+      if (!lydInner) return;
+      while (lydInner.firstElementChild && !lydInner.firstElementChild.classList.contains('np-card')) {
+        lydInner.appendChild(lydInner.firstElementChild);
+      }
+      lydInner.scrollTo({ top: 0, behavior: 'instant' });
+    });
+  });
 
   async function checkSaved() {
+    if (!playlist.spotifyTrackUri) {
+      spotifySaved = false;
+      return;
+    }
     try {
-      const r = await fetch('/api/spotify/is-saved');
+      const r = await fetch(`/api/spotify/is-saved?uri=${encodeURIComponent(playlist.spotifyTrackUri)}`);
       const data = await r.json();
       spotifySaved = !!data.saved;
-    } catch { spotifySaved = false; }
+    } catch {
+      spotifySaved = false;
+    }
   }
 
   async function toggleSave() {
+    if (!playlist.spotifyTrackUri) return;
     try {
-      const r = await fetch('/api/spotify/save', { method: 'POST' });
+      const r = await fetch('/api/spotify/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uri: playlist.spotifyTrackUri }),
+      });
       const data = await r.json();
-      if (data.ok) spotifySaved = data.saved;
+      if (data.ok) spotifySaved = !!data.saved;
     } catch {}
-  }
-
-  async function playAlbum() {
-    spotifyAlbumActive = true;
-    spotifyRadio = false;
-    scrollToNowPlaying();
-    try {
-      const r = await fetch('/api/spotify/album', { method: 'POST' });
-      const data = await r.json();
-      if (!data.ok) spotifyAlbumActive = false;
-    } catch {
-      spotifyAlbumActive = false;
-    }
   }
 
   let hueManualIp  = $state('');
@@ -354,33 +332,72 @@
         <!-- Now Playing (default card, always visible) -->
         <div class="np-card" data-name="Afspiller">
           <div class="np-info">
-            {#if spotifyTitle}
-              <span class="np-card-title">{spotifyTitle}</span>
-              {#if spotifyArtist}<span class="np-card-artist">{spotifyArtist}</span>{/if}
-              <button class="heart-btn" class:saved={spotifySaved} onclick={toggleSave} aria-label={spotifySaved ? 'Fjern fra liked' : 'Gem sang'}>
-                <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" fill={spotifySaved ? 'currentColor' : 'none'}>
-                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-                </svg>
-              </button>
-              {#if spotifyNextTitle && (spotifyRadio || spotifyAlbumActive)}
-                <div class="np-next-streamer">
-                  <span class="np-next-title">{spotifyNextTitle}</span>
-                  {#if spotifyNextArtist}<span class="np-next-artist">{spotifyNextArtist}</span>{/if}
+            {#if playlist.spotifyTitle}
+              <span class="np-card-title">{playlist.spotifyTitle}</span>
+              {#if playlist.spotifyArtist}<span class="np-card-artist">{playlist.spotifyArtist}</span>{/if}
+              {#if activeQueue().length > 1}
+                <div class="np-track-nav" role="group" aria-label="Sang">
+                  <button type="button" class="np-track-nav-btn" onclick={spotifyPreviousTrack} aria-label="Forrige i køen">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="15 18 9 12 15 6" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="heart-btn"
+                    class:saved={spotifySaved}
+                    onclick={toggleSave}
+                    disabled={!playlist.spotifyTrackUri}
+                    aria-label={spotifySaved ? 'Fjern fra liked' : 'Gem sang'}
+                  >
+                    <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" fill={spotifySaved ? 'currentColor' : 'none'}>
+                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                    </svg>
+                  </button>
+                  <button type="button" class="np-track-nav-btn" onclick={spotifyNextTrack} aria-label="Næste i køen">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </button>
                 </div>
-              {:else if spotifyNextTitle}
-                <span class="np-card-next">{spotifyNextTitle}</span>
+              {:else}
+                <div class="np-track-nav np-track-nav--single" aria-hidden="true">
+                  <span class="np-track-nav-spacer"></span>
+                  <button
+                    type="button"
+                    class="heart-btn"
+                    class:saved={spotifySaved}
+                    onclick={toggleSave}
+                    disabled={!playlist.spotifyTrackUri}
+                    aria-label={spotifySaved ? 'Fjern fra liked' : 'Gem sang'}
+                  >
+                    <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" fill={spotifySaved ? 'currentColor' : 'none'}>
+                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                    </svg>
+                  </button>
+                  <span class="np-track-nav-spacer"></span>
+                </div>
               {/if}
+              {#if playlist.spotifyNextTitle}
+                <div class="np-next-streamer">
+                  <span class="np-next-title">{playlist.spotifyNextTitle}</span>
+                  {#if playlist.spotifyNextArtist}<span class="np-next-artist">{playlist.spotifyNextArtist}</span>{/if}
+                </div>
+              {/if}
+            {:else}
+              <span class="np-card-title np-card-title--muted">Ingen valgt sang</span>
+              <span class="np-card-artist">Brug mikrofonen nedenfor for at tilføje til køen</span>
             {/if}
           </div>
           <div class="action-row">
-            <button class="action-btn" onclick={togglePlayPause}>
-              {spotifyPlaying ? 'pause' : 'play'}
+            <button type="button" class="action-btn" onclick={togglePlayPause}>
+              {playlist.spotifyPlaying ? 'pause' : 'play'}
             </button>
-            <button class="action-btn" class:active={spotifyRadio} class:loading={spotifyRadioLoading} onclick={toggleRadio} disabled={spotifyRadioLoading}>
-              {spotifyRadioLoading ? '· · ·' : 'radio'}
+            <button type="button" class="action-btn" class:active={playlist.spotifyRadio} class:loading={playlist.spotifyRadioLoading} onclick={toggleRadio} disabled={playlist.spotifyRadioLoading}>
+              {playlist.spotifyRadioLoading ? '· · ·' : 'radio'}
             </button>
-            <button class="action-btn" class:active={spotifyAlbumActive} onclick={playAlbum}>
-              album
+            <button type="button" class="action-btn" class:active={playlist.spotifyAlbumActive} class:loading={playlist.spotifyAlbumLoading} onclick={playAlbum} disabled={playlist.spotifyAlbumLoading}>
+              {playlist.spotifyAlbumLoading ? '· · ·' : 'album'}
             </button>
           </div>
         </div>
@@ -412,20 +429,27 @@
         {/if}
 
         <!-- Spotify Voice -->
-        <Card name="Musik" status={spotifyRadioLoading ? 'Opbygger radio…' : spotifyRadioError ? spotifyRadioError : spotifyRadio ? 'Song Radio' : spotifyAlbumActive ? 'Album' : ''} >
-          <SpotifyVoice
-            bind:npTitle={spotifyTitle}
-            bind:npArtist={spotifyArtist}
-            bind:nextTitle={spotifyNextTitle}
-            bind:nextArtist={spotifyNextArtist}
-            bind:isPlaying={spotifyPlaying}
-            bind:radioActive={spotifyRadio}
-            onresult={scrollToNowPlaying}
-          />
+        <Card
+          name="Musik"
+          status={playlist.spotifyRadioLoading
+            ? 'Opbygger radio…'
+            : playlist.spotifyAlbumLoading
+              ? 'Henter album…'
+              : playlist.spotifyRadioError
+                ? playlist.spotifyRadioError
+                : playlist.spotifyAlbumError
+                  ? playlist.spotifyAlbumError
+                  : playlist.playListMode === 'radio'
+                    ? 'Song Radio (lokal kø)'
+                    : playlist.playListMode === 'album'
+                      ? 'Album (lokal kø)'
+                      : 'Mikrofon-kø'}
+        >
+          <SpotifyVoice onvoice={handleVoicePayload} />
         </Card>
 
       </div>
-      <button class="card-arrow" onclick={() => advanceCard(lydInner, 'lyd')} aria-label="Næste kort">
+      <button type="button" class="card-arrow card-arrow--lyd" onclick={() => advanceCard(lydInner, 'lyd')} aria-label="Næste kort">
         <span class="arrow-label">{nextLydCard}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
@@ -499,7 +523,7 @@
         {/if}
 
       </div>
-      <button class="card-arrow" onclick={() => advanceCard(lysInner, 'lys')} aria-label="Næste kort">
+      <button type="button" class="card-arrow card-arrow--lys" onclick={() => advanceCard(lysInner, 'lys')} aria-label="Næste kort">
         <span class="arrow-label">{nextLysCard}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
@@ -560,7 +584,7 @@
     pointer-events: auto;
   }
 
-  /* ── Clock (Apple Standby style) ──────────────────────────────────────────── */
+  /* ── Clock: kun kontur (ingen fyld) — neutral, lavere luminans end hvid fyld ─ */
   .clock {
     position: fixed;
     inset: 0;
@@ -569,12 +593,15 @@
     align-items: center;
     justify-content: center;
     pointer-events: none;
-    font-size: clamp(10rem, 30vw, 22rem);
-    font-weight: 200;
-    letter-spacing: -0.03em;
-    color: #fff;
+    font-size: clamp(12rem, 38vw, 28rem);
+    font-weight: 300;
+    letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
     font-family: 'Roboto', -apple-system, system-ui, sans-serif;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    -webkit-text-stroke: 1.35px rgba(145, 145, 145, 0.5);
+    text-shadow: none;
     animation: clock-in 1.5s ease both;
   }
 
@@ -706,29 +733,39 @@
     overflow-y: auto;
     touch-action: none;
     max-width: none;
-    padding: 0;
+    /* Luft til fixed card-arrow (label + gap + ikon + bund-margin) */
+    padding: 0 0 calc(18px + 44px + env(safe-area-inset-bottom, 0px));
     gap: 0;
     scrollbar-width: none;
   }
   .scroll-inner::-webkit-scrollbar { display: none; }
 
-  /* ── Card down-arrow ───────────────────────────────────────────────────────────── */
+  /* ── Card down-arrow (fixed — klemmer ikke kortene; én pr. viewport-halv) ───── */
   .card-arrow {
-    position: absolute;
-    bottom: 18px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 5;
+    position: fixed;
+    bottom: max(18px, env(safe-area-inset-bottom, 0px));
+    z-index: 6;
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: flex-end;
     gap: 2px;
+    width: 50dvw;
+    margin: 0;
+    padding: 0;
     background: none;
     border: none;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     color: #595959;
     transition: color 0.2s;
+    pointer-events: auto;
+  }
+  .card-arrow--lyd {
+    left: 0;
+  }
+  .card-arrow--lys {
+    left: 50dvw;
   }
   .card-arrow:active { color: #ebebeb; }
   .card-arrow svg {
@@ -798,17 +835,51 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 40px;
-    padding: 24px 32px;
+    /* flex-start: kompakt midte, luft under action-knapper mod bundpil */
+    justify-content: flex-start;
+    gap: 18px;
+    padding: 16px 24px 12px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .np-track-nav {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-top: 2px;
+  }
+
+  .np-track-nav-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    padding: 10px 12px;
+    margin: 0;
+    color: #4a4a4a;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.15s;
+  }
+
+  .np-track-nav-btn svg {
+    width: 20px;
+    height: 20px;
+    display: block;
+  }
+
+  .np-track-nav-btn:active {
+    color: #0080c8;
   }
 
   .np-info {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     max-width: 100%;
   }
 
@@ -822,6 +893,30 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 100%;
+  }
+
+  .np-card-title--muted {
+    color: #595959;
+  }
+
+  .np-track-nav--single {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-top: 2px;
+  }
+
+  .np-track-nav-spacer {
+    width: 44px;
+    height: 1px;
+    flex-shrink: 0;
+  }
+
+  .heart-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
 
   .np-card-artist {
@@ -841,8 +936,8 @@
     border: none;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    padding: 8px;
-    margin-top: 12px;
+    padding: 6px 4px;
+    margin: 0;
     color: #595959;
     transition: color 0.2s, transform 0.2s;
   }
@@ -863,7 +958,7 @@
     font-weight: 300;
     color: #888888;
     text-align: center;
-    margin-top: 16px;
+    margin-top: 4px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -875,8 +970,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
-    margin-top: 24px;
+    gap: 2px;
+    margin-top: 6px;
     opacity: 0;
     animation: streamer-in 0.8s ease 0.2s forwards;
   }

@@ -200,6 +200,8 @@ For at genaktivere volume-HUD: `... SYSTEM_ALERT_WINDOW allow`.
 | `POST` | `/api/spotify/voice` | Stemmesøgning (EN/DA) → afspil på M5 + BeoLink A9 |
 | `POST` | `/api/spotify/resume` | Genoptag afspilning |
 | `POST` | `/api/spotify/pause` | Pause afspilning |
+| `POST` | `/api/spotify/skip` | Næste track (Spotify Connect) |
+| `POST` | `/api/spotify/previous` | Forrige track / start forfra (Spotify Connect) |
 | `POST` | `/api/spotify/radio` | Start radio (anbefalinger baseret på nuværende track) |
 | `GET` | `/api/spotify/now-playing` | Nuværende track info |
 

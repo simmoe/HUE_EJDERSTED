@@ -9,13 +9,14 @@ Home Automation Hub — FastAPI backend
 """
 
 import asyncio
+import errno
 import json
 import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
@@ -25,8 +26,10 @@ from spotify import Spotify
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
-DEVICES_FILE = BASE_DIR.parent / "devices.json"
+REPO_ROOT = BASE_DIR.parent
+DEVICES_FILE = REPO_ROOT / "devices.json"
 STATIC_DIR = BASE_DIR / "static"
+HUB_GLOBALS_FILE = REPO_ROOT / "hub_globals.json"
 
 # ─── HTTP client ──────────────────────────────────────────────────────────────
 _http = httpx.AsyncClient(timeout=2.5)
@@ -486,6 +489,20 @@ async def trigger_kiosk():
         await proc.wait()
     return {"ok": True}
 
+# ─── Hub globals (Firebase m.m. — hub_globals.json, ikke i git) ───────────────
+@app.get("/api/config/firebase")
+async def hub_firebase_config():
+    """Returnerer Firebase web client config til frontend (tom objekt hvis fil mangler)."""
+    if not HUB_GLOBALS_FILE.is_file():
+        return {}
+    try:
+        blob = json.loads(HUB_GLOBALS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    fb = blob.get("firebase")
+    return fb if isinstance(fb, dict) else {}
+
+
 # ─── REST: Spotify ────────────────────────────────────────────────────────────
 @app.get("/api/spotify/status")
 async def spotify_status():
@@ -530,29 +547,62 @@ async def spotify_pause():
 async def spotify_resume():
     return {"ok": await spotify.resume()}
 
+@app.post("/api/spotify/play-uris")
+async def spotify_play_uris(data: dict = Body(default_factory=dict)):
+    uris = data.get("uris") or []
+    offset = int(data.get("offset") or 0)
+    position_ms = int(data.get("position_ms") or 0)
+    return {"ok": await spotify.play_uris_queue(uris, offset, position_ms)}
+
 @app.post("/api/spotify/skip")
 async def spotify_skip():
     return {"ok": await spotify.skip()}
 
+
+@app.post("/api/spotify/previous")
+async def spotify_previous():
+    return {"ok": await spotify.previous()}
+
+@app.post("/api/spotify/radio/build")
+async def spotify_radio_build(data: dict = Body(default_factory=dict)):
+    return await spotify.build_radio_queue(
+        (data.get("seed_uri") or "").strip(),
+        (data.get("seed_name") or "").strip(),
+        (data.get("seed_artist") or "").strip(),
+    )
+
 @app.post("/api/spotify/radio")
-async def spotify_radio():
-    return await spotify.start_radio()
+async def spotify_radio(data: dict = Body(default_factory=dict)):
+    """Byg radio-kø (kræver JSON-body med seed_uri)."""
+    return await spotify.build_radio_queue(
+        (data.get("seed_uri") or "").strip(),
+        (data.get("seed_name") or "").strip(),
+        (data.get("seed_artist") or "").strip(),
+    )
 
 @app.delete("/api/spotify/radio")
 async def spotify_radio_stop():
     return await spotify.stop_radio()
 
+@app.post("/api/spotify/album/build")
+async def spotify_album_build(data: dict = Body(default_factory=dict)):
+    return await spotify.build_album_queue_from_track_uri((data.get("track_uri") or "").strip())
+
 @app.post("/api/spotify/album")
-async def spotify_album():
-    return await spotify.play_album()
+async def spotify_album(data: dict = Body(default_factory=dict)):
+    return await spotify.build_album_queue_from_track_uri((data.get("track_uri") or "").strip())
 
 @app.post("/api/spotify/save")
-async def spotify_save():
-    return await spotify.save_track()
+async def spotify_save(data: dict | None = Body(default=None)):
+    uri = (data or {}).get("uri") if data else None
+    if isinstance(uri, str):
+        uri = uri.strip() or None
+    return await spotify.save_track(uri)
 
 @app.get("/api/spotify/is-saved")
-async def spotify_is_saved():
-    return {"saved": await spotify.is_track_saved()}
+async def spotify_is_saved(uri: str | None = None):
+    u = (uri or "").strip() or None
+    return {"saved": await spotify.is_track_saved(u)}
 
 @app.get("/api/spotify/token")
 async def spotify_token():
@@ -568,12 +618,32 @@ if STATIC_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
+
     cert = BASE_DIR.parent / "certs" / "cert.pem"
     key = BASE_DIR.parent / "certs" / "key.pem"
-    if cert.exists() and key.exists():
-        print("Home Hub → https://localhost:8443")
-        uvicorn.run(app, host="0.0.0.0", port=8443, log_level="warning",
-                    ssl_certfile=str(cert), ssl_keyfile=str(key))
-    else:
-        print("Home Hub → http://localhost:8000")
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    use_tls = cert.exists() and key.exists()
+    port = 8443 if use_tls else 8000
+
+    try:
+        if use_tls:
+            print("Home Hub → https://localhost:8443")
+            uvicorn.run(
+                app,
+                host="0.0.0.0",
+                port=8443,
+                log_level="warning",
+                ssl_certfile=str(cert),
+                ssl_keyfile=str(key),
+            )
+        else:
+            print("Home Hub → http://localhost:8000")
+            uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            print(
+                f"\nPort {port} is already in use — another Home Hub (or process) holds it.\n"
+                f"Free the port, then start again:\n"
+                f"  lsof -ti tcp:{port} | xargs kill -9\n"
+            )
+            raise SystemExit(1) from e
+        raise

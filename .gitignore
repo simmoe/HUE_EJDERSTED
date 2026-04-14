@@ -18,6 +18,7 @@ hue_config.json
 spotify_config.json
 devices.json
 gemini_api_key.txt
+hub_globals.json
 
 # TLS certs
 certs/

@@ -24,9 +24,22 @@
 	<body data-sveltekit-preload-data="hover">
 		<div style="display: contents">%sveltekit.body%</div>
 		<script>
-			if ('serviceWorker' in navigator) {
+			(function () {
+				// Vite dev / preview: ingen SW — ellers caches shell og HMR/CSS-opdateringer ses ikke.
+				var p = location.port;
+				var isViteDev = p === '5173' || p === '24678';
+				var isPreview = p === '4173';
+				if (!('serviceWorker' in navigator)) return;
+				if (isViteDev || isPreview) {
+					navigator.serviceWorker.getRegistrations().then(function (rs) {
+						rs.forEach(function (r) {
+							r.unregister();
+						});
+					});
+					return;
+				}
 				navigator.serviceWorker.register('/sw.js');
-			}
+			})();
 		</script>
 	</body>
 </html>
