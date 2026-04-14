@@ -65,37 +65,30 @@ let applyingRemote = false;
 let unsubState: (() => void) | null = null;
 
 function handlePlaybackState(s: PlaybackState) {
-  if (!s.paused && s.trackUri) {
-    if (!playlist.spotifyPlaying) playlist.spotifyPlaying = true;
-    const q = activeQueue();
-    const idx = activeIndex();
-    if (q[idx]?.uri !== s.trackUri) {
-      const newIdx = q.findIndex((t) => t.uri === s.trackUri);
-      if (newIdx !== -1) {
-        setActiveIndex(newIdx);
-        paintNpFromQueues();
-        scrollToNowPlaying();
-      }
+  if (!s.paused) {
+    if (!playlist.spotifyPlaying) {
+      playlist.spotifyPlaying = true;
+      schedulePush();
     }
-    schedulePush();
     return;
   }
 
-  if (s.paused && playlist.spotifyPlaying) {
-    const trackEnded = s.duration > 0 && s.position >= s.duration - 1500;
+  if (!playlist.spotifyPlaying) return;
+
+  const trackEnded = s.duration > 0 && s.position >= s.duration - 1500;
+  if (trackEnded) {
     const q = activeQueue();
     const idx = activeIndex();
-    if (trackEnded && idx + 1 < q.length) {
+    if (idx + 1 < q.length) {
       setActiveIndex(idx + 1);
       paintNpFromQueues();
       scrollToNowPlaying();
       void playFromCurrentIndex();
-    } else {
-      playlist.spotifyPlaying = false;
+      return;
     }
-    schedulePush();
-    return;
   }
+  playlist.spotifyPlaying = false;
+  schedulePush();
 }
 
 function isQTrack(x: unknown): x is QTrack {
@@ -227,9 +220,8 @@ function seedUriForAlbumBuild(): string {
 async function playFromCurrentIndex(): Promise<boolean> {
   const q = activeQueue();
   const idx = activeIndex();
-  if (!q.length || !q[idx]?.uri) return false;
-  const uris = q.slice(idx).map((t) => t.uri).filter((u) => u.startsWith('spotify:track:'));
-  if (!uris.length) return false;
+  const uri = q[idx]?.uri;
+  if (!uri?.startsWith('spotify:track:')) return false;
   try {
     await initSpotifyWebPlayer();
     await waitForWebDevice(15000);
@@ -238,7 +230,7 @@ async function playFromCurrentIndex(): Promise<boolean> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        uris,
+        uris: [uri],
         offset: 0,
         position_ms: 0,
         ...(webDevice ? { device_id: webDevice } : {}),
