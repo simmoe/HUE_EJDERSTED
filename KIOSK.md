@@ -18,9 +18,18 @@ der kører på en Raspberry Pi 5 (produktion) eller en Mac (udvikling).
 |---|---|
 | **Model** | Samsung Galaxy A12 (SM-A125F m.fl.) |
 | **Skærm** | 6,5" PLS LCD, 60 Hz, 20∶9 |
-| **Panelopløsning** | **720 × 1600** px (HD+) |
+| **Panel (fysiske pixels)** | **720 × 1600** (portræt, kort kant × lang) — i **landskab** er det **1600 × 720** fysisk |
 | **Kabinet (H×B×D)** | **164 × 75,8 × 8,9** mm |
-| **Layout i UI** | `100dvh` / `device-width` — følger **CSS-pixels** i Chrome (typisk **~800 × 360** i landskab ved 2× devicePixelRatio; kan variere med system/indstillinger). |
+| **Det web ser (CSS-pixels)** | **Ikke** 1600×720. Chrome bruger **logiske/layout-pixels**; typisk **`devicePixelRatio` ≈ 2**, så landskab ofte ca. **800 × 360** `innerWidth`×`innerHeight` (halvdelen ≈ **400 × 360** pr. kolonne). |
+
+**Hvorfor det føles “mere kompakt” på telefonen**
+
+- **Density / DPR:** Én **CSS px** svarer til flere **hardware-pixels** (fx 2×). UI måles i CSS px — derfor færre “enheder” end 1600×720.
+- **Samsung “Skærmstørrelse” / “Skriftstørrelse”** (Indstillinger → Skærm): gør indhold tættere eller luftigere uden at ændre panellets fysiske 720×1600.
+- **`width=device-width`** i `app.html`: viewport = den logiske bredde Android giver siden — følger systemets density-bucket.
+
+**Tjek på enheden** (Chrome → Fjernfejl / `chrome://inspect`, eller midlertidig `console.log`):  
+`innerWidth`, `innerHeight`, `devicePixelRatio`, `screen.width`, `screen.height`.
 
 Reference: [GSMArena — Galaxy A12](https://www.gsmarena.com/samsung_galaxy_a12-10604.php).
 
