@@ -65,23 +65,37 @@ let applyingRemote = false;
 let unsubState: (() => void) | null = null;
 
 function handlePlaybackState(s: PlaybackState) {
-  if (s.paused && playlist.spotifyPlaying) {
-    playlist.spotifyPlaying = false;
+  if (!s.paused && s.trackUri) {
+    if (!playlist.spotifyPlaying) playlist.spotifyPlaying = true;
+    const q = activeQueue();
+    const idx = activeIndex();
+    if (q[idx]?.uri !== s.trackUri) {
+      const newIdx = q.findIndex((t) => t.uri === s.trackUri);
+      if (newIdx !== -1) {
+        setActiveIndex(newIdx);
+        paintNpFromQueues();
+        scrollToNowPlaying();
+      }
+    }
     schedulePush();
     return;
   }
-  if (!s.paused && !playlist.spotifyPlaying) {
-    playlist.spotifyPlaying = true;
+
+  if (s.paused && playlist.spotifyPlaying) {
+    const trackEnded = s.duration > 0 && s.position >= s.duration - 1500;
+    const q = activeQueue();
+    const idx = activeIndex();
+    if (trackEnded && idx + 1 < q.length) {
+      setActiveIndex(idx + 1);
+      paintNpFromQueues();
+      scrollToNowPlaying();
+      void playFromCurrentIndex();
+    } else {
+      playlist.spotifyPlaying = false;
+    }
+    schedulePush();
+    return;
   }
-  if (!s.trackUri) return;
-  const q = activeQueue();
-  const idx = activeIndex();
-  if (q[idx]?.uri === s.trackUri) return;
-  const newIdx = q.findIndex((t) => t.uri === s.trackUri);
-  if (newIdx === -1) return;
-  setActiveIndex(newIdx);
-  paintNpFromQueues();
-  scrollToNowPlaying();
 }
 
 function isQTrack(x: unknown): x is QTrack {
@@ -210,36 +224,16 @@ function seedUriForAlbumBuild(): string {
   return q[idx]?.uri ?? '';
 }
 
-export async function togglePlayPause() {
-  if (playlist.spotifyPlaying) {
-    try {
-      const r = await fetch('/api/spotify/pause', { method: 'POST' });
-      const data = await r.json();
-      if (data.ok) playlist.spotifyPlaying = false;
-    } catch (e) {
-      console.warn('[play] pause failed', e);
-    }
-    schedulePush();
-    return;
-  }
+async function playFromCurrentIndex(): Promise<boolean> {
   const q = activeQueue();
   const idx = activeIndex();
-  console.log('[play] mode=%s  queue=%d  idx=%d  uri=%s', playlist.playListMode, q.length, idx, q[idx]?.uri ?? '(none)');
-  if (!q.length || !q[idx]?.uri) {
-    console.warn('[play] empty queue or no uri — aborting');
-    return;
-  }
+  if (!q.length || !q[idx]?.uri) return false;
   const uris = q.slice(idx).map((t) => t.uri).filter((u) => u.startsWith('spotify:track:'));
-  if (!uris.length) {
-    console.warn('[play] no spotify:track: URIs after filter');
-    return;
-  }
+  if (!uris.length) return false;
   try {
-    console.log('[play] initSpotifyWebPlayer…');
     await initSpotifyWebPlayer();
     await waitForWebDevice(15000);
     const webDevice = getSpotifyWebDeviceId();
-    console.log('[play] webDevice=%s  sending %d URIs', webDevice ?? '(none)', uris.length);
     const r = await fetch('/api/spotify/play-uris', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -251,12 +245,30 @@ export async function togglePlayPause() {
       }),
     });
     const data = await r.json();
-    console.log('[play] response', data);
-    if (data.ok) playlist.spotifyPlaying = true;
-  } catch (e) {
-    console.warn('[play] error', e);
+    if (data.ok) {
+      playlist.spotifyPlaying = true;
+      schedulePush();
+      return true;
+    }
+  } catch {
+    /* */
   }
-  schedulePush();
+  return false;
+}
+
+export async function togglePlayPause() {
+  if (playlist.spotifyPlaying) {
+    try {
+      const r = await fetch('/api/spotify/pause', { method: 'POST' });
+      const data = await r.json();
+      if (data.ok) playlist.spotifyPlaying = false;
+    } catch {
+      /* */
+    }
+    schedulePush();
+    return;
+  }
+  await playFromCurrentIndex();
 }
 
 async function pausePlaybackNow() {
