@@ -206,7 +206,8 @@ class Spotify:
         if not h:
             return False
         off = max(0, min(offset, len(uris) - 1))
-        device_id = await self._find_speaker_device_id()
+        # Samme som pause/skip: aktiv Connect-enhed (fx telefon) først, ellers M5/højttaler.
+        device_id = await self._target_device_id() or await self._find_speaker_device_id()
         r = await self._http.put(
             f"{API}/me/player/play",
             headers=h,
@@ -214,6 +215,8 @@ class Spotify:
             json={"uris": uris, "offset": {"position": off}, "position_ms": position_ms},
         )
         ok = r.status_code in (200, 204)
+        if not ok:
+            print(f"[Spotify] play-uris HTTP {r.status_code}: {r.text[:400]}")
         if ok:
             await self._beolink_expand()
         return ok
