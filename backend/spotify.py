@@ -223,27 +223,19 @@ class Spotify:
         offset: int = 0,
         position_ms: int = 0,
         preferred_device_id: str | None = None,
-    ) -> tuple[bool, str]:
-        """Start afspilning udelukkende fra en eksplicit uri-liste (kioskens lokale kø)."""
+    ) -> tuple[bool, str, int]:
+        """Start afspilning på B&O M5. Returnerer (ok, detail, duration_ms)."""
         uris = [u for u in uris if u and u.startswith("spotify:track:")][:50]
         if not uris:
-            return False, "no valid uris"
+            return False, "no valid uris", 0
         h = await self._headers()
         if not h:
-            return False, "no auth headers"
+            return False, "no auth headers", 0
         off = max(0, min(offset, len(uris) - 1))
-        pref = (preferred_device_id or "").strip() or None
-        target = await self._target_device_id()
         speaker = await self._find_speaker_device_id()
-        seen_ids: set[str] = set()
         candidates: list[str | None] = []
-        for d in (pref, target, speaker):
-            if not d:
-                continue
-            if d in seen_ids:
-                continue
-            seen_ids.add(d)
-            candidates.append(d)
+        if speaker:
+            candidates.append(speaker)
         candidates.append(None)
 
         body = {"uris": uris, "offset": {"position": off}, "position_ms": position_ms}
@@ -257,12 +249,24 @@ class Spotify:
             )
             if r.status_code in (200, 204):
                 await self._beolink_expand()
-                return True, ""
+                duration_ms = await self._track_duration(uris[off], h)
+                return True, "", duration_ms
             last_snip = f"device_id={device_id!r} HTTP {r.status_code}: {r.text[:350]}"
             print(f"[Spotify] play-uris {last_snip}")
         msg = f"failed {len(candidates)} attempt(s). Last: {last_snip}"
         print(f"[Spotify] play-uris {msg}")
-        return False, msg
+        return False, msg, 0
+
+    async def _track_duration(self, uri: str, headers: dict) -> int:
+        """Hent duration_ms for et track-URI fra Spotify."""
+        try:
+            tid = uri.split(":")[-1]
+            r = await self._http.get(f"{API}/tracks/{tid}", headers=headers)
+            if r.status_code == 200:
+                return r.json().get("duration_ms", 0)
+        except Exception:
+            pass
+        return 0
 
     async def skip(self) -> bool:
         return await self._post_player_next()

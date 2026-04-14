@@ -552,10 +552,10 @@ async def spotify_play_uris(data: dict = Body(default_factory=dict)):
     uris = data.get("uris") or []
     offset = int(data.get("offset") or 0)
     position_ms = int(data.get("position_ms") or 0)
-    did = data.get("device_id")
-    preferred = did.strip() if isinstance(did, str) else None
-    ok, detail = await spotify.play_uris_queue(uris, offset, position_ms, preferred)
+    ok, detail, duration_ms = await spotify.play_uris_queue(uris, offset, position_ms)
     resp: dict = {"ok": ok}
+    if ok and duration_ms:
+        resp["duration_ms"] = duration_ms - position_ms
     if not ok and detail:
         resp["detail"] = detail
     return resp

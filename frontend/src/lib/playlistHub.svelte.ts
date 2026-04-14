@@ -17,13 +17,7 @@ import {
   type Unsubscribe,
   type DocumentReference,
 } from 'firebase/firestore';
-import {
-  init as initSpotifyWebPlayer,
-  getDeviceId as getSpotifyWebDeviceId,
-  waitForWebDevice,
-  onStateChange,
-  type PlaybackState,
-} from '$lib/spotifyPlayer.svelte';
+import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
 export type QTrack = { uri: string; name: string; artist: string };
 
@@ -62,21 +56,24 @@ let docRef: DocumentReference | null = null;
 let unsub: Unsubscribe | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let applyingRemote = false;
-let unsubState: (() => void) | null = null;
 
-function handlePlaybackState(s: PlaybackState) {
-  if (!s.paused) {
-    if (!playlist.spotifyPlaying) {
-      playlist.spotifyPlaying = true;
-      schedulePush();
-    }
-    return;
+const ADVANCE_BUFFER_MS = 300;
+let advanceTimer: ReturnType<typeof setTimeout> | null = null;
+let pausedRemainingMs = 0;
+
+function clearAdvanceTimer() {
+  if (advanceTimer) {
+    clearTimeout(advanceTimer);
+    advanceTimer = null;
   }
+}
 
-  if (!playlist.spotifyPlaying) return;
-
-  const trackEnded = s.duration > 0 && s.position >= s.duration - 1500;
-  if (trackEnded) {
+function scheduleAdvance(ms: number) {
+  clearAdvanceTimer();
+  pausedRemainingMs = 0;
+  const startedAt = Date.now();
+  advanceTimer = setTimeout(() => {
+    advanceTimer = null;
     const q = activeQueue();
     const idx = activeIndex();
     if (idx + 1 < q.length) {
@@ -84,11 +81,28 @@ function handlePlaybackState(s: PlaybackState) {
       paintNpFromQueues();
       scrollToNowPlaying();
       void playFromCurrentIndex();
-      return;
+    } else {
+      playlist.spotifyPlaying = false;
+      schedulePush();
     }
+  }, ms + ADVANCE_BUFFER_MS);
+  (scheduleAdvance as any)._startedAt = startedAt;
+  (scheduleAdvance as any)._totalMs = ms + ADVANCE_BUFFER_MS;
+}
+
+function pauseAdvanceTimer() {
+  if (!advanceTimer) return;
+  const startedAt = (scheduleAdvance as any)._startedAt ?? 0;
+  const totalMs = (scheduleAdvance as any)._totalMs ?? 0;
+  const elapsed = Date.now() - startedAt;
+  pausedRemainingMs = Math.max(0, totalMs - elapsed);
+  clearAdvanceTimer();
+}
+
+function resumeAdvanceTimer() {
+  if (pausedRemainingMs > 0) {
+    scheduleAdvance(pausedRemainingMs - ADVANCE_BUFFER_MS);
   }
-  playlist.spotifyPlaying = false;
-  schedulePush();
 }
 
 function isQTrack(x: unknown): x is QTrack {
@@ -224,21 +238,17 @@ async function playFromCurrentIndex(): Promise<boolean> {
   if (!uri?.startsWith('spotify:track:')) return false;
   try {
     await initSpotifyWebPlayer();
-    await waitForWebDevice(15000);
-    const webDevice = getSpotifyWebDeviceId();
     const r = await fetch('/api/spotify/play-uris', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        uris: [uri],
-        offset: 0,
-        position_ms: 0,
-        ...(webDevice ? { device_id: webDevice } : {}),
-      }),
+      body: JSON.stringify({ uris: [uri], offset: 0, position_ms: 0 }),
     });
-    const data = await r.json();
+    const data = (await r.json()) as { ok: boolean; duration_ms?: number };
     if (data.ok) {
       playlist.spotifyPlaying = true;
+      if (data.duration_ms && data.duration_ms > 0) {
+        scheduleAdvance(data.duration_ms);
+      }
       schedulePush();
       return true;
     }
@@ -253,14 +263,36 @@ export async function togglePlayPause() {
     try {
       const r = await fetch('/api/spotify/pause', { method: 'POST' });
       const data = await r.json();
-      if (data.ok) playlist.spotifyPlaying = false;
+      if (data.ok) {
+        playlist.spotifyPlaying = false;
+        pauseAdvanceTimer();
+      }
     } catch {
       /* */
     }
     schedulePush();
     return;
   }
+  if (pausedRemainingMs > 0) {
+    const ok = await resumePlayback();
+    if (ok) {
+      playlist.spotifyPlaying = true;
+      resumeAdvanceTimer();
+      schedulePush();
+      return;
+    }
+  }
   await playFromCurrentIndex();
+}
+
+async function resumePlayback(): Promise<boolean> {
+  try {
+    const r = await fetch('/api/spotify/resume', { method: 'POST' });
+    const data = await r.json();
+    return !!data.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function pausePlaybackNow() {
@@ -270,6 +302,8 @@ async function pausePlaybackNow() {
     /* */
   }
   playlist.spotifyPlaying = false;
+  clearAdvanceTimer();
+  pausedRemainingMs = 0;
 }
 
 export async function spotifyNextTrack() {
@@ -480,15 +514,11 @@ export async function initPlaylistHub(): Promise<() => void> {
     unsub();
     unsub = null;
   }
-  if (unsubState) {
-    unsubState();
-    unsubState = null;
-  }
   if (pushTimer) {
     clearTimeout(pushTimer);
     pushTimer = null;
   }
-  unsubState = onStateChange(handlePlaybackState);
+  clearAdvanceTimer();
 
   let cfg: Record<string, unknown>;
   try {
@@ -521,14 +551,11 @@ export async function initPlaylistHub(): Promise<() => void> {
       unsub();
       unsub = null;
     }
-    if (unsubState) {
-      unsubState();
-      unsubState = null;
-    }
     if (pushTimer) {
       clearTimeout(pushTimer);
       pushTimer = null;
     }
+    clearAdvanceTimer();
     docRef = null;
   };
 }
