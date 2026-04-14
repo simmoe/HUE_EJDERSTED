@@ -170,6 +170,7 @@
   let spotifyArtist = $state('');
   let spotifyRadio = $state(false);
   let spotifyRadioLoading = $state(false);
+  let spotifyRadioError = $state('');
   let spotifyPlaying = $state(false);
   let spotifyNextTitle = $state('');
   let spotifyNextArtist = $state('');
@@ -237,17 +238,21 @@
     if (spotifyRadio) {
       try { await fetch('/api/spotify/radio', { method: 'DELETE' }); } catch {}
       spotifyRadio = false;
+      spotifyRadioError = '';
       return;
     }
     spotifyRadioLoading = true;
+    spotifyRadioError = '';
     spotifyAlbumActive = false;
     scrollToNowPlaying();
     try {
       const r = await fetch('/api/spotify/radio', { method: 'POST' });
       const data = await r.json();
       spotifyRadio = !!data.ok;
+      spotifyRadioError = data.ok ? '' : (data.error ?? 'Radio fejlede');
     } catch {
       spotifyRadio = false;
+      spotifyRadioError = 'Ingen forbindelse til hub';
     } finally {
       spotifyRadioLoading = false;
     }
@@ -407,7 +412,7 @@
         {/if}
 
         <!-- Spotify Voice -->
-        <Card name="Musik" status={spotifyRadioLoading ? 'Opbygger radio…' : spotifyRadio ? 'Song Radio' : spotifyAlbumActive ? 'Album' : ''} >
+        <Card name="Musik" status={spotifyRadioLoading ? 'Opbygger radio…' : spotifyRadioError ? spotifyRadioError : spotifyRadio ? 'Song Radio' : spotifyAlbumActive ? 'Album' : ''} >
           <SpotifyVoice
             bind:npTitle={spotifyTitle}
             bind:npArtist={spotifyArtist}
