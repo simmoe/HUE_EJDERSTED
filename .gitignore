@@ -17,6 +17,7 @@ backend/static/
 hue_config.json
 spotify_config.json
 devices.json
+gemini_api_key.txt
 
 # TLS certs
 certs/

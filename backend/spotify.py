@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 
 CONFIG_FILE = Path(__file__).parent.parent / "spotify_config.json"
+GEMINI_KEY_FILE = Path(__file__).parent.parent / "gemini_api_key.txt"
 SCOPES = (
     "streaming user-read-email user-read-playback-state user-modify-playback-state "
     "user-read-currently-playing user-library-read user-library-modify "
@@ -272,11 +273,22 @@ class Spotify:
         return ok
 
     def _gemini_api_key(self) -> str:
-        return (
+        """Env, så filen gemini_api_key.txt (én linje, gitignored), så spotify_config.json."""
+        env = (
             os.environ.get("GEMINI_API_KEY", "")
             or os.environ.get("GEMINI_KEY", "")
-            or str(self._cfg.get("gemini_api_key") or "")
         ).strip()
+        if env:
+            return env
+        if GEMINI_KEY_FILE.is_file():
+            try:
+                line = GEMINI_KEY_FILE.read_text(encoding="utf-8").strip().splitlines()
+                if line and not line[0].startswith("#"):
+                    return line[0].strip()
+            except OSError:
+                pass
+        disk = _load()
+        return str(disk.get("gemini_api_key") or "").strip()
 
     async def _ask_gemini(self, artist: str, track: str, n: int = 10) -> list[dict]:
         """Ask Gemini for track recommendations. Returns list of {artist, track}."""
@@ -345,9 +357,17 @@ class Spotify:
         current_uri = np["uri"]
         progress_ms = np.get("progress_ms", 0)
 
+        if not self._gemini_api_key():
+            return {
+                "ok": False,
+                "error": "Radio: mangler Gemini-nøgle på serveren (gemini_api_key i spotify_config.json eller GEMINI_API_KEY)",
+            }
         suggestions = await self._ask_gemini(artist_name, track_name)
         if not suggestions:
-            return {"ok": False, "error": "Gemini returned no suggestions"}
+            return {
+                "ok": False,
+                "error": "Radio: Gemini svarede ikke (nøgle/udgående net på Pi?)",
+            }
 
         # Resolve each suggestion to a Spotify URI
         uris: list[str] = [current_uri]

@@ -32,6 +32,12 @@ $SSH "cd ~/HUE_EJDERSTED && git pull"
 echo "→ Syncing static files..."
 $SCP -r backend/static $PI_HOST:~/HUE_EJDERSTED/backend/
 
+# Gemini til radio (én linje i projektroden — ikke i git)
+if [[ -f gemini_api_key.txt ]]; then
+  echo "→ Syncing gemini_api_key.txt (radio på Pi)..."
+  $SCP gemini_api_key.txt $PI_HOST:~/HUE_EJDERSTED/
+fi
+
 # Restart service
 echo "→ Restarting service..."
 $SSH "echo '$PI_PASS' | sudo -S systemctl restart hue"
