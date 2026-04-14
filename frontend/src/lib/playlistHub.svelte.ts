@@ -237,7 +237,6 @@ async function playFromCurrentIndex(): Promise<boolean> {
   const uri = q[idx]?.uri;
   if (!uri?.startsWith('spotify:track:')) return false;
   try {
-    await initSpotifyWebPlayer();
     const r = await fetch('/api/spotify/play-uris', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
