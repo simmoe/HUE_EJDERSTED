@@ -57,7 +57,7 @@ let unsub: Unsubscribe | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let applyingRemote = false;
 
-const ADVANCE_BUFFER_MS = 300;
+const ADVANCE_BUFFER_MS = 1300;
 let advanceTimer: ReturnType<typeof setTimeout> | null = null;
 let pausedRemainingMs = 0;
 
@@ -440,6 +440,8 @@ export function handleVoicePayload(data: Record<string, unknown>) {
     playlist.spotifyRadio = false;
     playlist.spotifyAlbumActive = false;
     playlist.micIndex = playlist.micQueue.length - 1;
+    clearAdvanceTimer();
+    pausedRemainingMs = 0;
     paintNpFromQueues();
     scrollToNowPlaying();
     return;
@@ -453,6 +455,8 @@ export function handleVoicePayload(data: Record<string, unknown>) {
     playlist.spotifyRadio = false;
     playlist.spotifyAlbumActive = false;
     playlist.micIndex = start;
+    clearAdvanceTimer();
+    pausedRemainingMs = 0;
     paintNpFromQueues();
     scrollToNowPlaying();
     return;

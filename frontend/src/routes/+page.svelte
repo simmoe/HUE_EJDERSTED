@@ -605,7 +605,7 @@
     font-family: 'Roboto', -apple-system, system-ui, sans-serif;
     color: transparent;
     -webkit-text-fill-color: transparent;
-    -webkit-text-stroke: 1.35px rgba(145, 145, 145, 0.5);
+    -webkit-text-stroke: 1.35px rgba(174, 174, 174, 0.6);
     text-shadow: none;
     animation: clock-in 1.5s ease both;
   }
