@@ -328,13 +328,31 @@
     episode_duration_ms: number;
   };
 
+  type Episode = {
+    id: string;
+    uri: string;
+    name: string;
+    release_date: string;
+    duration_ms: number;
+  };
+
   let podcasts = $state<Podcast[]>([]);
   let podcastsLoading = $state(true);
   let podcastsError = $state('');
   let activePodcastId = $state('');
+  let activeEpisodeId = $state('');
   let loadingPodcastId = $state('');
+  let loadingEpisodeId = $state('');
   let podcastInner: HTMLDivElement;
   let nextPodcastCard = $state('');
+
+  // ── Drill-in state (per show, holdt indenfor podcast-kolonnen) ────────────
+  let drilledShow = $state<Podcast | null>(null);
+  let drilledEpisodes = $state<Episode[]>([]);
+  let drilledLoading = $state(false);
+  let drilledHasMore = $state(false);
+  let drilledLoadingMore = $state(false);
+  const EPISODE_PAGE_SIZE = 20;
 
   async function loadPodcasts(refresh = false) {
     podcastsLoading = podcasts.length === 0;
@@ -354,11 +372,11 @@
   async function playPodcast(showId: string) {
     if (loadingPodcastId) return;
     if (activePodcastId === showId) {
-      // Tap-igen-på-aktivt-kort → pause
       try {
         await fetch('/api/spotify/pause', { method: 'POST' });
       } catch {}
       activePodcastId = '';
+      activeEpisodeId = '';
       return;
     }
     loadingPodcastId = showId;
@@ -372,6 +390,7 @@
       const data = await r.json();
       if (data.ok) {
         activePodcastId = showId;
+        activeEpisodeId = (data.episode?.id as string) || '';
       } else {
         podcastsError = (data.detail as string) || 'Afspilning fejlede';
         setTimeout(() => { podcastsError = ''; }, 4000);
@@ -384,6 +403,81 @@
     }
   }
 
+  async function openDrill(show: Podcast) {
+    drilledShow = show;
+    drilledEpisodes = [];
+    drilledHasMore = false;
+    drilledLoading = true;
+    try {
+      const r = await fetch(`/api/podcasts/${show.show_id}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=0`);
+      const data = await r.json();
+      drilledEpisodes = (data.episodes ?? []) as Episode[];
+      drilledHasMore = !!data.has_more;
+    } catch {
+      podcastsError = 'Kunne ikke hente afsnit';
+      setTimeout(() => { podcastsError = ''; }, 4000);
+    } finally {
+      drilledLoading = false;
+    }
+  }
+
+  function closeDrill() {
+    drilledShow = null;
+    drilledEpisodes = [];
+    drilledHasMore = false;
+  }
+
+  async function loadMoreEpisodes() {
+    if (!drilledShow || drilledLoadingMore || !drilledHasMore) return;
+    drilledLoadingMore = true;
+    try {
+      const offset = drilledEpisodes.length;
+      const r = await fetch(`/api/podcasts/${drilledShow.show_id}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=${offset}`);
+      const data = await r.json();
+      const more = (data.episodes ?? []) as Episode[];
+      drilledEpisodes = [...drilledEpisodes, ...more];
+      drilledHasMore = !!data.has_more;
+    } catch {
+      /* */
+    } finally {
+      drilledLoadingMore = false;
+    }
+  }
+
+  async function playEpisode(ep: Episode) {
+    if (loadingEpisodeId) return;
+    if (activeEpisodeId === ep.id) {
+      try {
+        await fetch('/api/spotify/pause', { method: 'POST' });
+      } catch {}
+      activePodcastId = '';
+      activeEpisodeId = '';
+      return;
+    }
+    loadingEpisodeId = ep.id;
+    stopMusicForExternalPlayback();
+    try {
+      const r = await fetch('/api/podcasts/play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ episode_uri: ep.uri }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        activeEpisodeId = ep.id;
+        activePodcastId = drilledShow?.show_id ?? '';
+      } else {
+        podcastsError = (data.detail as string) || 'Afspilning fejlede';
+        setTimeout(() => { podcastsError = ''; }, 4000);
+      }
+    } catch (e) {
+      podcastsError = (e as Error).message || 'Afspilning fejlede';
+      setTimeout(() => { podcastsError = ''; }, 4000);
+    } finally {
+      loadingEpisodeId = '';
+    }
+  }
+
   function formatPodcastDate(iso: string): string {
     if (!iso) return '';
     try {
@@ -393,6 +487,15 @@
     } catch {
       return iso;
     }
+  }
+
+  function formatEpisodeDuration(ms: number): string {
+    if (!ms || ms <= 0) return '';
+    const totalMin = Math.round(ms / 60000);
+    if (totalMin < 60) return `${totalMin} min`;
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return m === 0 ? `${h} t` : `${h} t ${m} min`;
   }
 
 </script>
@@ -666,9 +769,60 @@
 
     <!-- PAGE 2 · PODCAST ──────────────────────────────────────────────────── -->
     <section class="page">
-      <div class="col-header">PODCAST</div>
+      {#if drilledShow}
+        <div class="col-header drill-header">
+          <button type="button" class="drill-back" onclick={closeDrill} aria-label="Tilbage til podcast-liste">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+            <span class="drill-back-label">{drilledShow.show_name}</span>
+          </button>
+        </div>
+      {:else}
+        <div class="col-header">PODCAST</div>
+      {/if}
+
       <div class="scroll-inner" bind:this={podcastInner}>
-        {#if podcastsLoading && podcasts.length === 0}
+        {#if drilledShow}
+          {#if drilledLoading && drilledEpisodes.length === 0}
+            <p class="empty">Henter afsnit…</p>
+          {:else if drilledEpisodes.length === 0}
+            <p class="empty">Ingen afsnit fundet.</p>
+          {:else}
+            {#each drilledEpisodes as ep (ep.id)}
+              <button
+                type="button"
+                class="episode-row"
+                class:active={activeEpisodeId === ep.id}
+                class:loading={loadingEpisodeId === ep.id}
+                onclick={() => playEpisode(ep)}
+              >
+                <span class="episode-meta-top">
+                  {formatPodcastDate(ep.release_date)}
+                  {#if ep.duration_ms}
+                    <span class="episode-dot">·</span> {formatEpisodeDuration(ep.duration_ms)}
+                  {/if}
+                  {#if loadingEpisodeId === ep.id}
+                    <span class="episode-dot">·</span> starter…
+                  {:else if activeEpisodeId === ep.id}
+                    <span class="episode-dot">·</span> afspiller
+                  {/if}
+                </span>
+                <span class="episode-title">{ep.name}</span>
+              </button>
+            {/each}
+            {#if drilledHasMore}
+              <button
+                type="button"
+                class="episode-more"
+                onclick={loadMoreEpisodes}
+                disabled={drilledLoadingMore}
+              >
+                {drilledLoadingMore ? '· · ·' : 'Hent flere afsnit'}
+              </button>
+            {/if}
+          {/if}
+        {:else if podcastsLoading && podcasts.length === 0}
           <p class="empty">Henter podcasts…</p>
         {:else if podcastsError && podcasts.length === 0}
           <p class="empty">{podcastsError}</p>
@@ -676,44 +830,62 @@
           <p class="empty">Ingen podcasts.</p>
         {:else}
           {#each podcasts as p (p.show_id)}
-            <button
-              type="button"
+            <div
               class="podcast-card"
               class:active={activePodcastId === p.show_id}
               class:loading={loadingPodcastId === p.show_id}
               data-name={p.show_name}
-              onclick={() => playPodcast(p.show_id)}
             >
-              {#if p.show_image}
-                <img class="podcast-cover" src={p.show_image} alt="" loading="lazy" />
-              {:else}
-                <div class="podcast-cover podcast-cover--empty"></div>
-              {/if}
-              <div class="podcast-info">
-                <span class="podcast-show">{p.show_name}</span>
-                <span class="podcast-episode">{p.episode_name}</span>
-                <span class="podcast-meta">
-                  {formatPodcastDate(p.episode_release_date)}
-                  {#if loadingPodcastId === p.show_id}
-                    · starter…
-                  {:else if activePodcastId === p.show_id}
-                    · afspiller — tap for pause
-                  {/if}
-                </span>
-              </div>
-            </button>
+              <button
+                type="button"
+                class="podcast-card-main"
+                onclick={() => playPodcast(p.show_id)}
+                aria-label={`Spil seneste afsnit af ${p.show_name}`}
+              >
+                {#if p.show_image}
+                  <img class="podcast-cover" src={p.show_image} alt="" loading="lazy" />
+                {:else}
+                  <div class="podcast-cover podcast-cover--empty"></div>
+                {/if}
+                <div class="podcast-info">
+                  <span class="podcast-show">{p.show_name}</span>
+                  <span class="podcast-episode">{p.episode_name}</span>
+                  <span class="podcast-meta">
+                    {formatPodcastDate(p.episode_release_date)}
+                    {#if loadingPodcastId === p.show_id}
+                      · starter…
+                    {:else if activePodcastId === p.show_id}
+                      · afspiller — tap for pause
+                    {/if}
+                  </span>
+                </div>
+              </button>
+              <button
+                type="button"
+                class="podcast-drill"
+                onclick={() => openDrill(p)}
+                aria-label={`Vis alle afsnit af ${p.show_name}`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9 6 15 12 9 18" />
+                </svg>
+              </button>
+            </div>
           {/each}
           {#if podcastsError}
             <p class="podcast-error">{podcastsError}</p>
           {/if}
         {/if}
       </div>
-      <button type="button" class="card-arrow card-arrow--lyd" onclick={() => advanceCard(podcastInner, 'podcast')} aria-label="Næste kort">
-        <span class="arrow-label">{nextPodcastCard}</span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
+
+      {#if !drilledShow}
+        <button type="button" class="card-arrow card-arrow--lyd" onclick={() => advanceCard(podcastInner, 'podcast')} aria-label="Næste kort">
+          <span class="arrow-label">{nextPodcastCard}</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      {/if}
     </section>
 
     <!-- PAGE 3 · KAMERA ──────────────────────────────────────────────────── -->
@@ -1328,29 +1500,59 @@
   .podcast-card {
     display: flex;
     flex-direction: row;
-    align-items: center;
-    gap: 16px;
-    padding: 14px 24px;
-    margin: 0;
-    background: none;
-    border: none;
+    align-items: stretch;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
     transition: background 0.18s;
-    width: 100%;
-  }
-  .podcast-card:active {
-    background: rgba(255, 255, 255, 0.03);
   }
   .podcast-card.active {
     background: rgba(0, 128, 200, 0.06);
   }
   .podcast-card.loading {
     opacity: 0.65;
+  }
+
+  .podcast-card-main {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 8px 14px 24px;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    flex: 1;
+    min-width: 0;
+  }
+  .podcast-card-main:active {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .podcast-drill {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    flex-shrink: 0;
+    padding: 0 16px 0 8px;
+    background: none;
+    border: none;
+    color: #4a4a4a;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.15s, background 0.18s;
+  }
+  .podcast-drill svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+  }
+  .podcast-drill:active {
+    color: #ebebeb;
+    background: rgba(255, 255, 255, 0.03);
   }
 
   .podcast-cover {
@@ -1413,5 +1615,124 @@
     color: #c87878;
     font-size: 0.75rem;
     padding: 12px 24px;
+  }
+
+  /* ── Drill-in (per show) ──────────────────────────────────────────────── */
+  .drill-header {
+    padding: 0 0 10px;
+  }
+
+  .drill-back {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    width: 100%;
+    height: 100%;
+    padding: 0 24px 0 16px;
+    background: none;
+    border: none;
+    color: #ebebeb;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    text-align: left;
+  }
+  .drill-back:active {
+    color: #0080c8;
+  }
+  .drill-back svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    transform: translateY(-2px);
+    color: #888;
+  }
+  .drill-back-label {
+    font-size: 0.7rem;
+    font-weight: 400;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: #ebebeb;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .episode-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 24px;
+    margin: 0;
+    background: none;
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.18s;
+    width: 100%;
+  }
+  .episode-row:active {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .episode-row.active {
+    background: rgba(0, 128, 200, 0.06);
+  }
+  .episode-row.loading {
+    opacity: 0.65;
+  }
+
+  .episode-meta-top {
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    color: #595959;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .episode-dot {
+    color: #3a3a3a;
+    margin: 0 2px;
+  }
+
+  .episode-title {
+    font-size: 0.9rem;
+    font-weight: 300;
+    color: #ebebeb;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .episode-row.active .episode-title {
+    color: #c8e8ff;
+  }
+
+  .episode-more {
+    display: block;
+    margin: 16px auto;
+    padding: 12px 24px;
+    background: none;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    color: #888;
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.18s, border-color 0.18s;
+  }
+  .episode-more:active {
+    color: #ebebeb;
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+  .episode-more:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

@@ -724,6 +724,36 @@ async def play_latest_podcast(data: dict = Body(default_factory=dict)):
     }
 
 
+@app.get("/api/podcasts/{show_id}/episodes")
+async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
+    """Hent en side af afsnit (drill-in)."""
+    items, has_more = await spotify.get_show_episodes(show_id, limit=limit, offset=offset)
+    return {
+        "episodes": [
+            {
+                "id": ep.get("id"),
+                "uri": ep.get("uri"),
+                "name": ep.get("name"),
+                "release_date": ep.get("release_date"),
+                "duration_ms": ep.get("duration_ms"),
+            }
+            for ep in items
+        ],
+        "has_more": has_more,
+        "offset": offset,
+    }
+
+
+@app.post("/api/podcasts/play")
+async def play_specific_episode(data: dict = Body(default_factory=dict)):
+    """Spil et specifikt afsnit (givet ved episode_uri)."""
+    uri = (data.get("episode_uri") or "").strip()
+    if not uri:
+        return JSONResponse({"ok": False, "error": "no episode_uri"}, status_code=400)
+    ok, detail = await spotify.play_episode(uri)
+    return {"ok": ok, "detail": detail}
+
+
 @app.get("/api/spotify/token")
 async def spotify_token():
     """Return access token for Web Playback SDK (kræver `streaming` i seneste OAuth-scope)."""

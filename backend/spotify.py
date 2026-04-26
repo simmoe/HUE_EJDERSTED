@@ -304,6 +304,32 @@ class Spotify:
             print(f"[Spotify] get_show_latest_episode error: {e}")
         return None
 
+    async def get_show_episodes(
+        self, show_id: str, limit: int = 20, offset: int = 0
+    ) -> tuple[list[dict], bool]:
+        """Hent en side af afsnit fra et show. Returnerer (items, has_more)."""
+        h = await self._headers()
+        if not h:
+            return [], False
+        try:
+            r = await self._http.get(
+                f"{API}/shows/{show_id}/episodes",
+                headers=h,
+                params={
+                    "market": "DK",
+                    "limit": max(1, min(50, limit)),
+                    "offset": max(0, offset),
+                },
+            )
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("items") or []
+                has_more = bool(data.get("next"))
+                return items, has_more
+        except Exception as e:
+            print(f"[Spotify] get_show_episodes error: {e}")
+        return [], False
+
     async def play_episode(self, episode_uri: str) -> tuple[bool, str]:
         """Spil ét enkelt podcast-afsnit på B&O M5 (samme rute som tracks)."""
         if not episode_uri or not episode_uri.startswith("spotify:episode:"):
