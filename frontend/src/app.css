@@ -60,6 +60,68 @@ html, body {
   50% { opacity: 0.7; }
 }
 
+/* ── Samlet volumen-slider (np-card) ───────────────────────────────────── */
+.unified-vol {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 22px;
+  padding: 0 4px;
+}
+
+.unified-vol-slider {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  height: 22px;
+  cursor: pointer;
+}
+
+.unified-vol-slider::-webkit-slider-runnable-track {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 1px;
+}
+.unified-vol-slider::-moz-range-track {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 1px;
+}
+
+.unified-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  transition: transform 0.15s ease, background-color 0.2s ease;
+}
+.unified-vol-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  transition: transform 0.15s ease, background-color 0.2s ease;
+}
+
+.unified-vol-slider:active::-webkit-slider-thumb { transform: scale(1.25); }
+.unified-vol-slider:active::-moz-range-thumb { transform: scale(1.25); }
+
+.unified-vol-value {
+  font-size: 0.7rem;
+  font-weight: 300;
+  letter-spacing: 0.12em;
+  color: var(--dark);
+  min-width: 26px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Shared card header ────────────────────────────────────────────────── */
 .card-top {
   display: flex;

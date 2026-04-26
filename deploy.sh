@@ -9,8 +9,9 @@ PI_PASS="k18Medh18"
 SSH="sshpass -p $PI_PASS ssh $PI_HOST"
 SCP="sshpass -p $PI_PASS scp"
 
-# Rebuild frontend hvis --build flag (sørg for Node: nvm eller PATH)
-if [[ "$1" == "--build" ]]; then
+# Rebuild frontend som standard (Pi serverer backend/static).
+# Spring over med --no-build hvis du virkelig kun vil pushe backend/config.
+if [[ "$1" != "--no-build" ]]; then
   echo "→ Building frontend..."
   if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
     # shellcheck source=/dev/null

@@ -45,8 +45,8 @@ song always wins over the happy/sharp one."""
 
 # ─── BeoLink multiroom ────────────────────────────────────────────────────────
 # M5 = Spotify Connect master, A9 = BeoLink listener
-BEO_M5_IP = "192.168.86.188"
-BEO_A9_IP = "192.168.86.153"
+BEO_M5_IP = "192.168.86.21"
+BEO_A9_IP = "192.168.86.20"
 BEO_A9_JID = "3034.1200366.32115907@products.bang-olufsen.com"
 BEO_M5_JID = "2714.1200298.33798625@products.bang-olufsen.com"
 

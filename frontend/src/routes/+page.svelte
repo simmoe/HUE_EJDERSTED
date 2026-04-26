@@ -170,6 +170,32 @@
     }
   }
 
+  // ── Samlet volumen: én slider styrer alle online B&O-højttalere ──────────────
+  let unifiedVolume = $state(40);
+  let unifiedDragging = false;
+
+  $effect(() => {
+    if (unifiedDragging) return;
+    const online = store.devices
+      .map((d) => store.volumes[d.id])
+      .filter((v) => v?.online);
+    if (online.length === 0) return;
+    const avg = Math.round(online.reduce((s, v) => s + v.level, 0) / online.length);
+    unifiedVolume = avg;
+  });
+
+  function setUnifiedVolume(level: number) {
+    unifiedVolume = level;
+    for (const d of store.devices) {
+      if (store.volumes[d.id]?.online) {
+        store.setVolume(d.id, level);
+        if (muteState[d.id]?.muted && level > 0) {
+          muteState[d.id] = { muted: false, prev: muteState[d.id].prev };
+        }
+      }
+    }
+  }
+
   // ── Lys: Hue pairing ────────────────────────────────────────────────────────
   let hueMuteState = $state<Record<string, { muted: boolean; prev: number }>>({});
 
@@ -404,6 +430,22 @@
             <button type="button" class="action-btn" class:active={playlist.spotifyAlbumActive} class:loading={playlist.spotifyAlbumLoading} onclick={playAlbum} disabled={playlist.spotifyAlbumLoading}>
               {playlist.spotifyAlbumLoading ? '· · ·' : 'album'}
             </button>
+          </div>
+          <div class="unified-vol">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              class="unified-vol-slider"
+              value={unifiedVolume}
+              oninput={(e) => { unifiedDragging = true; setUnifiedVolume(+(e.currentTarget as HTMLInputElement).value); }}
+              onchange={(e) => { unifiedDragging = false; setUnifiedVolume(+(e.currentTarget as HTMLInputElement).value); }}
+              onpointerup={() => { unifiedDragging = false; }}
+              onpointercancel={() => { unifiedDragging = false; }}
+              aria-label="Samlet volumen for alle højttalere"
+            />
+            <span class="unified-vol-value">{unifiedVolume}</span>
           </div>
         </div>
 
