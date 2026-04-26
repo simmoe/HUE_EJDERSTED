@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
 
 from hue import HueBridge, start_hue_mdns
-from spotify import Spotify
+from spotify import Spotify, BEO_A9_IP, BEO_M5_IP
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -48,6 +48,31 @@ def save_devices(devices: dict) -> None:
 
 devices: dict = load_devices()
 devices_lock = asyncio.Lock()
+
+
+def _ensure_known_speakers() -> None:
+    """Pre-seed devices for the fixed B&O speakers, so UI is never empty even
+    if mDNS is silent at boot. mDNS may overwrite name/IP later when it sees them."""
+    known = (
+        (BEO_A9_IP, "BeoPlay A9"),
+        (BEO_M5_IP, "Beoplay M5"),
+    )
+    changed = False
+    for ip, name in known:
+        dev_id = ip.replace(".", "_")
+        if dev_id not in devices:
+            devices[dev_id] = {
+                "id": dev_id,
+                "name": name,
+                "ip": ip,
+                "auto_discovered": True,
+            }
+            changed = True
+    if changed:
+        save_devices(devices)
+
+
+_ensure_known_speakers()
 
 # ─── Volume cache ─────────────────────────────────────────────────────────────
 volume_cache: dict[str, dict] = {}       # device_id → {level, online}

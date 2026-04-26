@@ -790,7 +790,7 @@
   /* ── Card down-arrow (fixed — klemmer ikke kortene; én pr. viewport-halv) ───── */
   .card-arrow {
     position: fixed;
-    bottom: max(18px, env(safe-area-inset-bottom, 0px));
+    bottom: 0;
     z-index: 6;
     display: flex;
     flex-direction: column;
@@ -799,8 +799,8 @@
     gap: 2px;
     width: 50dvw;
     margin: 0;
-    padding: 0;
-    background: none;
+    padding: 18px 0 max(18px, env(safe-area-inset-bottom, 0px));
+    background: var(--black);
     border: none;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
