@@ -11,6 +11,7 @@
   } = $props();
 
   let listening = $state(false);
+  let activeLang = $state<'en-US' | 'da-DK'>('en-US');
   let feedback = $state('');
   let feedbackTimer: ReturnType<typeof setTimeout>;
 
@@ -62,6 +63,7 @@
     if (listening) return;
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { showFeedback('voice ikke understøttet'); return; }
+    activeLang = lang;
     const recognition = new SR();
     recognition.lang = lang;
     recognition.interimResults = false;
@@ -115,9 +117,9 @@
     class="voice-btn"
     class:listening
     class:armed-da={longPressArmed}
+    class:listening-da={listening && activeLang === 'da-DK'}
     onpointerdown={onPressStart}
     onpointerup={onPressEnd}
-    onpointerleave={onPressCancel}
     onpointercancel={onPressCancel}
     aria-label="Stemme — kort tryk = engelsk, langt tryk = dansk"
     title="Stemme — kort tryk EN, langt tryk DA"
@@ -128,7 +130,7 @@
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="17" x2="12" y2="21" />
     </svg>
-    {#if longPressArmed}
+    {#if longPressArmed || (listening && activeLang === 'da-DK')}
       <span class="lang-badge">DA</span>
     {/if}
   </button>
