@@ -22,6 +22,9 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
 
+import bo_dlna
+import bo_link
+import sr
 from hue import HueBridge, start_hue_mdns
 from spotify import Spotify, BEO_A9_IP, BEO_M5_IP
 
@@ -651,36 +654,86 @@ async def spotify_is_saved(uri: str | None = None):
     return {"saved": await spotify.is_track_saved(u)}
 
 # ─── REST: Podcasts ───────────────────────────────────────────────────────────
-# Hardkodet liste — udvides senere (SR-programmer kommer i fase 2 via deres egen API).
+# Hardkodet liste. Hver podcast har en `source` der bestemmer afspilningsvej:
+#   - "spotify": Spotify Web API + Spotify Connect på M5 (samme rute som musik)
+#   - "sr":      Sveriges Radio API → direkte M4A-stream → DLNA AVTransport på M5
+# show_id ud mod frontend prefixes med "sr:" for SR-shows så det er entydigt.
 PODCAST_SHOWS: list[dict] = [
-    {"id": "6FVyoDMn4GKxveMegJ2Yih", "fallback_name": "Fodboldlisten"},
-    {"id": "5d4yba4KbcBTtwZ8glscZZ", "fallback_name": "Det næste kapitel"},
+    {"source": "spotify", "id": "6FVyoDMn4GKxveMegJ2Yih", "fallback_name": "Fodboldlisten"},
+    {"source": "spotify", "id": "5d4yba4KbcBTtwZ8glscZZ", "fallback_name": "Det næste kapitel"},
+    {"source": "sr",      "id": "4914", "fallback_name": "Text och musik med Eric Schüldt"},
+    {"source": "sr",      "id": "2488", "fallback_name": "Rendezvous med Kristjan Saag"},
 ]
 PODCAST_CACHE_TTL = 30 * 60  # 30 min — afsnit udkommer typisk én gang om ugen
 _podcast_cache: list[dict] = []
 _podcast_cache_at: float = 0.0
 
+# Track senest startet podcast-engine så vi kan dispatche pause/resume korrekt.
+_active_podcast_engine: str = ""  # "spotify" | "dlna" | ""
+
+
+def _show_key(sh: dict) -> str:
+    """Stabil show-id ud mod frontend (entydig på tværs af kilder)."""
+    if sh["source"] == "sr":
+        return f"sr:{sh['id']}"
+    return sh["id"]
+
+
+def _find_show(show_id: str) -> dict | None:
+    for sh in PODCAST_SHOWS:
+        if _show_key(sh) == show_id:
+            return sh
+    # Tolerant fallback: rå ID uden prefix
+    for sh in PODCAST_SHOWS:
+        if sh["id"] == show_id:
+            return sh
+    return None
+
 
 async def _build_podcast_list() -> list[dict]:
     out: list[dict] = []
     for sh in PODCAST_SHOWS:
-        meta = await spotify.get_show(sh["id"])
-        ep = await spotify.get_show_latest_episode(sh["id"])
-        if not meta or not ep:
-            print(f"[Podcast] skip {sh['id']} — meta={bool(meta)} ep={bool(ep)}")
-            continue
-        images = meta.get("images") or []
-        cover = images[0].get("url", "") if images else ""
-        out.append({
-            "show_id": sh["id"],
-            "show_name": meta.get("name") or sh["fallback_name"],
-            "show_image": cover,
-            "episode_id": ep.get("id"),
-            "episode_uri": ep.get("uri"),
-            "episode_name": ep.get("name"),
-            "episode_release_date": ep.get("release_date"),
-            "episode_duration_ms": ep.get("duration_ms"),
-        })
+        if sh["source"] == "spotify":
+            meta = await spotify.get_show(sh["id"])
+            ep = await spotify.get_show_latest_episode(sh["id"])
+            if not meta or not ep:
+                print(f"[Podcast] skip spotify {sh['id']} — meta={bool(meta)} ep={bool(ep)}")
+                continue
+            images = meta.get("images") or []
+            cover = images[0].get("url", "") if images else ""
+            out.append({
+                "show_id": _show_key(sh),
+                "source": "spotify",
+                "show_name": meta.get("name") or sh["fallback_name"],
+                "show_image": cover,
+                "episode_id": ep.get("id"),
+                "episode_uri": ep.get("uri"),
+                "episode_name": ep.get("name"),
+                "episode_release_date": ep.get("release_date"),
+                "episode_duration_ms": ep.get("duration_ms"),
+            })
+        elif sh["source"] == "sr":
+            try:
+                pid = int(sh["id"])
+            except ValueError:
+                continue
+            prog = await sr.get_program(pid)
+            ep_raw = await sr.get_latest_episode(pid)
+            if not prog or not ep_raw:
+                print(f"[Podcast] skip sr {sh['id']} — prog={bool(prog)} ep={bool(ep_raw)}")
+                continue
+            ep = sr.normalize_episode(ep_raw)
+            out.append({
+                "show_id": _show_key(sh),
+                "source": "sr",
+                "show_name": prog.get("name") or sh["fallback_name"],
+                "show_image": prog.get("programimage") or "",
+                "episode_id": ep["id"],
+                "episode_uri": ep["uri"],
+                "episode_name": ep["name"],
+                "episode_release_date": ep["release_date"],
+                "episode_duration_ms": ep["duration_ms"],
+            })
     return out
 
 
@@ -700,58 +753,156 @@ async def list_podcasts(refresh: int = 0):
     return _podcast_cache
 
 
+async def _play_latest_spotify(sh: dict) -> tuple[bool, str, dict]:
+    ep = await spotify.get_show_latest_episode(sh["id"])
+    if not ep:
+        return False, "no latest episode", {}
+    uri = ep.get("uri") or ""
+    ok, detail = await spotify.play_episode(uri)
+    return ok, detail, {
+        "id": ep.get("id"),
+        "name": ep.get("name"),
+        "uri": uri,
+        "release_date": ep.get("release_date"),
+        "duration_ms": ep.get("duration_ms"),
+    }
+
+
+async def _play_latest_sr(sh: dict) -> tuple[bool, str, dict]:
+    try:
+        pid = int(sh["id"])
+    except ValueError:
+        return False, "bad sr id", {}
+    ep_raw = await sr.get_latest_episode(pid)
+    if not ep_raw:
+        return False, "no latest episode", {}
+    url = sr.episode_media_url(ep_raw)
+    if not url:
+        return False, "no media url", {}
+    ep = sr.normalize_episode(ep_raw)
+    title = ep.get("name") or sh["fallback_name"]
+    ok, detail = await bo_dlna.play_url(url, title=title)
+    if ok:
+        # A9 skal følge M5 også når kilden er DLNA, ikke kun Spotify
+        await bo_link.expand_to_a9("dlna")
+    return ok, detail, ep
+
+
 @app.post("/api/podcasts/play-latest")
 async def play_latest_podcast(data: dict = Body(default_factory=dict)):
-    """Spil seneste afsnit af et show på B&O M5."""
+    """Spil seneste afsnit af et show på B&O M5. Dispatcher per source."""
+    global _active_podcast_engine
     show_id = (data.get("show_id") or "").strip()
     if not show_id:
         return JSONResponse({"ok": False, "error": "no show_id"}, status_code=400)
-    ep = await spotify.get_show_latest_episode(show_id)
-    if not ep:
-        return JSONResponse({"ok": False, "error": "no latest episode"}, status_code=404)
-    uri = ep.get("uri") or ""
-    ok, detail = await spotify.play_episode(uri)
-    return {
-        "ok": ok,
-        "detail": detail,
-        "episode": {
-            "id": ep.get("id"),
-            "name": ep.get("name"),
-            "uri": uri,
-            "release_date": ep.get("release_date"),
-            "duration_ms": ep.get("duration_ms"),
-        },
-    }
+    sh = _find_show(show_id)
+    if not sh:
+        return JSONResponse({"ok": False, "error": f"unknown show: {show_id}"}, status_code=404)
+
+    if sh["source"] == "spotify":
+        ok, detail, ep = await _play_latest_spotify(sh)
+        if ok:
+            _active_podcast_engine = "spotify"
+        return {"ok": ok, "detail": detail, "episode": ep}
+
+    if sh["source"] == "sr":
+        ok, detail, ep = await _play_latest_sr(sh)
+        if ok:
+            _active_podcast_engine = "dlna"
+        return {"ok": ok, "detail": detail, "episode": ep}
+
+    return JSONResponse(
+        {"ok": False, "error": f"unknown source: {sh['source']}"}, status_code=500
+    )
 
 
 @app.get("/api/podcasts/{show_id}/episodes")
 async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
-    """Hent en side af afsnit (drill-in)."""
-    items, has_more = await spotify.get_show_episodes(show_id, limit=limit, offset=offset)
-    return {
-        "episodes": [
-            {
-                "id": ep.get("id"),
-                "uri": ep.get("uri"),
-                "name": ep.get("name"),
-                "release_date": ep.get("release_date"),
-                "duration_ms": ep.get("duration_ms"),
-            }
-            for ep in items
-        ],
-        "has_more": has_more,
-        "offset": offset,
-    }
+    """Hent en side af afsnit (drill-in). Dispatcher per source."""
+    sh = _find_show(show_id)
+    # Default til Spotify hvis show_id er ukendt (bagudkompatibilitet)
+    src = sh["source"] if sh else "spotify"
+    real_id = sh["id"] if sh else show_id
+
+    if src == "spotify":
+        items, has_more = await spotify.get_show_episodes(real_id, limit=limit, offset=offset)
+        return {
+            "episodes": [
+                {
+                    "id": ep.get("id"),
+                    "uri": ep.get("uri"),
+                    "name": ep.get("name"),
+                    "release_date": ep.get("release_date"),
+                    "duration_ms": ep.get("duration_ms"),
+                }
+                for ep in items
+            ],
+            "has_more": has_more,
+            "offset": offset,
+        }
+
+    if src == "sr":
+        try:
+            pid = int(real_id)
+        except ValueError:
+            return {"episodes": [], "has_more": False, "offset": offset}
+        # SR API er 1-indexed pages; oversæt offset/limit til (page, size)
+        size = max(1, min(50, int(limit)))
+        page = (max(0, int(offset)) // size) + 1
+        raw, has_more = await sr.get_episodes(pid, page=page, size=size)
+        return {
+            "episodes": [sr.normalize_episode(ep) for ep in raw],
+            "has_more": has_more,
+            "offset": offset,
+        }
+
+    return {"episodes": [], "has_more": False, "offset": offset}
 
 
 @app.post("/api/podcasts/play")
 async def play_specific_episode(data: dict = Body(default_factory=dict)):
-    """Spil et specifikt afsnit (givet ved episode_uri)."""
+    """Spil et specifikt afsnit. Dispatcher per URI-prefix."""
+    global _active_podcast_engine
     uri = (data.get("episode_uri") or "").strip()
     if not uri:
         return JSONResponse({"ok": False, "error": "no episode_uri"}, status_code=400)
-    ok, detail = await spotify.play_episode(uri)
-    return {"ok": ok, "detail": detail}
+
+    if uri.startswith("spotify:episode:"):
+        ok, detail = await spotify.play_episode(uri)
+        if ok:
+            _active_podcast_engine = "spotify"
+        return {"ok": ok, "detail": detail}
+
+    if uri.startswith("sr:episode:"):
+        sr_id = uri.split(":", 2)[2]
+        ep_raw = await sr.get_episode(sr_id)
+        if not ep_raw:
+            return JSONResponse(
+                {"ok": False, "error": f"sr episode {sr_id} not found"}, status_code=404
+            )
+        url = sr.episode_media_url(ep_raw)
+        if not url:
+            return JSONResponse({"ok": False, "error": "no media url"}, status_code=502)
+        title = ep_raw.get("title") or "Sveriges Radio"
+        ok, detail = await bo_dlna.play_url(url, title=title)
+        if ok:
+            _active_podcast_engine = "dlna"
+            await bo_link.expand_to_a9("dlna")
+        return {"ok": ok, "detail": detail}
+
+    return JSONResponse(
+        {"ok": False, "error": f"unknown uri scheme: {uri[:32]}"}, status_code=400
+    )
+
+
+@app.post("/api/podcasts/pause")
+async def pause_podcast():
+    """Pauser den senest startede podcast — dispatcher efter aktiv engine."""
+    if _active_podcast_engine == "dlna":
+        ok, detail = await bo_dlna.pause()
+        return {"ok": ok, "detail": detail, "engine": "dlna"}
+    ok = await spotify.pause()
+    return {"ok": ok, "engine": "spotify"}
 
 
 @app.get("/api/spotify/token")

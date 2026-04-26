@@ -373,7 +373,8 @@
     if (loadingPodcastId) return;
     if (activePodcastId === showId) {
       try {
-        await fetch('/api/spotify/pause', { method: 'POST' });
+        // Generic pause — backend ved selv om det er Spotify- eller DLNA-baseret
+        await fetch('/api/podcasts/pause', { method: 'POST' });
       } catch {}
       activePodcastId = '';
       activeEpisodeId = '';
@@ -448,7 +449,7 @@
     if (loadingEpisodeId) return;
     if (activeEpisodeId === ep.id) {
       try {
-        await fetch('/api/spotify/pause', { method: 'POST' });
+        await fetch('/api/podcasts/pause', { method: 'POST' });
       } catch {}
       activePodcastId = '';
       activeEpisodeId = '';
