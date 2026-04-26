@@ -1098,9 +1098,15 @@
   }
   .scroll-inner::-webkit-scrollbar { display: none; }
 
-  /* ── Card down-arrow (fixed — klemmer ikke kortene; én pr. viewport-halv) ───── */
+  /* ── Card down-arrow ──────────────────────────────────────────────────────────
+     Absolute indenfor sin .page så den følger horizontal carousel-rotation.
+     Tidligere var den `position: fixed` til viewport, hvilket betød at LYS's pile
+     overlappede PODCAST når den side stod i højre halvdel — og tap på podcast-pilen
+     ramte LYS-scrolleren i stedet. */
   .card-arrow {
-    position: fixed;
+    position: absolute;
+    left: 0;
+    right: 0;
     bottom: 0;
     z-index: 6;
     display: flex;
@@ -1108,7 +1114,6 @@
     align-items: center;
     justify-content: flex-end;
     gap: 2px;
-    width: 50dvw;
     margin: 0;
     padding: 18px 0 max(18px, env(safe-area-inset-bottom, 0px));
     background: var(--black);
@@ -1119,12 +1124,10 @@
     transition: color 0.2s;
     pointer-events: auto;
   }
-  .card-arrow--lyd {
-    left: 0;
-  }
-  .card-arrow--lys {
-    left: 50dvw;
-  }
+  /* --lyd og --lys-modifierne er bevaret som no-op for HTML-bagudkompatibilitet
+     men har ingen effekt længere — pilen ligger altid 100% bredt indenfor sin page. */
+  .card-arrow--lyd,
+  .card-arrow--lys { }
   .card-arrow:active { color: #ebebeb; }
   .card-arrow svg {
     width: 18px;
