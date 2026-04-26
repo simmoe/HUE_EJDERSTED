@@ -23,6 +23,22 @@ _avt_lock = asyncio.Lock()
 _http = httpx.AsyncClient(timeout=10.0)
 
 
+def _local_ip_for(target_ip: str) -> str:
+    """Find den lokale IP kernen ville bruge til at nå target_ip.
+    Vigtigt på Pi'en: Tailscale-interfacet (100.x.x.x) vinder default-routing,
+    og SSDP-multicast sendt fra det interface bliver aldrig set af M5'en.
+    Vi binder derfor eksplicit til LAN-IP'en."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # UDP-connect sender intet, men beder kernen vælge kilde-IP
+        s.connect((target_ip, 1))
+        return s.getsockname()[0]
+    except Exception:
+        return ""
+    finally:
+        s.close()
+
+
 def _ssdp_discover_m5() -> tuple[str, str] | None:
     """Synchron SSDP M-SEARCH efter M5'ens AVTransport-endpoint.
     Returnerer (control_url, service_type) eller None."""
@@ -34,9 +50,19 @@ def _ssdp_discover_m5() -> tuple[str, str] | None:
         "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n"
         "\r\n"
     ).encode()
+    local_ip = _local_ip_for(BEO_M5_IP)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
+        if local_ip:
+            # Tving multicast ud ad LAN-interface (ikke fx Tailscale)
+            s.setsockopt(
+                socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip)
+            )
+            try:
+                s.bind((local_ip, 0))
+            except OSError as e:
+                print(f"[DLNA] bind to {local_ip} failed: {e}")
         s.settimeout(SSDP_TIMEOUT)
         s.sendto(msearch, ("239.255.255.250", 1900))
         desc_url: str | None = None
