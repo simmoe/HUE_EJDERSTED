@@ -294,6 +294,18 @@ async function resumePlayback(): Promise<boolean> {
   }
 }
 
+/**
+ * Kald denne FØR du starter ekstern afspilning (fx en podcast) som overtager B&O M5'eren.
+ * Stopper auto-advance timeren så musik-køen ikke spammer over podcasten,
+ * og opdaterer UI-state så afspilleren ikke står og lyver.
+ */
+export function stopMusicForExternalPlayback() {
+  clearAdvanceTimer();
+  pausedRemainingMs = 0;
+  playlist.spotifyPlaying = false;
+  schedulePush();
+}
+
 async function pausePlaybackNow() {
   try {
     await fetch('/api/spotify/pause', { method: 'POST' });

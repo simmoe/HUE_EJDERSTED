@@ -16,6 +16,7 @@
     toggleRadio,
     playAlbum,
     handleVoicePayload,
+    stopMusicForExternalPlayback,
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
@@ -90,6 +91,7 @@
     });
     // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
     document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
+    void loadPodcasts();
     return () => {
       clearInterval(clockInterval);
       stopPlaylistHub?.();
@@ -232,7 +234,7 @@
     return child.querySelector('.card-name')?.textContent ?? child.dataset.name ?? '';
   }
 
-  function advanceCard(el: HTMLDivElement, kind: 'lyd' | 'lys') {
+  function advanceCard(el: HTMLDivElement, kind: 'lyd' | 'lys' | 'podcast') {
     if (cardAdvancing || !el || el.children.length < 2) return;
     cardAdvancing = true;
     const cardH = el.clientHeight;
@@ -245,7 +247,8 @@
       el.scrollTo({ top: 0, behavior: 'instant' });
       cardAdvancing = false;
       if (kind === 'lyd') nextLydCard = readNextCardName(el);
-      else nextLysCard = readNextCardName(el);
+      else if (kind === 'lys') nextLysCard = readNextCardName(el);
+      else nextPodcastCard = readNextCardName(el);
     }
     el.addEventListener('scrollend', onDone, { once: true });
     setTimeout(() => { if (cardAdvancing) onDone(); }, 600);
@@ -256,6 +259,9 @@
     if (pagesEl) readNextPageName();
     if (lydInner) nextLydCard = readNextCardName(lydInner);
     if (lysInner) nextLysCard = readNextCardName(lysInner);
+    // re-read når podcasts er hentet (dom-børn ændrer sig)
+    void podcasts.length;
+    if (podcastInner) nextPodcastCard = readNextCardName(podcastInner);
   });
 
   $effect(() => {
@@ -309,6 +315,86 @@
     if (err) huePairError = err;
     else hueManualIp = '';
   }
+
+  // ── Podcasts ─────────────────────────────────────────────────────────────
+  type Podcast = {
+    show_id: string;
+    show_name: string;
+    show_image: string;
+    episode_id: string;
+    episode_uri: string;
+    episode_name: string;
+    episode_release_date: string;
+    episode_duration_ms: number;
+  };
+
+  let podcasts = $state<Podcast[]>([]);
+  let podcastsLoading = $state(true);
+  let podcastsError = $state('');
+  let activePodcastId = $state('');
+  let loadingPodcastId = $state('');
+  let podcastInner: HTMLDivElement;
+  let nextPodcastCard = $state('');
+
+  async function loadPodcasts(refresh = false) {
+    podcastsLoading = podcasts.length === 0;
+    podcastsError = '';
+    try {
+      const r = await fetch(`/api/podcasts${refresh ? '?refresh=1' : ''}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()) as Podcast[];
+      podcasts = Array.isArray(data) ? data : [];
+    } catch (e) {
+      podcastsError = (e as Error).message || 'Kunne ikke hente podcasts';
+    } finally {
+      podcastsLoading = false;
+    }
+  }
+
+  async function playPodcast(showId: string) {
+    if (loadingPodcastId) return;
+    if (activePodcastId === showId) {
+      // Tap-igen-på-aktivt-kort → pause
+      try {
+        await fetch('/api/spotify/pause', { method: 'POST' });
+      } catch {}
+      activePodcastId = '';
+      return;
+    }
+    loadingPodcastId = showId;
+    stopMusicForExternalPlayback();
+    try {
+      const r = await fetch('/api/podcasts/play-latest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ show_id: showId }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        activePodcastId = showId;
+      } else {
+        podcastsError = (data.detail as string) || 'Afspilning fejlede';
+        setTimeout(() => { podcastsError = ''; }, 4000);
+      }
+    } catch (e) {
+      podcastsError = (e as Error).message || 'Afspilning fejlede';
+      setTimeout(() => { podcastsError = ''; }, 4000);
+    } finally {
+      loadingPodcastId = '';
+    }
+  }
+
+  function formatPodcastDate(iso: string): string {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      return d.toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' });
+    } catch {
+      return iso;
+    }
+  }
+
 </script>
 
 <main>
@@ -578,7 +664,59 @@
       </button>
     </section>
 
-    <!-- PAGE 2 · KAMERA ──────────────────────────────────────────────────── -->
+    <!-- PAGE 2 · PODCAST ──────────────────────────────────────────────────── -->
+    <section class="page">
+      <div class="col-header">PODCAST</div>
+      <div class="scroll-inner" bind:this={podcastInner}>
+        {#if podcastsLoading && podcasts.length === 0}
+          <p class="empty">Henter podcasts…</p>
+        {:else if podcastsError && podcasts.length === 0}
+          <p class="empty">{podcastsError}</p>
+        {:else if podcasts.length === 0}
+          <p class="empty">Ingen podcasts.</p>
+        {:else}
+          {#each podcasts as p (p.show_id)}
+            <button
+              type="button"
+              class="podcast-card"
+              class:active={activePodcastId === p.show_id}
+              class:loading={loadingPodcastId === p.show_id}
+              data-name={p.show_name}
+              onclick={() => playPodcast(p.show_id)}
+            >
+              {#if p.show_image}
+                <img class="podcast-cover" src={p.show_image} alt="" loading="lazy" />
+              {:else}
+                <div class="podcast-cover podcast-cover--empty"></div>
+              {/if}
+              <div class="podcast-info">
+                <span class="podcast-show">{p.show_name}</span>
+                <span class="podcast-episode">{p.episode_name}</span>
+                <span class="podcast-meta">
+                  {formatPodcastDate(p.episode_release_date)}
+                  {#if loadingPodcastId === p.show_id}
+                    · starter…
+                  {:else if activePodcastId === p.show_id}
+                    · afspiller — tap for pause
+                  {/if}
+                </span>
+              </div>
+            </button>
+          {/each}
+          {#if podcastsError}
+            <p class="podcast-error">{podcastsError}</p>
+          {/if}
+        {/if}
+      </div>
+      <button type="button" class="card-arrow card-arrow--lyd" onclick={() => advanceCard(podcastInner, 'podcast')} aria-label="Næste kort">
+        <span class="arrow-label">{nextPodcastCard}</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+    </section>
+
+    <!-- PAGE 3 · KAMERA ──────────────────────────────────────────────────── -->
     <section class="page">
       <div class="col-header">KAMERA</div>
       <div class="scroll-inner camera-page">
@@ -1184,5 +1322,96 @@
     font-size: 0.85rem;
     line-height: 1.6;
     padding: 40px 0;
+  }
+
+  /* ── Podcast cards ────────────────────────────────────────────────────────── */
+  .podcast-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 24px;
+    margin: 0;
+    background: none;
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.18s;
+    width: 100%;
+  }
+  .podcast-card:active {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .podcast-card.active {
+    background: rgba(0, 128, 200, 0.06);
+  }
+  .podcast-card.loading {
+    opacity: 0.65;
+  }
+
+  .podcast-cover {
+    flex: 0 0 88px;
+    width: 88px;
+    height: 88px;
+    border-radius: 8px;
+    object-fit: cover;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .podcast-cover--empty {
+    background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
+  }
+
+  .podcast-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .podcast-show {
+    font-size: 0.65rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #6f6f6f;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .podcast-episode {
+    font-size: 0.95rem;
+    font-weight: 300;
+    color: #ebebeb;
+    line-height: 1.3;
+    /* op til 3 linjer for længere afsnit-titler */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .podcast-card.active .podcast-episode {
+    color: #c8e8ff;
+  }
+
+  .podcast-meta {
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    color: #595959;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .podcast-error {
+    text-align: center;
+    color: #c87878;
+    font-size: 0.75rem;
+    padding: 12px 24px;
   }
 </style>

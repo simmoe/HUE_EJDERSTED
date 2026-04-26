@@ -12,6 +12,7 @@ import asyncio
 import errno
 import json
 import socket
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -648,6 +649,80 @@ async def spotify_save(data: dict | None = Body(default=None)):
 async def spotify_is_saved(uri: str | None = None):
     u = (uri or "").strip() or None
     return {"saved": await spotify.is_track_saved(u)}
+
+# ─── REST: Podcasts ───────────────────────────────────────────────────────────
+# Hardkodet liste — udvides senere (SR-programmer kommer i fase 2 via deres egen API).
+PODCAST_SHOWS: list[dict] = [
+    {"id": "6FVyoDMn4GKxveMegJ2Yih", "fallback_name": "Fodboldlisten"},
+    {"id": "5d4yba4KbcBTtwZ8glscZZ", "fallback_name": "Det næste kapitel"},
+]
+PODCAST_CACHE_TTL = 30 * 60  # 30 min — afsnit udkommer typisk én gang om ugen
+_podcast_cache: list[dict] = []
+_podcast_cache_at: float = 0.0
+
+
+async def _build_podcast_list() -> list[dict]:
+    out: list[dict] = []
+    for sh in PODCAST_SHOWS:
+        meta = await spotify.get_show(sh["id"])
+        ep = await spotify.get_show_latest_episode(sh["id"])
+        if not meta or not ep:
+            print(f"[Podcast] skip {sh['id']} — meta={bool(meta)} ep={bool(ep)}")
+            continue
+        images = meta.get("images") or []
+        cover = images[0].get("url", "") if images else ""
+        out.append({
+            "show_id": sh["id"],
+            "show_name": meta.get("name") or sh["fallback_name"],
+            "show_image": cover,
+            "episode_id": ep.get("id"),
+            "episode_uri": ep.get("uri"),
+            "episode_name": ep.get("name"),
+            "episode_release_date": ep.get("release_date"),
+            "episode_duration_ms": ep.get("duration_ms"),
+        })
+    return out
+
+
+@app.get("/api/podcasts")
+async def list_podcasts(refresh: int = 0):
+    """Hardkodet liste af podcasts, beriget med cover + seneste afsnit. Cache 30 min."""
+    global _podcast_cache, _podcast_cache_at
+    now = time.time()
+    if refresh or not _podcast_cache or (now - _podcast_cache_at) >= PODCAST_CACHE_TTL:
+        try:
+            _podcast_cache = await _build_podcast_list()
+            _podcast_cache_at = now
+        except Exception as e:
+            print(f"[Podcast] list error: {e}")
+            if not _podcast_cache:
+                return JSONResponse({"error": str(e)}, status_code=502)
+    return _podcast_cache
+
+
+@app.post("/api/podcasts/play-latest")
+async def play_latest_podcast(data: dict = Body(default_factory=dict)):
+    """Spil seneste afsnit af et show på B&O M5."""
+    show_id = (data.get("show_id") or "").strip()
+    if not show_id:
+        return JSONResponse({"ok": False, "error": "no show_id"}, status_code=400)
+    ep = await spotify.get_show_latest_episode(show_id)
+    if not ep:
+        return JSONResponse({"ok": False, "error": "no latest episode"}, status_code=404)
+    uri = ep.get("uri") or ""
+    ok, detail = await spotify.play_episode(uri)
+    return {
+        "ok": ok,
+        "detail": detail,
+        "episode": {
+            "id": ep.get("id"),
+            "name": ep.get("name"),
+            "uri": uri,
+            "release_date": ep.get("release_date"),
+            "duration_ms": ep.get("duration_ms"),
+        },
+    }
+
 
 @app.get("/api/spotify/token")
 async def spotify_token():

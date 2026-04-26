@@ -268,6 +268,71 @@ class Spotify:
             pass
         return 0
 
+    # ── Podcast / show ────────────────────────────────────────────────────
+    async def get_show(self, show_id: str) -> dict | None:
+        """Hent show-metadata (navn, cover, beskrivelse) for et podcast-show."""
+        h = await self._headers()
+        if not h:
+            return None
+        try:
+            r = await self._http.get(
+                f"{API}/shows/{show_id}",
+                headers=h,
+                params={"market": "DK"},
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            print(f"[Spotify] get_show error: {e}")
+        return None
+
+    async def get_show_latest_episode(self, show_id: str) -> dict | None:
+        """Hent seneste afsnit af et show. Spotify returnerer episodes sorteret nyeste først."""
+        h = await self._headers()
+        if not h:
+            return None
+        try:
+            r = await self._http.get(
+                f"{API}/shows/{show_id}/episodes",
+                headers=h,
+                params={"market": "DK", "limit": 1},
+            )
+            if r.status_code == 200:
+                items = r.json().get("items") or []
+                return items[0] if items else None
+        except Exception as e:
+            print(f"[Spotify] get_show_latest_episode error: {e}")
+        return None
+
+    async def play_episode(self, episode_uri: str) -> tuple[bool, str]:
+        """Spil ét enkelt podcast-afsnit på B&O M5 (samme rute som tracks)."""
+        if not episode_uri or not episode_uri.startswith("spotify:episode:"):
+            return False, "not an episode uri"
+        h = await self._headers()
+        if not h:
+            return False, "no auth headers"
+        speaker = await self._find_speaker_device_id()
+        candidates: list[str | None] = []
+        if speaker:
+            candidates.append(speaker)
+        candidates.append(None)
+
+        body = {"uris": [episode_uri], "position_ms": 0}
+        last_snip = ""
+        for device_id in candidates:
+            r = await self._http.put(
+                f"{API}/me/player/play",
+                headers=h,
+                params={"device_id": device_id} if device_id else {},
+                json=body,
+            )
+            if r.status_code in (200, 204):
+                await self._beolink_expand()
+                return True, ""
+            last_snip = f"device_id={device_id!r} HTTP {r.status_code}: {r.text[:350]}"
+            print(f"[Spotify] play-episode {last_snip}")
+        return False, last_snip
+
     async def skip(self) -> bool:
         return await self._post_player_next()
 
