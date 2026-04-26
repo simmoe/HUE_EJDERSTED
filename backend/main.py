@@ -305,6 +305,13 @@ async def websocket_endpoint(ws: WebSocket):
             except json.JSONDecodeError:
                 continue
 
+            if msg.get("type") == "ping":
+                try:
+                    await ws.send_text(json.dumps({"type": "pong", "t": msg.get("t")}))
+                except Exception:
+                    pass
+                continue
+
             if msg.get("type") == "set_volume":
                 dev_id = str(msg.get("device_id", ""))
                 try:
@@ -469,6 +476,8 @@ async def trigger_kiosk():
         f"adb -s {serial} shell settings put system user_rotation 1",
         f"adb -s {serial} shell settings put system screen_brightness_mode 0",
         f"adb -s {serial} shell settings put system screen_brightness 255",
+        # Never turn the screen off (int32 max ms ≈ 24.8 days; Android wraps internally)
+        f"adb -s {serial} shell settings put system screen_off_timeout 2147483647",
         f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome",
         f"adb -s {serial} shell cmd statusbar collapse",
         # Mute everything
@@ -481,6 +490,11 @@ async def trigger_kiosk():
         # Prevent updates & restarts
         f"adb -s {serial} shell settings put global stay_on_while_plugged_in 3",
         f"adb -s {serial} shell settings put global heads_up_notifications_enabled 0",
+        # Exempt Chrome from Doze / App Standby / battery optimizations
+        # so background timers and WebSockets don't get suspended.
+        f"adb -s {serial} shell dumpsys deviceidle whitelist +com.android.chrome",
+        f"adb -s {serial} shell cmd appops set com.android.chrome RUN_IN_BACKGROUND allow",
+        f"adb -s {serial} shell cmd appops set com.android.chrome RUN_ANY_IN_BACKGROUND allow",
     ]
     for cmd in cmds:
         proc = await asyncio.create_subprocess_shell(

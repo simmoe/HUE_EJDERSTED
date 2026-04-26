@@ -14,6 +14,12 @@
   let feedback = $state('');
   let feedbackTimer: ReturnType<typeof setTimeout>;
 
+  // Long-press skifter sprog: tap = engelsk, hold = dansk.
+  const LONG_PRESS_MS = 450;
+  let pressTimer: ReturnType<typeof setTimeout> | null = null;
+  let longPressArmed = $state(false);
+  let pressActive = false;
+
   function showFeedback(text: string, duration = 3000) {
     feedback = text;
     clearTimeout(feedbackTimer);
@@ -52,12 +58,12 @@
     }
   }
 
-  function startListening() {
+  function startListening(lang: 'en-US' | 'da-DK') {
     if (listening) return;
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { showFeedback('voice ikke understøttet'); return; }
     const recognition = new SR();
-    recognition.lang = 'en-US';
+    recognition.lang = lang;
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
     recognition.continuous = false;
@@ -69,7 +75,38 @@
     recognition.start();
   }
 
-  onMount(() => () => clearTimeout(feedbackTimer));
+  function clearPressTimer() {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  }
+
+  function onPressStart(e: PointerEvent) {
+    if (listening) return;
+    e.preventDefault();
+    pressActive = true;
+    longPressArmed = false;
+    clearPressTimer();
+    pressTimer = setTimeout(() => {
+      if (pressActive) longPressArmed = true;
+    }, LONG_PRESS_MS);
+  }
+
+  function onPressEnd(e: PointerEvent) {
+    if (!pressActive) return;
+    e.preventDefault();
+    pressActive = false;
+    clearPressTimer();
+    const lang: 'en-US' | 'da-DK' = longPressArmed ? 'da-DK' : 'en-US';
+    longPressArmed = false;
+    startListening(lang);
+  }
+
+  function onPressCancel() {
+    pressActive = false;
+    longPressArmed = false;
+    clearPressTimer();
+  }
+
+  onMount(() => () => { clearTimeout(feedbackTimer); clearPressTimer(); });
 </script>
 
 <div class="center-area">
@@ -77,9 +114,13 @@
     type="button"
     class="voice-btn"
     class:listening
-    onclick={startListening}
-    aria-label="Stemme — søg efter musik"
-    title="Stemme"
+    class:armed-da={longPressArmed}
+    onpointerdown={onPressStart}
+    onpointerup={onPressEnd}
+    onpointerleave={onPressCancel}
+    onpointercancel={onPressCancel}
+    aria-label="Stemme — kort tryk = engelsk, langt tryk = dansk"
+    title="Stemme — kort tryk EN, langt tryk DA"
   >
     <span class="voice-ring"></span>
     <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -87,6 +128,9 @@
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="17" x2="12" y2="21" />
     </svg>
+    {#if longPressArmed}
+      <span class="lang-badge">DA</span>
+    {/if}
   </button>
 
   {#if feedback}
@@ -129,6 +173,21 @@
   .voice-btn.listening {
     border-color: rgba(0, 128, 200, 0.35);
     color: #0080c8;
+  }
+
+  .voice-btn.armed-da {
+    border-color: rgba(220, 200, 110, 0.55);
+    color: #d8c87a;
+  }
+
+  .lang-badge {
+    position: absolute;
+    bottom: 22px;
+    font-size: 0.7rem;
+    font-weight: 400;
+    letter-spacing: 0.12em;
+    color: #d8c87a;
+    pointer-events: none;
   }
 
   .mic-icon {

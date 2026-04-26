@@ -52,32 +52,124 @@ class WSStore {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pending = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // Heartbeat/watchdog
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private staleTimer: ReturnType<typeof setInterval> | null = null;
+  private lastMessageAt = 0;
+  private downSince = 0;
+  private watchdogStarted = false;
+  private reconnectAttempts = 0;
+
+  // Tunables
+  private readonly HEARTBEAT_MS = 20_000;         // send ping every 20s
+  private readonly STALE_MS = 45_000;             // no message in 45s → force reconnect
+  private readonly RELOAD_AFTER_DOWN_MS = 120_000; // WS down >2 min → reload page
+
   connect() {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) return;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${window.location.host}/ws`;
-    console.log('[WS] connecting to', url);
-    this.ws = new WebSocket(url);
+    console.log('[WS] connecting to', url, `(attempt ${this.reconnectAttempts + 1})`);
+    this.reconnectAttempts += 1;
+
+    try {
+      this.ws = new WebSocket(url);
+    } catch (err) {
+      console.error('[WS] construct failed', err);
+      this._scheduleReconnect();
+      return;
+    }
 
     this.ws.onopen = () => {
       console.log('[WS] connected');
       this.connected = true;
-      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.lastMessageAt = Date.now();
+      this.downSince = 0;
+      this.reconnectAttempts = 0;
+      this._startHeartbeat();
+      this._ensureWatchdog();
     };
 
     this.ws.onmessage = (e: MessageEvent) => {
-      const msg: ServerMsg = JSON.parse(e.data);
+      this.lastMessageAt = Date.now();
+      let msg: ServerMsg | { type: 'pong' };
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg.type === 'pong') return;
       console.log('[WS] ←', msg.type, msg.type === 'init' ? `(${msg.hue_rooms?.length} rooms, paired=${msg.hue_status?.paired})` : '');
-      this._handle(msg);
+      this._handle(msg as ServerMsg);
     };
 
     this.ws.onclose = (e) => {
       console.log('[WS] closed', e.code, e.reason);
       this.connected = false;
-      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+      if (!this.downSince) this.downSince = Date.now();
+      this._stopHeartbeat();
+      this._scheduleReconnect();
     };
 
-    this.ws.onerror = (e) => { console.error('[WS] error', e); this.ws?.close(); };
+    this.ws.onerror = (e) => { console.error('[WS] error', e); try { this.ws?.close(); } catch { /* */ } };
+  }
+
+  private _scheduleReconnect() {
+    if (this.reconnectTimer) return;
+    // Backoff: 500ms, 1s, 2s, 3s (cap)
+    const delay = Math.min(500 * Math.max(1, this.reconnectAttempts), 3000);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  private _startHeartbeat() {
+    this._stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        try { this.ws.send(JSON.stringify({ type: 'ping', t: Date.now() })); } catch { /* */ }
+      }
+    }, this.HEARTBEAT_MS);
+  }
+
+  private _stopHeartbeat() {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+  }
+
+  private _ensureWatchdog() {
+    if (this.watchdogStarted) return;
+    this.watchdogStarted = true;
+
+    this.staleTimer = setInterval(() => {
+      const now = Date.now();
+      // Force close if we haven't heard anything in STALE_MS (dead socket)
+      if (this.ws?.readyState === WebSocket.OPEN && this.lastMessageAt && now - this.lastMessageAt > this.STALE_MS) {
+        console.warn('[WS] stale — forcing reconnect');
+        try { this.ws.close(); } catch { /* */ }
+      }
+      // Hard reload if WS has been down too long (backend restart, cert rotation, hung renderer, ...)
+      if (!this.connected && this.downSince && now - this.downSince > this.RELOAD_AFTER_DOWN_MS) {
+        console.warn('[WS] down > 2 min — reloading page');
+        window.location.reload();
+      }
+    }, 5_000);
+
+    const wake = (reason: string) => {
+      console.log('[WS] wake:', reason);
+      if (this.ws?.readyState !== WebSocket.OPEN) {
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        this.connect();
+      } else {
+        // Nudge: send a ping immediately to verify the path actually works
+        try { this.ws.send(JSON.stringify({ type: 'ping', t: Date.now() })); } catch { /* */ }
+      }
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') wake('visibilitychange');
+    });
+    window.addEventListener('pageshow', () => wake('pageshow'));
+    window.addEventListener('online', () => wake('online'));
+    window.addEventListener('focus', () => wake('focus'));
   }
 
   private _handle(msg: ServerMsg) {
