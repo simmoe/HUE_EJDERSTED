@@ -18,6 +18,7 @@ import {
   type DocumentReference,
 } from 'firebase/firestore';
 import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
+import { showFeedback } from '$lib/feedback.svelte';
 
 export type QTrack = { uri: string; name: string; artist: string };
 export type VoiceHandleResult = { handled: boolean; message?: string; error?: string };
@@ -377,6 +378,7 @@ export async function toggleRadio() {
   const seed = seedTrackFromDisplayedNp();
   if (!seed?.uri) {
     playlist.spotifyRadioError = 'Ingen sang på afspilleren — vælg spor med forrige/næste eller tilføj til køen';
+    showFeedback(playlist.spotifyRadioError, { kind: 'error' });
     return;
   }
   playlist.spotifyRadioLoading = true;
@@ -399,6 +401,7 @@ export async function toggleRadio() {
     if (!data.ok) {
       playlist.spotifyRadio = false;
       playlist.spotifyRadioError = (data.error as string) ?? 'Radio fejlede';
+      showFeedback(playlist.spotifyRadioError, { kind: 'error' });
       return;
     }
     playlist.radioQueue = (data.queue as QTrack[]) ?? [];
@@ -410,6 +413,7 @@ export async function toggleRadio() {
   } catch {
     playlist.spotifyRadio = false;
     playlist.spotifyRadioError = 'Ingen forbindelse til hub';
+    showFeedback(playlist.spotifyRadioError, { kind: 'error' });
   } finally {
     playlist.spotifyRadioLoading = false;
   }
@@ -428,6 +432,7 @@ export async function playAlbum() {
   const uri = seedUriForAlbumBuild();
   if (!uri) {
     playlist.spotifyAlbumError = 'Vælg et track i køen';
+    showFeedback(playlist.spotifyAlbumError, { kind: 'error' });
     return;
   }
   await pausePlaybackNow();
@@ -445,6 +450,7 @@ export async function playAlbum() {
     if (!data.ok) {
       playlist.spotifyAlbumActive = false;
       playlist.spotifyAlbumError = (data.error as string) ?? 'Album fejlede';
+      showFeedback(playlist.spotifyAlbumError, { kind: 'error' });
       return;
     }
     playlist.albumQueue = (data.queue as QTrack[]) ?? [];
@@ -455,6 +461,7 @@ export async function playAlbum() {
   } catch {
     playlist.spotifyAlbumActive = false;
     playlist.spotifyAlbumError = 'Ingen forbindelse til hub';
+    showFeedback(playlist.spotifyAlbumError, { kind: 'error' });
   } finally {
     playlist.spotifyAlbumLoading = false;
   }

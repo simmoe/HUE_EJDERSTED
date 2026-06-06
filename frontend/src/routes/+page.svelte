@@ -4,7 +4,9 @@
   import Card from '$lib/Card.svelte';
   import VolumeKnob from '$lib/VolumeKnob.svelte';
   import SpotifyVoice from '$lib/SpotifyVoice.svelte';
+  import FeedbackOverlay from '$lib/FeedbackOverlay.svelte';
   import CameraCard from '$lib/CameraCard.svelte';
+  import { showFeedback } from '$lib/feedback.svelte';
   import {
     playlist,
     activeQueue,
@@ -255,7 +257,6 @@
 
   let spotifySaved = $state(false);
   let radioSaveLoading = $state(false);
-  let radioSaveMessage = $state('');
   let radioSaveDone = $state(false);
 
   // ── Vertical card carousel ──────────────────────────────────────────────
@@ -350,9 +351,8 @@
     if (radioSaveLoading || radioSaveDone || !playlist.radioQueue.length) return;
     const seed = playlist.radioQueue[0];
     radioSaveLoading = true;
-    radioSaveMessage = '';
     try {
-      const data = await apiJson<{ ok?: boolean; error?: string }>('/api/spotify/radio/save', {
+      const data = await apiJson<{ ok?: boolean; error?: string; name?: string }>('/api/spotify/radio/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -362,32 +362,32 @@
         }),
       }, 20_000);
       if (data.ok) {
-        radioSaveMessage = 'Radioliste gemt';
         radioSaveDone = true;
-        await loadSpotifyPlaylists(true);
+        showFeedback(data.name ? `Gemt: ${data.name}` : 'Radioliste gemt', { kind: 'success' });
       } else {
-        radioSaveMessage = (data.error as string) || 'Kunne ikke gemme';
+        showFeedback((data.error as string) || 'Kunne ikke gemme', { kind: 'error' });
       }
     } catch (e) {
-      radioSaveMessage = (e as Error).message || 'Ingen forbindelse til hub';
+      showFeedback((e as Error).message || 'Ingen forbindelse til hub', { kind: 'error' });
     } finally {
       radioSaveLoading = false;
-      setTimeout(() => { radioSaveMessage = ''; }, 4000);
     }
   }
 
   let hueManualIp  = $state('');
   let huePairing   = $state(false);
-  let huePairError = $state('');
 
   async function handlePair(e: Event) {
     e.preventDefault();
     huePairing = true;
-    huePairError = '';
     const err = await store.pairHue(hueManualIp.trim() || undefined);
     huePairing = false;
-    if (err) huePairError = err;
-    else hueManualIp = '';
+    if (err) {
+      showFeedback(err, { kind: 'error' });
+    } else {
+      hueManualIp = '';
+      showFeedback('Hue bridge parret', { kind: 'success' });
+    }
   }
 
   // ── Podcasts ─────────────────────────────────────────────────────────────
@@ -496,12 +496,10 @@
         activePodcastId = showId;
         activeEpisodeId = (data.episode?.id as string) || '';
       } else {
-        podcastsError = (data.detail as string) || 'Afspilning fejlede';
-        setTimeout(() => { podcastsError = ''; }, 4000);
+        showFeedback((data.detail as string) || 'Afspilning fejlede', { kind: 'error' });
       }
     } catch (e) {
-      podcastsError = (e as Error).message || 'Afspilning fejlede';
-      setTimeout(() => { podcastsError = ''; }, 4000);
+      showFeedback((e as Error).message || 'Afspilning fejlede', { kind: 'error' });
     } finally {
       loadingPodcastId = '';
     }
@@ -518,8 +516,7 @@
       drilledEpisodes = (data.episodes ?? []) as Episode[];
       drilledHasMore = !!data.has_more;
     } catch {
-      podcastsError = 'Kunne ikke hente afsnit';
-      setTimeout(() => { podcastsError = ''; }, 4000);
+      showFeedback('Kunne ikke hente afsnit', { kind: 'error' });
     } finally {
       drilledLoading = false;
     }
@@ -571,12 +568,10 @@
         activeEpisodeId = ep.id;
         activePodcastId = drilledShow?.show_id ?? '';
       } else {
-        podcastsError = (data.detail as string) || 'Afspilning fejlede';
-        setTimeout(() => { podcastsError = ''; }, 4000);
+        showFeedback((data.detail as string) || 'Afspilning fejlede', { kind: 'error' });
       }
     } catch (e) {
-      podcastsError = (e as Error).message || 'Afspilning fejlede';
-      setTimeout(() => { podcastsError = ''; }, 4000);
+      showFeedback((e as Error).message || 'Afspilning fejlede', { kind: 'error' });
     } finally {
       loadingEpisodeId = '';
     }
@@ -684,8 +679,7 @@
     if (res.ok) {
       activePlaylistId = p.id;
     } else {
-      playlistsError = res.error || 'Afspilning fejlede';
-      setTimeout(() => { playlistsError = ''; }, 4000);
+      showFeedback(res.error || 'Afspilning fejlede', { kind: 'error' });
     }
     loadingPlaylistId = '';
   }
@@ -702,8 +696,7 @@
       }, 15_000);
       drilledTracks = (data.queue ?? []) as PlaylistTrack[];
     } catch (e) {
-      playlistsError = (e as Error).message || 'Kunne ikke hente sange';
-      setTimeout(() => { playlistsError = ''; }, 4000);
+      showFeedback((e as Error).message || 'Kunne ikke hente sange', { kind: 'error' });
     } finally {
       drilledTracksLoading = false;
     }
@@ -724,13 +717,12 @@
         spotifyPlaylists = spotifyPlaylists.filter((x) => x.id !== p.id);
         if (activePlaylistId === p.id) activePlaylistId = '';
         if (drilledPlaylist?.id === p.id) closePlaylistDrill();
+        showFeedback('Playliste slettet', { kind: 'success' });
       } else {
-        playlistsError = data.error || 'Kunne ikke slette';
-        setTimeout(() => { playlistsError = ''; }, 4000);
+        showFeedback(data.error || 'Kunne ikke slette', { kind: 'error' });
       }
     } catch {
-      playlistsError = 'Ingen forbindelse';
-      setTimeout(() => { playlistsError = ''; }, 4000);
+      showFeedback('Ingen forbindelse', { kind: 'error' });
     } finally {
       loadingPlaylistId = '';
     }
@@ -747,8 +739,7 @@
       });
       const data = await r.json();
       if (!data.ok) {
-        playlistsError = data.error || 'Kunne ikke slette sang';
-        setTimeout(() => { playlistsError = ''; }, 4000);
+        showFeedback(data.error || 'Kunne ikke slette sang', { kind: 'error' });
         return;
       }
 
@@ -769,9 +760,9 @@
         }
         paintNpFromQueues();
       }
+      showFeedback('Sang fjernet', { kind: 'success' });
     } catch {
-      playlistsError = 'Ingen forbindelse';
-      setTimeout(() => { playlistsError = ''; }, 4000);
+      showFeedback('Ingen forbindelse', { kind: 'error' });
     } finally {
       deletingTrackIndex = -1;
     }
@@ -795,8 +786,7 @@
       paintNpFromQueues();
       await playFromCurrentIndex();
     } else {
-      playlistsError = res.error || 'Afspilning fejlede';
-      setTimeout(() => { playlistsError = ''; }, 4000);
+      showFeedback(res.error || 'Afspilning fejlede', { kind: 'error' });
     }
     loadingTrackIndex = -1;
   }
@@ -804,6 +794,8 @@
 </script>
 
 <main>
+  <FeedbackOverlay />
+
   <!-- Splash screen for fullscreen entry -->
   {#if showSplash}
     <div class="splash" onclick={dismissSplash} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && dismissSplash()}>
@@ -933,9 +925,6 @@
             >
               {radioSaveLoading ? '· · ·' : radioSaveDone ? 'playliste gemt' : 'gem'}
             </button>
-            {#if radioSaveMessage}
-              <div class="radio-save-message" role="status">{radioSaveMessage}</div>
-            {/if}
           </div>
           <div class="unified-vol">
             <input
@@ -988,17 +977,13 @@
             ? 'Opbygger radio…'
             : playlist.spotifyAlbumLoading
               ? 'Henter album…'
-              : playlist.spotifyRadioError
-                ? playlist.spotifyRadioError
-                : playlist.spotifyAlbumError
-                  ? playlist.spotifyAlbumError
-                    : playlist.playListMode === 'playlist'
-                      ? (playlist.savedPlaylistTitle || 'Playliste')
-                      : playlist.playListMode === 'radio'
-                        ? 'Song Radio (lokal kø)'
-                        : playlist.playListMode === 'album'
-                          ? 'Album (lokal kø)'
-                          : 'Mikrofon-kø'}
+              : playlist.playListMode === 'playlist'
+                ? (playlist.savedPlaylistTitle || 'Playliste')
+                : playlist.playListMode === 'radio'
+                  ? 'Song Radio (lokal kø)'
+                  : playlist.playListMode === 'album'
+                    ? 'Album (lokal kø)'
+                    : 'Mikrofon-kø'}
         >
           <SpotifyVoice onvoice={handleVoicePayload} />
         </Card>
@@ -1069,7 +1054,6 @@
                   placeholder="Bridge IP (f.eks. 192.168.1.10)"
                   inputmode="url" autocomplete="off" />
               {/if}
-              {#if huePairError}<p class="form-error">{huePairError}</p>{/if}
               <button type="submit" class="btn-primary" disabled={huePairing}>
                 {huePairing ? '…' : 'par'}
               </button>
@@ -1201,9 +1185,6 @@
               </button>
             </div>
           {/each}
-          {#if playlistsError}
-            <p class="podcast-error">{playlistsError}</p>
-          {/if}
         {/if}
       </div>
 
@@ -1329,9 +1310,6 @@
               </button>
             </div>
           {/each}
-          {#if podcastsError}
-            <p class="podcast-error">{podcastsError}</p>
-          {/if}
         {/if}
       </div>
 
@@ -1829,15 +1807,6 @@
   .radio-actions .action-btn {
     width: 88px;
   }
-  .radio-save-message {
-    max-width: 240px;
-    color: #777;
-    font-size: 0.62rem;
-    letter-spacing: 0.1em;
-    line-height: 1.35;
-    text-align: center;
-    text-transform: uppercase;
-  }
 
   .np-next-title {
     font-size: 0.8rem;
@@ -1952,12 +1921,6 @@
     -webkit-appearance: none;
   }
   form input:focus { border-color: #0080c8; }
-
-  .form-error {
-    font-size: 0.75rem;
-    color: #888;
-    padding: 0 4px;
-  }
 
   /* ── Hue pairing ──────────────────────────────────────────────────────────── */
   .pair-wrap {
@@ -2160,13 +2123,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .podcast-error {
-    text-align: center;
-    color: #c87878;
-    font-size: 0.75rem;
-    padding: 12px 24px;
   }
 
   /* ── Drill-in (per show) ──────────────────────────────────────────────── */

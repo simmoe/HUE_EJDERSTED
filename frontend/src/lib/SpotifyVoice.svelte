@@ -3,6 +3,7 @@
    * Stemme → hub returnerer kun kø-metadata; afspilning styres på +page.
    */
   import { onMount } from 'svelte';
+  import { showFeedback } from '$lib/feedback.svelte';
 
   let {
     onvoice,
@@ -12,8 +13,6 @@
 
   let listening = $state(false);
   let activeLang = $state<'en-US' | 'da-DK'>('en-US');
-  let feedback = $state('');
-  let feedbackTimer: ReturnType<typeof setTimeout>;
 
   const VOICE_TIMEOUT_MS = 12_000;
 
@@ -23,19 +22,13 @@
   let longPressArmed = $state(false);
   let pressActive = false;
 
-  function showFeedback(text: string, duration = 3000) {
-    feedback = text;
-    clearTimeout(feedbackTimer);
-    feedbackTimer = setTimeout(() => { feedback = ''; }, duration);
-  }
-
   async function handleResult(transcript: string) {
     listening = false;
-    showFeedback(transcript, 8000);
+    showFeedback(transcript, { duration: 8000 });
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), VOICE_TIMEOUT_MS);
     try {
-      showFeedback(`søger: ${transcript}`, 12_000);
+      showFeedback(`søger: ${transcript}`, { duration: 12_000 });
       const r = await fetch('/api/spotify/voice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -50,32 +43,32 @@
         } catch {
           /* keep HTTP fallback */
         }
-        showFeedback(detail, 7000);
+        showFeedback(detail, { kind: 'error', duration: 7000 });
         return;
       }
       const data = (await r.json()) as Record<string, unknown>;
       const handled = onvoice?.(data);
       if (data.ok === false && data.error) {
-        showFeedback(String(data.error), 7000);
+        showFeedback(String(data.error), { kind: 'error', duration: 7000 });
       } else if (data.action === 'pause') {
-        showFeedback(data.ok ? 'pause' : 'pause fejlede');
+        showFeedback(data.ok ? 'pause' : 'pause fejlede', { kind: data.ok ? 'info' : 'error' });
       } else if (data.action === 'local_nav') {
-        showFeedback(handled?.error ?? '');
+        if (handled?.error) showFeedback(handled.error, { kind: 'error' });
       } else if (data.action === 'use_play_button') {
         showFeedback('Tryk play');
       } else if (data.action === 'enqueue' || data.action === 'enqueue_queue') {
-        showFeedback(handled?.message || 'Tilføjet til kø');
+        showFeedback(handled?.message || 'Tilføjet til kø', { kind: 'success' });
       } else if (data.name && typeof data.name === 'string') {
         showFeedback(data.name);
       } else if (!data.ok && data.action === 'search') {
-        showFeedback('ikke fundet', 7000);
+        showFeedback('ikke fundet', { kind: 'error', duration: 7000 });
       } else if (handled?.error) {
-        showFeedback(handled.error, 7000);
+        showFeedback(handled.error, { kind: 'error', duration: 7000 });
       } else if (!handled?.handled) {
-        showFeedback('kunne ikke bruge svaret', 7000);
+        showFeedback('kunne ikke bruge svaret', { kind: 'error', duration: 7000 });
       }
     } catch (e) {
-      showFeedback((e as Error)?.name === 'AbortError' ? 'hub svarer ikke' : 'ingen forbindelse', 7000);
+      showFeedback((e as Error)?.name === 'AbortError' ? 'hub svarer ikke' : 'ingen forbindelse', { kind: 'error', duration: 7000 });
     } finally {
       clearTimeout(timeout);
     }
@@ -84,16 +77,16 @@
   function startListening(lang: 'en-US' | 'da-DK') {
     if (listening) return;
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { showFeedback('voice ikke understøttet'); return; }
+    if (!SR) { showFeedback('voice ikke understøttet', { kind: 'error' }); return; }
     activeLang = lang;
     const recognition = new SR();
     recognition.lang = lang;
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
     recognition.continuous = false;
-    recognition.onstart = () => { listening = true; feedback = ''; };
-    recognition.onerror = () => { listening = false; showFeedback('prøv igen'); };
-    recognition.onnomatch = () => { listening = false; showFeedback('forstod ikke'); };
+    recognition.onstart = () => { listening = true; };
+    recognition.onerror = () => { listening = false; showFeedback('prøv igen', { kind: 'error' }); };
+    recognition.onnomatch = () => { listening = false; showFeedback('forstod ikke', { kind: 'error' }); };
     recognition.onresult = (e: any) => handleResult(e.results[0][0].transcript);
     recognition.onend = () => { listening = false; };
     recognition.start();
@@ -130,7 +123,7 @@
     clearPressTimer();
   }
 
-  onMount(() => () => { clearTimeout(feedbackTimer); clearPressTimer(); });
+  onMount(() => () => { clearPressTimer(); });
 </script>
 
 <div class="center-area">
@@ -157,9 +150,7 @@
     {/if}
   </button>
 
-  {#if feedback}
-    <span class="feedback">{feedback}</span>
-  {:else if listening}
+  {#if listening}
     <span class="feedback listening-text">lytter</span>
   {/if}
 </div>
