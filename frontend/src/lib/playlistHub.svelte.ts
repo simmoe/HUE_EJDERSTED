@@ -7,7 +7,7 @@
  *
  * Tilstand ligger i ét `playlist`-objekt (Svelte 5: eksporteret $state må ikke reassignedes som enkeltfelter).
  */
-import { initializeApp, type FirebaseOptions } from 'firebase/app';
+import { initializeApp, getApp, getApps, type FirebaseOptions } from 'firebase/app';
 import {
   getFirestore,
   doc,
@@ -634,7 +634,7 @@ export async function initPlaylistHub(): Promise<() => void> {
   }
 
   try {
-    const app = initializeApp(cfg as FirebaseOptions);
+    const app = getApps().length ? getApp() : initializeApp(cfg as FirebaseOptions);
     const db = getFirestore(app);
     docRef = doc(db, 'ejdersted', 'playlists');
   } catch {

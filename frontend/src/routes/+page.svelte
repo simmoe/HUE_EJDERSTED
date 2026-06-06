@@ -8,6 +8,14 @@
   import CameraCard from '$lib/CameraCard.svelte';
   import { showFeedback } from '$lib/feedback.svelte';
   import {
+    radioLibrary,
+    initRadioLibrary,
+    saveRadioPlaylist,
+    deleteRadioPlaylist,
+    deleteRadioTrack,
+    type RadioPlaylist,
+  } from '$lib/radioLibrary.svelte';
+  import {
     playlist,
     activeQueue,
     registerScrollToNowPlaying,
@@ -17,37 +25,12 @@
     spotifyPreviousTrack,
     toggleRadio,
     playAlbum,
-    playSavedPlaylist,
     handleVoicePayload,
     stopMusicForExternalPlayback,
     paintNpFromQueues,
     playFromCurrentIndex,
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
-
-  async function apiJson<T>(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15_000): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const r = await fetch(input, { ...init, signal: controller.signal });
-      let data: unknown = {};
-      try {
-        data = await r.json();
-      } catch {
-        /* Some endpoints can return an empty body on infrastructure errors. */
-      }
-      if (!r.ok) {
-        const err = data as { error?: unknown; detail?: unknown };
-        throw new Error(String(err.error || err.detail || `HTTP ${r.status}`));
-      }
-      return data as T;
-    } catch (e) {
-      if ((e as Error).name === 'AbortError') throw new Error('Spotify svarede ikke i tide');
-      throw e;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
 
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
@@ -100,6 +83,7 @@
   }
 
   let stopPlaylistHub: (() => void) | undefined;
+  let stopRadioLibrary: (() => void) | undefined;
 
   onMount(() => {
     store.connect();
@@ -108,6 +92,9 @@
     void initSpotifyWebPlayer();
     void initPlaylistHub().then((stop) => {
       stopPlaylistHub = stop;
+    });
+    void initRadioLibrary().then((stop) => {
+      stopRadioLibrary = stop;
     });
     // Re-apply kiosk settings once on page load. Do not run it on every visibility
     // change; Android may briefly hide/show Chrome around system overlays.
@@ -121,10 +108,10 @@
     // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
     document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
     void loadPodcasts();
-    void loadSpotifyPlaylists();
     return () => {
       clearInterval(clockInterval);
       stopPlaylistHub?.();
+      stopRadioLibrary?.();
     };
   });
 
@@ -305,7 +292,7 @@
     // re-read når podcasts er hentet (dom-børn ændrer sig)
     void podcasts.length;
     if (podcastInner) nextPodcastCard = readNextCardName(podcastInner);
-    void spotifyPlaylists.length;
+    void radioLibrary.playlists.length;
     if (playlistInner) nextPlaylistCard = readNextCardName(playlistInner);
   });
 
@@ -352,23 +339,11 @@
     const seed = playlist.radioQueue[0];
     radioSaveLoading = true;
     try {
-      const data = await apiJson<{ ok?: boolean; error?: string; name?: string }>('/api/spotify/radio/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          seed_name: seed?.name ?? playlist.spotifyTitle,
-          seed_artist: seed?.artist ?? playlist.spotifyArtist,
-          tracks: playlist.radioQueue,
-        }),
-      }, 20_000);
-      if (data.ok) {
-        radioSaveDone = true;
-        showFeedback(data.name ? `Gemt: ${data.name}` : 'Radioliste gemt', { kind: 'success' });
-      } else {
-        showFeedback((data.error as string) || 'Kunne ikke gemme', { kind: 'error' });
-      }
+      const saved = await saveRadioPlaylist(seed, playlist.radioQueue);
+      radioSaveDone = true;
+      showFeedback(`Gemt: ${saved.name}`, { kind: 'success' });
     } catch (e) {
-      showFeedback((e as Error).message || 'Ingen forbindelse til hub', { kind: 'error' });
+      showFeedback((e as Error).message || 'Kunne ikke gemme', { kind: 'error' });
     } finally {
       radioSaveLoading = false;
     }
@@ -597,20 +572,7 @@
     return m === 0 ? `${h} t` : `${h} t ${m} min`;
   }
 
-  // ── Spotify playlists ────────────────────────────────────────────────────
-  type SpotifyPlaylist = {
-    id: string;
-    uri: string;
-    name: string;
-    description: string;
-    image: string;
-    tracks_total: number;
-    owner: string;
-  };
-
-  let spotifyPlaylists = $state<SpotifyPlaylist[]>([]);
-  let playlistsLoading = $state(true);
-  let playlistsError = $state('');
+  // ── Cached radio playlists ───────────────────────────────────────────────
   let loadingPlaylistId = $state('');
   let loadingTrackIndex = $state(-1);
   let deletingTrackIndex = $state(-1);
@@ -620,9 +582,19 @@
   let prevPlaylistCard = $state('');
 
   type PlaylistTrack = { uri: string; name: string; artist: string; position?: number };
-  let drilledPlaylist = $state<SpotifyPlaylist | null>(null);
+  let drilledPlaylist = $state<RadioPlaylist | null>(null);
   let drilledTracks = $state<PlaylistTrack[]>([]);
-  let drilledTracksLoading = $state(false);
+
+  function startCachedPlaylist(p: RadioPlaylist) {
+    playlist.spotifyRadio = false;
+    playlist.spotifyAlbumActive = false;
+    playlist.savedPlaylistActive = true;
+    playlist.savedPlaylistTitle = p.name;
+    playlist.savedPlaylistQueue = p.tracks;
+    playlist.savedPlaylistIndex = 0;
+    playlist.playListMode = 'playlist';
+    paintNpFromQueues();
+  }
 
   function updatePlaylistScrollLabels() {
     if (!playlistInner) return;
@@ -656,50 +628,18 @@
     setTimeout(updatePlaylistScrollLabels, 350);
   }
 
-  async function loadSpotifyPlaylists(refresh = false) {
-    playlistsLoading = spotifyPlaylists.length === 0;
-    playlistsError = '';
-    try {
-      const data = await apiJson<{ ok?: boolean; error?: string; playlists?: SpotifyPlaylist[] }>('/api/spotify/playlists?limit=50', {}, 15_000);
-      spotifyPlaylists = Array.isArray(data.playlists) ? data.playlists : [];
-      if (!data.ok) playlistsError = (data.error as string) || 'Kunne ikke hente playlister';
-      setTimeout(updatePlaylistScrollLabels, 0);
-    } catch (e) {
-      playlistsError = (e as Error).message || 'Kunne ikke hente playlister';
-    } finally {
-      playlistsLoading = false;
-    }
-  }
-
-  async function playSpotifyPlaylist(p: SpotifyPlaylist) {
+  async function playSpotifyPlaylist(p: RadioPlaylist) {
     if (loadingPlaylistId) return;
     loadingPlaylistId = p.id;
     stopMusicForExternalPlayback();
-    const res = await playSavedPlaylist(p.uri, p.name);
-    if (res.ok) {
-      activePlaylistId = p.id;
-    } else {
-      showFeedback(res.error || 'Afspilning fejlede', { kind: 'error' });
-    }
+    startCachedPlaylist(p);
+    activePlaylistId = p.id;
     loadingPlaylistId = '';
   }
 
-  async function openPlaylistDrill(p: SpotifyPlaylist) {
+  function openPlaylistDrill(p: RadioPlaylist) {
     drilledPlaylist = p;
-    drilledTracks = [];
-    drilledTracksLoading = true;
-    try {
-      const data = await apiJson<{ queue?: PlaylistTrack[] }>('/api/spotify/playlist/build', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playlist_uri: p.uri }),
-      }, 15_000);
-      drilledTracks = (data.queue ?? []) as PlaylistTrack[];
-    } catch (e) {
-      showFeedback((e as Error).message || 'Kunne ikke hente sange', { kind: 'error' });
-    } finally {
-      drilledTracksLoading = false;
-    }
+    drilledTracks = p.tracks.map((track, i) => ({ ...track, position: i }));
   }
 
   function closePlaylistDrill() {
@@ -707,22 +647,16 @@
     drilledTracks = [];
   }
 
-  async function deletePlaylist(p: SpotifyPlaylist) {
+  async function deletePlaylist(p: RadioPlaylist) {
     if (loadingPlaylistId) return;
     loadingPlaylistId = p.id;
     try {
-      const r = await fetch(`/api/spotify/playlist/${p.id}`, { method: 'DELETE' });
-      const data = await r.json();
-      if (data.ok) {
-        spotifyPlaylists = spotifyPlaylists.filter((x) => x.id !== p.id);
-        if (activePlaylistId === p.id) activePlaylistId = '';
-        if (drilledPlaylist?.id === p.id) closePlaylistDrill();
-        showFeedback('Playliste slettet', { kind: 'success' });
-      } else {
-        showFeedback(data.error || 'Kunne ikke slette', { kind: 'error' });
-      }
-    } catch {
-      showFeedback('Ingen forbindelse', { kind: 'error' });
+      await deleteRadioPlaylist(p.id);
+      if (activePlaylistId === p.id) activePlaylistId = '';
+      if (drilledPlaylist?.id === p.id) closePlaylistDrill();
+      showFeedback('Playliste slettet', { kind: 'success' });
+    } catch (e) {
+      showFeedback((e as Error).message || 'Kunne ikke slette', { kind: 'error' });
     } finally {
       loadingPlaylistId = '';
     }
@@ -732,25 +666,12 @@
     if (!drilledPlaylist || deletingTrackIndex >= 0) return;
     deletingTrackIndex = index;
     try {
-      const r = await fetch(`/api/spotify/playlist/${drilledPlaylist.id}/track`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track_uri: track.uri, position: track.position ?? index }),
-      });
-      const data = await r.json();
-      if (!data.ok) {
-        showFeedback(data.error || 'Kunne ikke slette sang', { kind: 'error' });
-        return;
-      }
+      await deleteRadioTrack(drilledPlaylist.id, index);
 
       drilledTracks = drilledTracks
         .filter((_, i) => i !== index)
         .map((row, i) => ({ ...row, position: i }));
-      spotifyPlaylists = spotifyPlaylists.map((p) =>
-        p.id === drilledPlaylist?.id
-          ? { ...p, tracks_total: Math.max(0, p.tracks_total - 1) }
-          : p
-      );
+      drilledPlaylist = { ...drilledPlaylist, tracks: drilledTracks };
       if (activePlaylistId === drilledPlaylist.id) {
         playlist.savedPlaylistQueue = playlist.savedPlaylistQueue.filter((_, i) => i !== index);
         if (playlist.savedPlaylistIndex >= playlist.savedPlaylistQueue.length) {
@@ -761,8 +682,8 @@
         paintNpFromQueues();
       }
       showFeedback('Sang fjernet', { kind: 'success' });
-    } catch {
-      showFeedback('Ingen forbindelse', { kind: 'error' });
+    } catch (e) {
+      showFeedback((e as Error).message || 'Kunne ikke slette sang', { kind: 'error' });
     } finally {
       deletingTrackIndex = -1;
     }
@@ -779,15 +700,11 @@
       return;
     }
     stopMusicForExternalPlayback();
-    const res = await playSavedPlaylist(drilledPlaylist.uri, drilledPlaylist.name);
-    if (res.ok) {
-      activePlaylistId = drilledPlaylist.id;
-      playlist.savedPlaylistIndex = index;
-      paintNpFromQueues();
-      await playFromCurrentIndex();
-    } else {
-      showFeedback(res.error || 'Afspilning fejlede', { kind: 'error' });
-    }
+    startCachedPlaylist(drilledPlaylist);
+    activePlaylistId = drilledPlaylist.id;
+    playlist.savedPlaylistIndex = index;
+    paintNpFromQueues();
+    await playFromCurrentIndex();
     loadingTrackIndex = -1;
   }
 
@@ -1087,9 +1004,7 @@
 
       <div class="scroll-inner list-scroll" bind:this={playlistInner} onscroll={updatePlaylistScrollLabels}>
         {#if drilledPlaylist}
-          {#if drilledTracksLoading && drilledTracks.length === 0}
-            <p class="empty">Henter sange…</p>
-          {:else if drilledTracks.length === 0}
+          {#if drilledTracks.length === 0}
             <p class="empty">Ingen sange fundet.</p>
           {:else}
             {#each drilledTracks as track, i (track.uri + i)}
@@ -1136,14 +1051,14 @@
               <span>Slet playliste</span>
             </button>
           {/if}
-        {:else if playlistsLoading && spotifyPlaylists.length === 0}
+        {:else if radioLibrary.loading && radioLibrary.playlists.length === 0}
           <p class="empty">Henter playlister…</p>
-        {:else if playlistsError && spotifyPlaylists.length === 0}
-          <p class="empty">{playlistsError}</p>
-        {:else if spotifyPlaylists.length === 0}
+        {:else if radioLibrary.error && radioLibrary.playlists.length === 0}
+          <p class="empty">{radioLibrary.error}</p>
+        {:else if radioLibrary.playlists.length === 0}
           <p class="empty">Ingen radio-playlister gemt endnu.</p>
         {:else}
-          {#each spotifyPlaylists as p (p.id)}
+          {#each radioLibrary.playlists as p (p.id)}
             <div
               class="podcast-card playlist-card"
               class:active={activePlaylistId === p.id}
@@ -1156,15 +1071,11 @@
                 onclick={() => playSpotifyPlaylist(p)}
                 aria-label={`Spil playlisten ${p.name}`}
               >
-                {#if p.image}
-                  <img class="podcast-cover" src={p.image} alt="" loading="lazy" />
-                {:else}
-                  <div class="podcast-cover podcast-cover--empty"></div>
-                {/if}
+                <div class="podcast-cover podcast-cover--empty"></div>
                 <div class="podcast-info">
                   <span class="podcast-show">{p.name}</span>
                   <span class="podcast-meta">
-                    {p.tracks_total} sange
+                    {p.tracks.length} sange
                     {#if loadingPlaylistId === p.id}
                       · henter…
                     {:else if activePlaylistId === p.id}
