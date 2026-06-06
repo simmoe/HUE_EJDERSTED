@@ -1071,7 +1071,12 @@
                 onclick={() => playSpotifyPlaylist(p)}
                 aria-label={`Spil playlisten ${p.name}`}
               >
-                <div class="podcast-cover podcast-cover--empty"></div>
+                <div class="podcast-cover playlist-text-cover" aria-hidden="true">
+                  <span class="playlist-cover-title">{p.seedName || p.name}</span>
+                  {#if p.seedArtist}
+                    <span class="playlist-cover-artist">{p.seedArtist}</span>
+                  {/if}
+                </div>
                 <div class="podcast-info">
                   <span class="podcast-show">{p.name}</span>
                   <span class="podcast-meta">
@@ -1991,6 +1996,39 @@
   }
   .podcast-cover--empty {
     background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
+  }
+  .playlist-text-cover {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 9px;
+    background:
+      radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.1), transparent 34%),
+      linear-gradient(145deg, #242424, #111);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+  .playlist-cover-title,
+  .playlist-cover-artist {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-height: 1.05;
+    text-transform: uppercase;
+    word-break: break-word;
+  }
+  .playlist-cover-title {
+    color: #f1f1f1;
+    font-size: 0.64rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    -webkit-line-clamp: 3;
+  }
+  .playlist-cover-artist {
+    color: #8a8a8a;
+    font-size: 0.5rem;
+    letter-spacing: 0.12em;
+    -webkit-line-clamp: 2;
   }
 
   .podcast-info {
