@@ -23,6 +23,30 @@
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
+  async function apiJson<T>(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15_000): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(input, { ...init, signal: controller.signal });
+      let data: unknown = {};
+      try {
+        data = await r.json();
+      } catch {
+        /* Some endpoints can return an empty body on infrastructure errors. */
+      }
+      if (!r.ok) {
+        const err = data as { error?: unknown; detail?: unknown };
+        throw new Error(String(err.error || err.detail || `HTTP ${r.status}`));
+      }
+      return data as T;
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') throw new Error('Spotify svarede ikke i tide');
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
 
@@ -328,7 +352,7 @@
     radioSaveLoading = true;
     radioSaveMessage = '';
     try {
-      const r = await fetch('/api/spotify/radio/save', {
+      const data = await apiJson<{ ok?: boolean; error?: string }>('/api/spotify/radio/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -336,8 +360,7 @@
           seed_artist: seed?.artist ?? playlist.spotifyArtist,
           tracks: playlist.radioQueue,
         }),
-      });
-      const data = await r.json();
+      }, 20_000);
       if (data.ok) {
         radioSaveMessage = 'Radioliste gemt';
         radioSaveDone = true;
@@ -345,8 +368,8 @@
       } else {
         radioSaveMessage = (data.error as string) || 'Kunne ikke gemme';
       }
-    } catch {
-      radioSaveMessage = 'Ingen forbindelse til hub';
+    } catch (e) {
+      radioSaveMessage = (e as Error).message || 'Ingen forbindelse til hub';
     } finally {
       radioSaveLoading = false;
       setTimeout(() => { radioSaveMessage = ''; }, 4000);
@@ -642,9 +665,7 @@
     playlistsLoading = spotifyPlaylists.length === 0;
     playlistsError = '';
     try {
-      const r = await fetch('/api/spotify/playlists?limit=50');
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
+      const data = await apiJson<{ ok?: boolean; error?: string; playlists?: SpotifyPlaylist[] }>('/api/spotify/playlists?limit=50', {}, 15_000);
       spotifyPlaylists = Array.isArray(data.playlists) ? data.playlists : [];
       if (!data.ok) playlistsError = (data.error as string) || 'Kunne ikke hente playlister';
       setTimeout(updatePlaylistScrollLabels, 0);
@@ -674,15 +695,14 @@
     drilledTracks = [];
     drilledTracksLoading = true;
     try {
-      const r = await fetch('/api/spotify/playlist/build', {
+      const data = await apiJson<{ queue?: PlaylistTrack[] }>('/api/spotify/playlist/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ playlist_uri: p.uri }),
-      });
-      const data = await r.json();
+      }, 15_000);
       drilledTracks = (data.queue ?? []) as PlaylistTrack[];
-    } catch {
-      playlistsError = 'Kunne ikke hente sange';
+    } catch (e) {
+      playlistsError = (e as Error).message || 'Kunne ikke hente sange';
       setTimeout(() => { playlistsError = ''; }, 4000);
     } finally {
       drilledTracksLoading = false;

@@ -66,6 +66,30 @@ const ADVANCE_BUFFER_MS = 1300;
 let advanceTimer: ReturnType<typeof setTimeout> | null = null;
 let pausedRemainingMs = 0;
 
+async function apiJson<T>(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15_000): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(input, { ...init, signal: controller.signal });
+    let data: unknown = {};
+    try {
+      data = await r.json();
+    } catch {
+      /* Ignore malformed gateway responses; caller gets HTTP status below. */
+    }
+    if (!r.ok) {
+      const err = data as { error?: unknown; detail?: unknown };
+      throw new Error(String(err.error || err.detail || `HTTP ${r.status}`));
+    }
+    return data as T;
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw new Error('Spotify svarede ikke i tide');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function clearAdvanceTimer() {
   if (advanceTimer) {
     clearTimeout(advanceTimer);
@@ -443,12 +467,11 @@ export async function playSavedPlaylist(playlistUri: string, title = '') {
   playlist.spotifyAlbumActive = false;
   playlist.savedPlaylistActive = false;
   try {
-    const r = await fetch('/api/spotify/playlist/build', {
+    const data = await apiJson<{ ok?: boolean; error?: string; queue?: QTrack[] }>('/api/spotify/playlist/build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_uri: playlistUri }),
-    });
-    const data = await r.json();
+    }, 15_000);
     if (!data.ok) {
       return { ok: false, error: (data.error as string) ?? 'Playliste fejlede' };
     }
@@ -460,8 +483,8 @@ export async function playSavedPlaylist(playlistUri: string, title = '') {
     paintNpFromQueues();
     scrollToNowPlaying();
     return { ok: true };
-  } catch {
-    return { ok: false, error: 'Ingen forbindelse til hub' };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || 'Ingen forbindelse til hub' };
   }
 }
 

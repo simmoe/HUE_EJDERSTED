@@ -955,11 +955,30 @@ class Spotify:
             return {"ok": False, "error": "Ikke logget ind", "playlists": []}
         rows: list[dict] = []
         url: str | None = f"{API}/me/playlists"
-        params: dict = {"limit": 50, "offset": 0}
+        page_limit = max(1, min(50, int(limit or 50)))
+        start_offset = max(0, int(offset or 0))
+        params: dict = {"limit": page_limit, "offset": start_offset}
         while url:
-            r = await self._http.get(url, headers=h, params=params)
+            try:
+                r = await self._http.get(url, headers=h, params=params)
+            except httpx.TimeoutException:
+                return {"ok": False, "error": "Spotify svarede ikke i tide", "playlists": rows}
+            except httpx.HTTPError as e:
+                return {"ok": False, "error": f"Spotify-forbindelse fejlede: {type(e).__name__}", "playlists": rows}
             if r.status_code != 200:
-                break
+                detail = ""
+                try:
+                    body = r.json()
+                    if isinstance(body, dict):
+                        err = body.get("error")
+                        if isinstance(err, dict):
+                            detail = str(err.get("message") or "")
+                        elif isinstance(err, str):
+                            detail = err
+                except Exception:
+                    detail = r.text[:120]
+                suffix = f": {detail}" if detail else ""
+                return {"ok": False, "error": f"Kunne ikke hente playlister ({r.status_code}){suffix}", "playlists": rows}
             data = r.json()
             for p in data.get("items", []) or []:
                 if not p:
