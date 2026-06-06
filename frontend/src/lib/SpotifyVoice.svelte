@@ -7,13 +7,15 @@
   let {
     onvoice,
   }: {
-    onvoice?: (data: Record<string, unknown>) => void;
+    onvoice?: (data: Record<string, unknown>) => { handled: boolean; message?: string; error?: string } | void;
   } = $props();
 
   let listening = $state(false);
   let activeLang = $state<'en-US' | 'da-DK'>('en-US');
   let feedback = $state('');
   let feedbackTimer: ReturnType<typeof setTimeout>;
+
+  const VOICE_TIMEOUT_MS = 12_000;
 
   // Long-press skifter sprog: tap = engelsk, hold = dansk.
   const LONG_PRESS_MS = 450;
@@ -30,32 +32,52 @@
   async function handleResult(transcript: string) {
     listening = false;
     showFeedback(transcript, 8000);
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), VOICE_TIMEOUT_MS);
     try {
+      showFeedback(`søger: ${transcript}`, 12_000);
       const r = await fetch('/api/spotify/voice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript }),
+        signal: ctrl.signal,
       });
+      if (!r.ok) {
+        let detail = `hub-fejl ${r.status}`;
+        try {
+          const err = await r.json();
+          if (err?.error || err?.detail) detail = String(err.error ?? err.detail);
+        } catch {
+          /* keep HTTP fallback */
+        }
+        showFeedback(detail, 7000);
+        return;
+      }
       const data = (await r.json()) as Record<string, unknown>;
-      onvoice?.(data);
+      const handled = onvoice?.(data);
       if (data.ok === false && data.error) {
-        showFeedback(String(data.error));
+        showFeedback(String(data.error), 7000);
       } else if (data.action === 'pause') {
         showFeedback(data.ok ? 'pause' : 'pause fejlede');
       } else if (data.action === 'local_nav') {
-        showFeedback('');
+        showFeedback(handled?.error ?? '');
       } else if (data.action === 'use_play_button') {
         showFeedback('Tryk play');
       } else if (data.action === 'enqueue' || data.action === 'enqueue_queue') {
-        const lab = data.label ?? data.name;
-        showFeedback(typeof lab === 'string' && lab ? lab : 'Tilføjet til kø');
+        showFeedback(handled?.message || 'Tilføjet til kø');
       } else if (data.name && typeof data.name === 'string') {
         showFeedback(data.name);
       } else if (!data.ok && data.action === 'search') {
-        showFeedback('ikke fundet');
+        showFeedback('ikke fundet', 7000);
+      } else if (handled?.error) {
+        showFeedback(handled.error, 7000);
+      } else if (!handled?.handled) {
+        showFeedback('kunne ikke bruge svaret', 7000);
       }
-    } catch {
-      showFeedback('fejl');
+    } catch (e) {
+      showFeedback((e as Error)?.name === 'AbortError' ? 'hub svarer ikke' : 'ingen forbindelse', 7000);
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

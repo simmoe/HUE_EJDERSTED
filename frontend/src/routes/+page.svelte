@@ -15,8 +15,11 @@
     spotifyPreviousTrack,
     toggleRadio,
     playAlbum,
+    playSavedPlaylist,
     handleVoicePayload,
     stopMusicForExternalPlayback,
+    paintNpFromQueues,
+    playFromCurrentIndex,
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
@@ -44,7 +47,7 @@
     if (dimmed) setBrightness(255);
     dimmed = false;
     clearTimeout(dimTimer);
-    dimTimer = setTimeout(() => { dimmed = true; setBrightness(25); }, 30_000);
+    dimTimer = setTimeout(() => { dimmed = true; setBrightness(60); }, 30_000);
   }
 
   // ── Clock ──────────────────────────────────────────────────────────────────
@@ -80,18 +83,19 @@
     void initPlaylistHub().then((stop) => {
       stopPlaylistHub = stop;
     });
-    // Re-apply kiosk settings (immersive mode, landscape) on every page load
+    // Re-apply kiosk settings once on page load. Do not run it on every visibility
+    // change; Android may briefly hide/show Chrome around system overlays.
     setTimeout(() => fetch('/api/kiosk', { method: 'POST' }).catch(() => {}), 1500);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         requestWakeLock();
-        fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
         void initSpotifyWebPlayer();
       }
     });
     // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
     document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
     void loadPodcasts();
+    void loadSpotifyPlaylists();
     return () => {
       clearInterval(clockInterval);
       stopPlaylistHub?.();
@@ -139,6 +143,12 @@
 
   $effect(() => {
     if (playlist.spotifyTitle) checkSaved();
+  });
+
+  $effect(() => {
+    void playlist.radioQueue;
+    void playlist.spotifyRadio;
+    radioSaveDone = false;
   });
 
   $effect(() => {
@@ -220,6 +230,9 @@
   }
 
   let spotifySaved = $state(false);
+  let radioSaveLoading = $state(false);
+  let radioSaveMessage = $state('');
+  let radioSaveDone = $state(false);
 
   // ── Vertical card carousel ──────────────────────────────────────────────
   let lydInner: HTMLDivElement;
@@ -234,8 +247,12 @@
     return child.querySelector('.card-name')?.textContent ?? child.dataset.name ?? '';
   }
 
-  function advanceCard(el: HTMLDivElement, kind: 'lyd' | 'lys' | 'podcast') {
+  function advanceCard(el: HTMLDivElement, kind: 'lyd' | 'lys' | 'podcast' | 'playlist') {
     if (cardAdvancing || !el || el.children.length < 2) return;
+    if (kind === 'playlist') {
+      scrollPlaylistPage(1);
+      return;
+    }
     cardAdvancing = true;
     const cardH = el.clientHeight;
     el.scrollTo({ top: cardH, behavior: 'smooth' });
@@ -248,7 +265,8 @@
       cardAdvancing = false;
       if (kind === 'lyd') nextLydCard = readNextCardName(el);
       else if (kind === 'lys') nextLysCard = readNextCardName(el);
-      else nextPodcastCard = readNextCardName(el);
+      else if (kind === 'podcast') nextPodcastCard = readNextCardName(el);
+      else nextPlaylistCard = readNextCardName(el);
     }
     el.addEventListener('scrollend', onDone, { once: true });
     setTimeout(() => { if (cardAdvancing) onDone(); }, 600);
@@ -262,6 +280,8 @@
     // re-read når podcasts er hentet (dom-børn ændrer sig)
     void podcasts.length;
     if (podcastInner) nextPodcastCard = readNextCardName(podcastInner);
+    void spotifyPlaylists.length;
+    if (playlistInner) nextPlaylistCard = readNextCardName(playlistInner);
   });
 
   $effect(() => {
@@ -300,6 +320,37 @@
       const data = await r.json();
       if (data.ok) spotifySaved = !!data.saved;
     } catch {}
+  }
+
+  async function saveCurrentRadio() {
+    if (radioSaveLoading || radioSaveDone || !playlist.radioQueue.length) return;
+    const seed = playlist.radioQueue[0];
+    radioSaveLoading = true;
+    radioSaveMessage = '';
+    try {
+      const r = await fetch('/api/spotify/radio/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          seed_name: seed?.name ?? playlist.spotifyTitle,
+          seed_artist: seed?.artist ?? playlist.spotifyArtist,
+          tracks: playlist.radioQueue,
+        }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        radioSaveMessage = 'Radioliste gemt';
+        radioSaveDone = true;
+        await loadSpotifyPlaylists(true);
+      } else {
+        radioSaveMessage = (data.error as string) || 'Kunne ikke gemme';
+      }
+    } catch {
+      radioSaveMessage = 'Ingen forbindelse til hub';
+    } finally {
+      radioSaveLoading = false;
+      setTimeout(() => { radioSaveMessage = ''; }, 4000);
+    }
   }
 
   let hueManualIp  = $state('');
@@ -345,6 +396,35 @@
   let loadingEpisodeId = $state('');
   let podcastInner: HTMLDivElement;
   let nextPodcastCard = $state('');
+  let prevPodcastCard = $state('');
+
+  function updatePodcastScrollLabels() {
+    if (!podcastInner) return;
+    const rows = [...podcastInner.querySelectorAll<HTMLElement>('.podcast-card')];
+    if (!rows.length) { nextPodcastCard = ''; prevPodcastCard = ''; return; }
+    const currentTop = podcastInner.scrollTop;
+    const next = rows.find((row) => row.offsetTop > currentTop + 12);
+    const previous = [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
+    nextPodcastCard = next?.dataset.name ?? '';
+    prevPodcastCard = previous?.dataset.name ?? '';
+  }
+
+  function scrollPodcastPage(direction: 1 | -1) {
+    if (!podcastInner) return;
+    const rows = [...podcastInner.querySelectorAll<HTMLElement>('.podcast-card')];
+    if (!rows.length) return;
+    const currentTop = podcastInner.scrollTop;
+    const target = direction > 0
+      ? rows.find((row) => row.offsetTop > currentTop + 12)
+      : [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
+    if (!target) {
+      podcastInner.scrollTo({ top: direction > 0 ? podcastInner.scrollHeight : 0, behavior: 'smooth' });
+      setTimeout(updatePodcastScrollLabels, 350);
+      return;
+    }
+    podcastInner.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
+    setTimeout(updatePodcastScrollLabels, 350);
+  }
 
   // ── Drill-in state (per show, holdt indenfor podcast-kolonnen) ────────────
   let drilledShow = $state<Podcast | null>(null);
@@ -499,6 +579,208 @@
     return m === 0 ? `${h} t` : `${h} t ${m} min`;
   }
 
+  // ── Spotify playlists ────────────────────────────────────────────────────
+  type SpotifyPlaylist = {
+    id: string;
+    uri: string;
+    name: string;
+    description: string;
+    image: string;
+    tracks_total: number;
+    owner: string;
+  };
+
+  let spotifyPlaylists = $state<SpotifyPlaylist[]>([]);
+  let playlistsLoading = $state(true);
+  let playlistsError = $state('');
+  let loadingPlaylistId = $state('');
+  let loadingTrackIndex = $state(-1);
+  let deletingTrackIndex = $state(-1);
+  let activePlaylistId = $state('');
+  let playlistInner: HTMLDivElement;
+  let nextPlaylistCard = $state('');
+  let prevPlaylistCard = $state('');
+
+  type PlaylistTrack = { uri: string; name: string; artist: string; position?: number };
+  let drilledPlaylist = $state<SpotifyPlaylist | null>(null);
+  let drilledTracks = $state<PlaylistTrack[]>([]);
+  let drilledTracksLoading = $state(false);
+
+  function updatePlaylistScrollLabels() {
+    if (!playlistInner) return;
+    const rows = [...playlistInner.querySelectorAll<HTMLElement>('.playlist-card')];
+    if (!rows.length) {
+      nextPlaylistCard = '';
+      prevPlaylistCard = '';
+      return;
+    }
+    const currentTop = playlistInner.scrollTop;
+    const next = rows.find((row) => row.offsetTop > currentTop + 12);
+    const previous = [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
+    nextPlaylistCard = next?.dataset.name ?? '';
+    prevPlaylistCard = previous?.dataset.name ?? '';
+  }
+
+  function scrollPlaylistPage(direction: 1 | -1) {
+    if (!playlistInner) return;
+    const rows = [...playlistInner.querySelectorAll<HTMLElement>('.playlist-card')];
+    if (!rows.length) return;
+    const currentTop = playlistInner.scrollTop;
+    const target = direction > 0
+      ? rows.find((row) => row.offsetTop > currentTop + 12)
+      : [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
+    if (!target) {
+      playlistInner.scrollTo({ top: direction > 0 ? playlistInner.scrollHeight : 0, behavior: 'smooth' });
+      setTimeout(updatePlaylistScrollLabels, 350);
+      return;
+    }
+    playlistInner.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
+    setTimeout(updatePlaylistScrollLabels, 350);
+  }
+
+  async function loadSpotifyPlaylists(refresh = false) {
+    playlistsLoading = spotifyPlaylists.length === 0;
+    playlistsError = '';
+    try {
+      const r = await fetch('/api/spotify/playlists?limit=50');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      spotifyPlaylists = Array.isArray(data.playlists) ? data.playlists : [];
+      if (!data.ok) playlistsError = (data.error as string) || 'Kunne ikke hente playlister';
+      setTimeout(updatePlaylistScrollLabels, 0);
+    } catch (e) {
+      playlistsError = (e as Error).message || 'Kunne ikke hente playlister';
+    } finally {
+      playlistsLoading = false;
+    }
+  }
+
+  async function playSpotifyPlaylist(p: SpotifyPlaylist) {
+    if (loadingPlaylistId) return;
+    loadingPlaylistId = p.id;
+    stopMusicForExternalPlayback();
+    const res = await playSavedPlaylist(p.uri, p.name);
+    if (res.ok) {
+      activePlaylistId = p.id;
+    } else {
+      playlistsError = res.error || 'Afspilning fejlede';
+      setTimeout(() => { playlistsError = ''; }, 4000);
+    }
+    loadingPlaylistId = '';
+  }
+
+  async function openPlaylistDrill(p: SpotifyPlaylist) {
+    drilledPlaylist = p;
+    drilledTracks = [];
+    drilledTracksLoading = true;
+    try {
+      const r = await fetch('/api/spotify/playlist/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playlist_uri: p.uri }),
+      });
+      const data = await r.json();
+      drilledTracks = (data.queue ?? []) as PlaylistTrack[];
+    } catch {
+      playlistsError = 'Kunne ikke hente sange';
+      setTimeout(() => { playlistsError = ''; }, 4000);
+    } finally {
+      drilledTracksLoading = false;
+    }
+  }
+
+  function closePlaylistDrill() {
+    drilledPlaylist = null;
+    drilledTracks = [];
+  }
+
+  async function deletePlaylist(p: SpotifyPlaylist) {
+    if (loadingPlaylistId) return;
+    loadingPlaylistId = p.id;
+    try {
+      const r = await fetch(`/api/spotify/playlist/${p.id}`, { method: 'DELETE' });
+      const data = await r.json();
+      if (data.ok) {
+        spotifyPlaylists = spotifyPlaylists.filter((x) => x.id !== p.id);
+        if (activePlaylistId === p.id) activePlaylistId = '';
+        if (drilledPlaylist?.id === p.id) closePlaylistDrill();
+      } else {
+        playlistsError = data.error || 'Kunne ikke slette';
+        setTimeout(() => { playlistsError = ''; }, 4000);
+      }
+    } catch {
+      playlistsError = 'Ingen forbindelse';
+      setTimeout(() => { playlistsError = ''; }, 4000);
+    } finally {
+      loadingPlaylistId = '';
+    }
+  }
+
+  async function deleteTrackFromPlaylist(track: PlaylistTrack, index: number) {
+    if (!drilledPlaylist || deletingTrackIndex >= 0) return;
+    deletingTrackIndex = index;
+    try {
+      const r = await fetch(`/api/spotify/playlist/${drilledPlaylist.id}/track`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_uri: track.uri, position: track.position ?? index }),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        playlistsError = data.error || 'Kunne ikke slette sang';
+        setTimeout(() => { playlistsError = ''; }, 4000);
+        return;
+      }
+
+      drilledTracks = drilledTracks
+        .filter((_, i) => i !== index)
+        .map((row, i) => ({ ...row, position: i }));
+      spotifyPlaylists = spotifyPlaylists.map((p) =>
+        p.id === drilledPlaylist?.id
+          ? { ...p, tracks_total: Math.max(0, p.tracks_total - 1) }
+          : p
+      );
+      if (activePlaylistId === drilledPlaylist.id) {
+        playlist.savedPlaylistQueue = playlist.savedPlaylistQueue.filter((_, i) => i !== index);
+        if (playlist.savedPlaylistIndex >= playlist.savedPlaylistQueue.length) {
+          playlist.savedPlaylistIndex = Math.max(0, playlist.savedPlaylistQueue.length - 1);
+        } else if (playlist.savedPlaylistIndex > index) {
+          playlist.savedPlaylistIndex -= 1;
+        }
+        paintNpFromQueues();
+      }
+    } catch {
+      playlistsError = 'Ingen forbindelse';
+      setTimeout(() => { playlistsError = ''; }, 4000);
+    } finally {
+      deletingTrackIndex = -1;
+    }
+  }
+
+  async function playTrackFromDrilledPlaylist(track: PlaylistTrack, index: number) {
+    if (!drilledPlaylist || loadingTrackIndex >= 0 || deletingTrackIndex >= 0) return;
+    loadingTrackIndex = index;
+    if (activePlaylistId === drilledPlaylist.id && playlist.savedPlaylistQueue.length > 0) {
+      playlist.savedPlaylistIndex = index;
+      paintNpFromQueues();
+      await playFromCurrentIndex();
+      loadingTrackIndex = -1;
+      return;
+    }
+    stopMusicForExternalPlayback();
+    const res = await playSavedPlaylist(drilledPlaylist.uri, drilledPlaylist.name);
+    if (res.ok) {
+      activePlaylistId = drilledPlaylist.id;
+      playlist.savedPlaylistIndex = index;
+      paintNpFromQueues();
+      await playFromCurrentIndex();
+    } else {
+      playlistsError = res.error || 'Afspilning fejlede';
+      setTimeout(() => { playlistsError = ''; }, 4000);
+    }
+    loadingTrackIndex = -1;
+  }
+
 </script>
 
 <main>
@@ -621,6 +903,17 @@
               {playlist.spotifyAlbumLoading ? '· · ·' : 'album'}
             </button>
           </div>
+          <div class="radio-actions">
+            <button
+              type="button"
+              class="action-btn"
+              class:loading={radioSaveLoading}
+              onclick={saveCurrentRadio}
+              disabled={radioSaveLoading || radioSaveDone || !playlist.spotifyRadio || playlist.radioQueue.length <= 1}
+            >
+              {radioSaveLoading ? '· · ·' : radioSaveDone ? 'playliste gemt' : 'gem'}
+            </button>
+          </div>
           <div class="unified-vol">
             <input
               type="range"
@@ -676,11 +969,13 @@
                 ? playlist.spotifyRadioError
                 : playlist.spotifyAlbumError
                   ? playlist.spotifyAlbumError
-                  : playlist.playListMode === 'radio'
-                    ? 'Song Radio (lokal kø)'
-                    : playlist.playListMode === 'album'
-                      ? 'Album (lokal kø)'
-                      : 'Mikrofon-kø'}
+                    : playlist.playListMode === 'playlist'
+                      ? (playlist.savedPlaylistTitle || 'Playliste')
+                      : playlist.playListMode === 'radio'
+                        ? 'Song Radio (lokal kø)'
+                        : playlist.playListMode === 'album'
+                          ? 'Album (lokal kø)'
+                          : 'Mikrofon-kø'}
         >
           <SpotifyVoice onvoice={handleVoicePayload} />
         </Card>
@@ -768,7 +1063,145 @@
       </button>
     </section>
 
-    <!-- PAGE 2 · PODCAST ──────────────────────────────────────────────────── -->
+    <!-- PAGE 2 · PLAYLISTER ──────────────────────────────────────────────── -->
+    <section class="page">
+      {#if drilledPlaylist}
+        <div class="col-header drill-header">
+          <button type="button" class="drill-back" onclick={closePlaylistDrill} aria-label="Tilbage til playliste-liste">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+            <span class="drill-back-label">{drilledPlaylist.name}</span>
+          </button>
+        </div>
+      {:else}
+        <div class="col-header">PLAYLISTER</div>
+      {/if}
+
+      <div class="scroll-inner list-scroll" bind:this={playlistInner} onscroll={updatePlaylistScrollLabels}>
+        {#if drilledPlaylist}
+          {#if drilledTracksLoading && drilledTracks.length === 0}
+            <p class="empty">Henter sange…</p>
+          {:else if drilledTracks.length === 0}
+            <p class="empty">Ingen sange fundet.</p>
+          {:else}
+            {#each drilledTracks as track, i (track.uri + i)}
+              <div class="playlist-track-row">
+                <button
+                  type="button"
+                  class="episode-row playlist-track-main"
+                  class:active={activePlaylistId === drilledPlaylist.id && playlist.savedPlaylistIndex === i && playlist.spotifyPlaying}
+                  class:loading={loadingTrackIndex === i}
+                  onclick={() => playTrackFromDrilledPlaylist(track, i)}
+                >
+                  <span class="episode-meta-top">
+                    {#if loadingTrackIndex === i}
+                      · · ·
+                    {:else}
+                      {i + 1}
+                    {/if}
+                  </span>
+                  <span class="episode-title">{track.name}</span>
+                  <span class="podcast-meta">{track.artist}</span>
+                </button>
+                <button
+                  type="button"
+                  class="playlist-track-delete"
+                  class:loading={deletingTrackIndex === i}
+                  onclick={() => deleteTrackFromPlaylist(track, i)}
+                  disabled={deletingTrackIndex >= 0 || loadingTrackIndex >= 0}
+                  aria-label={`Slet ${track.name} fra playliste`}
+                >
+                  {#if deletingTrackIndex === i}
+                    · · ·
+                  {:else}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" />
+                    </svg>
+                  {/if}
+                </button>
+              </div>
+            {/each}
+            <button type="button" class="playlist-delete-row" onclick={() => deletePlaylist(drilledPlaylist!)} aria-label="Slet playliste">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" />
+              </svg>
+              <span>Slet playliste</span>
+            </button>
+          {/if}
+        {:else if playlistsLoading && spotifyPlaylists.length === 0}
+          <p class="empty">Henter playlister…</p>
+        {:else if playlistsError && spotifyPlaylists.length === 0}
+          <p class="empty">{playlistsError}</p>
+        {:else if spotifyPlaylists.length === 0}
+          <p class="empty">Ingen radio-playlister gemt endnu.</p>
+        {:else}
+          {#each spotifyPlaylists as p (p.id)}
+            <div
+              class="podcast-card playlist-card"
+              class:active={activePlaylistId === p.id}
+              class:loading={loadingPlaylistId === p.id}
+              data-name={p.name}
+            >
+              <button
+                type="button"
+                class="podcast-card-main"
+                onclick={() => playSpotifyPlaylist(p)}
+                aria-label={`Spil playlisten ${p.name}`}
+              >
+                {#if p.image}
+                  <img class="podcast-cover" src={p.image} alt="" loading="lazy" />
+                {:else}
+                  <div class="podcast-cover podcast-cover--empty"></div>
+                {/if}
+                <div class="podcast-info">
+                  <span class="podcast-show">{p.name}</span>
+                  <span class="podcast-meta">
+                    {p.tracks_total} sange
+                    {#if loadingPlaylistId === p.id}
+                      · henter…
+                    {:else if activePlaylistId === p.id}
+                      · aktiv
+                    {/if}
+                  </span>
+                </div>
+              </button>
+              <button
+                type="button"
+                class="podcast-drill"
+                onclick={() => openPlaylistDrill(p)}
+                aria-label={`Vis sange i ${p.name}`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9 6 15 12 9 18" />
+                </svg>
+              </button>
+            </div>
+          {/each}
+          {#if playlistsError}
+            <p class="podcast-error">{playlistsError}</p>
+          {/if}
+        {/if}
+      </div>
+
+      {#if !drilledPlaylist}
+        <button type="button" class="card-arrow list-arrow list-arrow--up" onclick={() => scrollPlaylistPage(-1)} aria-label="Forrige playliste">
+          <span class="arrow-label">{prevPlaylistCard}</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+        </button>
+
+        <button type="button" class="card-arrow list-arrow list-arrow--down" onclick={() => scrollPlaylistPage(1)} aria-label="Næste playliste">
+          <span class="arrow-label">{nextPlaylistCard}</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      {/if}
+    </section>
+
+    <!-- PAGE 3 · PODCAST ──────────────────────────────────────────────────── -->
     <section class="page">
       {#if drilledShow}
         <div class="col-header drill-header">
@@ -783,7 +1216,7 @@
         <div class="col-header">PODCAST</div>
       {/if}
 
-      <div class="scroll-inner" bind:this={podcastInner}>
+      <div class="scroll-inner list-scroll" bind:this={podcastInner} onscroll={updatePodcastScrollLabels}>
         {#if drilledShow}
           {#if drilledLoading && drilledEpisodes.length === 0}
             <p class="empty">Henter afsnit…</p>
@@ -880,7 +1313,14 @@
       </div>
 
       {#if !drilledShow}
-        <button type="button" class="card-arrow card-arrow--lyd" onclick={() => advanceCard(podcastInner, 'podcast')} aria-label="Næste kort">
+        <button type="button" class="card-arrow list-arrow list-arrow--up" onclick={() => scrollPodcastPage(-1)} aria-label="Forrige podcast">
+          <span class="arrow-label">{prevPodcastCard}</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+        </button>
+
+        <button type="button" class="card-arrow list-arrow list-arrow--down" onclick={() => scrollPodcastPage(1)} aria-label="Næste podcast">
           <span class="arrow-label">{nextPodcastCard}</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="6 9 12 15 18 9" />
@@ -889,7 +1329,7 @@
       {/if}
     </section>
 
-    <!-- PAGE 3 · KAMERA ──────────────────────────────────────────────────── -->
+    <!-- PAGE 4 · KAMERA ──────────────────────────────────────────────────── -->
     <section class="page">
       <div class="col-header">KAMERA</div>
       <div class="scroll-inner camera-page">
@@ -958,7 +1398,7 @@
     font-family: 'Roboto', -apple-system, system-ui, sans-serif;
     color: transparent;
     -webkit-text-fill-color: transparent;
-    -webkit-text-stroke: 1.35px rgba(174, 174, 174, 0.6);
+    -webkit-text-stroke: 1.35px rgba(174, 174, 174, 1);
     text-shadow: none;
     animation: clock-in 1.5s ease both;
   }
@@ -1132,6 +1572,16 @@
   .card-arrow svg {
     width: 18px;
     height: 18px;
+  }
+  .list-arrow--up {
+    top: 48px;
+    bottom: auto;
+    justify-content: flex-start;
+    padding: 10px 0 10px;
+  }
+  .list-arrow--down {
+    bottom: 0;
+    padding: 10px 0 10px;
   }
 
   /* ── Shared arrow label ──────────────────────────────────────────────────────── */
@@ -1337,6 +1787,26 @@
     animation: streamer-in 0.8s ease 0.2s forwards;
   }
 
+  .np-status {
+    margin-top: -4px;
+    min-height: 14px;
+    color: #595959;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+  .radio-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: -8px;
+    align-items: center;
+  }
+  .radio-actions .action-btn {
+    width: 88px;
+  }
+
   .np-next-title {
     font-size: 0.8rem;
     font-weight: 300;
@@ -1497,7 +1967,11 @@
     color: #595959;
     font-size: 0.85rem;
     line-height: 1.6;
-    padding: 40px 0;
+    padding: 40px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100dvh - 48px - 80px);
   }
 
   /* ── Podcast cards ────────────────────────────────────────────────────────── */
@@ -1513,6 +1987,24 @@
   }
   .podcast-card.loading {
     opacity: 0.65;
+  }
+  .playlist-card {
+    width: 100%;
+    background: none;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .list-scroll {
+    scroll-behavior: smooth;
+    padding-top: 36px;
+    padding-bottom: 56px;
+    touch-action: pan-y;
   }
 
   .podcast-card-main {
@@ -1557,6 +2049,30 @@
   .podcast-drill:active {
     color: #ebebeb;
     background: rgba(255, 255, 255, 0.03);
+  }
+
+  .playlist-delete-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 24px;
+    margin-top: 12px;
+    background: none;
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    color: #666;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .playlist-delete-row svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+  .playlist-delete-row:active {
+    color: #e44;
   }
 
   .podcast-cover {
@@ -1624,6 +2140,9 @@
   /* ── Drill-in (per show) ──────────────────────────────────────────────── */
   .drill-header {
     padding: 0 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
 
   .drill-back {
@@ -1686,6 +2205,35 @@
   }
   .episode-row.loading {
     opacity: 0.65;
+  }
+
+  .playlist-track-row {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .playlist-track-main {
+    flex: 1;
+    border-bottom: none;
+  }
+  .playlist-track-delete {
+    width: 58px;
+    padding: 0 22px 0 8px;
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .playlist-track-delete svg {
+    width: 16px;
+    height: 16px;
+  }
+  .playlist-track-delete:active {
+    color: #e44;
+  }
+  .playlist-track-delete:disabled {
+    opacity: 0.45;
   }
 
   .episode-meta-top {

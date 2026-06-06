@@ -20,6 +20,7 @@ import {
 import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
 export type QTrack = { uri: string; name: string; artist: string };
+export type VoiceHandleResult = { handled: boolean; message?: string; error?: string };
 
 export const playlist = $state({
   spotifyTitle: '',
@@ -31,16 +32,20 @@ export const playlist = $state({
   micQueue: [] as QTrack[],
   radioQueue: [] as QTrack[],
   albumQueue: [] as QTrack[],
+  savedPlaylistQueue: [] as QTrack[],
   micIndex: 0,
   radioIndex: 0,
   albumIndex: 0,
-  playListMode: 'mic' as 'mic' | 'radio' | 'album',
+  savedPlaylistIndex: 0,
+  playListMode: 'mic' as 'mic' | 'radio' | 'album' | 'playlist',
   spotifyRadio: false,
   spotifyRadioLoading: false,
   spotifyRadioError: '',
   spotifyAlbumActive: false,
   spotifyAlbumLoading: false,
   spotifyAlbumError: '',
+  savedPlaylistActive: false,
+  savedPlaylistTitle: '',
 });
 
 let scrollToNowPlayingImpl: (() => void) | undefined;
@@ -121,8 +126,8 @@ function parseQueue(a: unknown): QTrack[] {
     .map((t) => ({ uri: t.uri, name: String(t.name ?? ''), artist: String(t.artist ?? '') }));
 }
 
-function parseMode(x: unknown): 'mic' | 'radio' | 'album' {
-  if (x === 'radio' || x === 'album' || x === 'mic') return x;
+function parseMode(x: unknown): 'mic' | 'radio' | 'album' | 'playlist' {
+  if (x === 'radio' || x === 'album' || x === 'mic' || x === 'playlist') return x;
   return 'mic';
 }
 
@@ -132,12 +137,16 @@ function serializeSyncPayload(): string {
     micQueue: p.micQueue,
     radioQueue: p.radioQueue,
     albumQueue: p.albumQueue,
+    savedPlaylistQueue: p.savedPlaylistQueue,
     micIndex: p.micIndex,
     radioIndex: p.radioIndex,
     albumIndex: p.albumIndex,
+    savedPlaylistIndex: p.savedPlaylistIndex,
     playListMode: p.playListMode,
     spotifyRadio: p.spotifyRadio,
     spotifyAlbumActive: p.spotifyAlbumActive,
+    savedPlaylistActive: p.savedPlaylistActive,
+    savedPlaylistTitle: p.savedPlaylistTitle,
     spotifyPlaying: p.spotifyPlaying,
   });
 }
@@ -158,12 +167,16 @@ async function flushPush() {
     micQueue: p.micQueue,
     radioQueue: p.radioQueue,
     albumQueue: p.albumQueue,
+    savedPlaylistQueue: p.savedPlaylistQueue,
     micIndex: p.micIndex,
     radioIndex: p.radioIndex,
     albumIndex: p.albumIndex,
+    savedPlaylistIndex: p.savedPlaylistIndex,
     playListMode: p.playListMode,
     spotifyRadio: p.spotifyRadio,
     spotifyAlbumActive: p.spotifyAlbumActive,
+    savedPlaylistActive: p.savedPlaylistActive,
+    savedPlaylistTitle: p.savedPlaylistTitle,
     spotifyPlaying: p.spotifyPlaying,
     updatedAt: serverTimestamp(),
   };
@@ -177,12 +190,14 @@ async function flushPush() {
 export function activeQueue(): QTrack[] {
   if (playlist.playListMode === 'radio') return playlist.radioQueue;
   if (playlist.playListMode === 'album') return playlist.albumQueue;
+  if (playlist.playListMode === 'playlist') return playlist.savedPlaylistQueue;
   return playlist.micQueue;
 }
 
 export function activeIndex(): number {
   if (playlist.playListMode === 'radio') return playlist.radioIndex;
   if (playlist.playListMode === 'album') return playlist.albumIndex;
+  if (playlist.playListMode === 'playlist') return playlist.savedPlaylistIndex;
   return playlist.micIndex;
 }
 
@@ -191,6 +206,7 @@ function setActiveIndex(i: number) {
   const n = Math.max(0, Math.min(q.length - 1, i));
   if (playlist.playListMode === 'radio') playlist.radioIndex = n;
   else if (playlist.playListMode === 'album') playlist.albumIndex = n;
+  else if (playlist.playListMode === 'playlist') playlist.savedPlaylistIndex = n;
   else playlist.micIndex = n;
 }
 
@@ -231,7 +247,7 @@ function seedUriForAlbumBuild(): string {
   return q[idx]?.uri ?? '';
 }
 
-async function playFromCurrentIndex(): Promise<boolean> {
+export async function playFromCurrentIndex(): Promise<boolean> {
   const q = activeQueue();
   const idx = activeIndex();
   const uri = q[idx]?.uri;
@@ -334,29 +350,6 @@ export async function spotifyPreviousTrack() {
 }
 
 export async function toggleRadio() {
-  if (playlist.spotifyRadio) {
-    let current: QTrack | undefined;
-    if (playlist.radioQueue.length) {
-      const i = Math.min(playlist.radioIndex, playlist.radioQueue.length - 1);
-      const r = playlist.radioQueue[i];
-      if (r?.uri?.startsWith('spotify:track:'))
-        current = { uri: r.uri, name: r.name, artist: r.artist };
-    }
-    try {
-      await fetch('/api/spotify/radio', { method: 'DELETE' });
-    } catch {
-      /* */
-    }
-    playlist.spotifyRadio = false;
-    playlist.spotifyRadioError = '';
-    playlist.playListMode = 'mic';
-    if (current) {
-      playlist.micQueue = [...playlist.micQueue, current];
-      playlist.micIndex = playlist.micQueue.length - 1;
-    }
-    paintNpFromQueues();
-    return;
-  }
   const seed = seedTrackFromDisplayedNp();
   if (!seed?.uri) {
     playlist.spotifyRadioError = 'Ingen sang på afspilleren — vælg spor med forrige/næste eller tilføj til køen';
@@ -365,6 +358,7 @@ export async function toggleRadio() {
   playlist.spotifyRadioLoading = true;
   playlist.spotifyRadioError = '';
   playlist.spotifyAlbumActive = false;
+  playlist.savedPlaylistActive = false;
   playlist.playListMode = 'mic';
   scrollToNowPlaying();
   try {
@@ -402,6 +396,7 @@ export async function playAlbum() {
     playlist.spotifyAlbumActive = false;
     playlist.spotifyAlbumError = '';
     playlist.playListMode = 'mic';
+    playlist.savedPlaylistActive = false;
     paintNpFromQueues();
     return;
   }
@@ -414,6 +409,7 @@ export async function playAlbum() {
   await pausePlaybackNow();
   playlist.spotifyAlbumLoading = true;
   playlist.spotifyRadio = false;
+  playlist.savedPlaylistActive = false;
   scrollToNowPlaying();
   try {
     const r = await fetch('/api/spotify/album/build', {
@@ -440,7 +436,43 @@ export async function playAlbum() {
   }
 }
 
-export function handleVoicePayload(data: Record<string, unknown>) {
+export async function playSavedPlaylist(playlistUri: string, title = '') {
+  if (!playlistUri) return { ok: false, error: 'Mangler playlist' };
+  await pausePlaybackNow();
+  playlist.spotifyRadio = false;
+  playlist.spotifyAlbumActive = false;
+  playlist.savedPlaylistActive = false;
+  try {
+    const r = await fetch('/api/spotify/playlist/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playlist_uri: playlistUri }),
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      return { ok: false, error: (data.error as string) ?? 'Playliste fejlede' };
+    }
+    playlist.savedPlaylistQueue = (data.queue as QTrack[]) ?? [];
+    playlist.savedPlaylistIndex = 0;
+    playlist.savedPlaylistActive = true;
+    playlist.savedPlaylistTitle = title;
+    playlist.playListMode = 'playlist';
+    paintNpFromQueues();
+    scrollToNowPlaying();
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'Ingen forbindelse til hub' };
+  }
+}
+
+export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleResult {
+  if (data.ok === false) {
+    return {
+      handled: false,
+      error: typeof data.error === 'string' && data.error ? data.error : 'Stemmesøgning fejlede',
+    };
+  }
+
   if (data.action === 'enqueue' && data.ok && data.uri) {
     const row: QTrack = {
       uri: String(data.uri),
@@ -451,40 +483,56 @@ export function handleVoicePayload(data: Record<string, unknown>) {
     playlist.playListMode = 'mic';
     playlist.spotifyRadio = false;
     playlist.spotifyAlbumActive = false;
+    playlist.savedPlaylistActive = false;
     playlist.micIndex = playlist.micQueue.length - 1;
     clearAdvanceTimer();
     pausedRemainingMs = 0;
     paintNpFromQueues();
     scrollToNowPlaying();
-    return;
+    return { handled: true, message: row.name || 'Tilføjet til kø' };
   }
   if (data.action === 'enqueue_queue' && data.ok && Array.isArray(data.queue)) {
     const rows = data.queue as QTrack[];
-    if (!rows.length) return;
+    if (!rows.length) return { handled: false, error: 'Fandt ingen sange i køen' };
     const start = playlist.micQueue.length;
     playlist.micQueue = [...playlist.micQueue, ...rows];
     playlist.playListMode = 'mic';
     playlist.spotifyRadio = false;
     playlist.spotifyAlbumActive = false;
+    playlist.savedPlaylistActive = false;
     playlist.micIndex = start;
     clearAdvanceTimer();
     pausedRemainingMs = 0;
     paintNpFromQueues();
     scrollToNowPlaying();
-    return;
+    return {
+      handled: true,
+      message: typeof data.label === 'string' && data.label ? data.label : rows[0]?.name || 'Tilføjet til kø',
+    };
   }
   if (data.action === 'local_nav' && typeof data.delta === 'number') {
     const d = data.delta as number;
     const q = activeQueue();
-    if (q.length <= 1) return;
+    if (q.length <= 1) return { handled: false, error: 'Ingen næste sang i køen' };
     setActiveIndex(activeIndex() + d);
     paintNpFromQueues();
-    return;
+    return { handled: true };
   }
   if (data.action === 'pause') {
     if (data.ok) playlist.spotifyPlaying = false;
     schedulePush();
+    return data.ok
+      ? { handled: true, message: 'pause' }
+      : { handled: false, error: 'Pause fejlede' };
   }
+  if (data.action === 'use_play_button') {
+    return { handled: true, message: 'Tryk play' };
+  }
+
+  return {
+    handled: false,
+    error: typeof data.error === 'string' && data.error ? data.error : 'Kommandoen blev ikke forstået',
+  };
 }
 
 function applyRemoteData(d: Record<string, unknown>) {
@@ -492,12 +540,16 @@ function applyRemoteData(d: Record<string, unknown>) {
     micQueue: parseQueue(d.micQueue),
     radioQueue: parseQueue(d.radioQueue),
     albumQueue: parseQueue(d.albumQueue),
+    savedPlaylistQueue: parseQueue(d.savedPlaylistQueue),
     micIndex: typeof d.micIndex === 'number' ? d.micIndex : 0,
     radioIndex: typeof d.radioIndex === 'number' ? d.radioIndex : 0,
     albumIndex: typeof d.albumIndex === 'number' ? d.albumIndex : 0,
+    savedPlaylistIndex: typeof d.savedPlaylistIndex === 'number' ? d.savedPlaylistIndex : 0,
     playListMode: parseMode(d.playListMode),
     spotifyRadio: !!d.spotifyRadio,
     spotifyAlbumActive: !!d.spotifyAlbumActive,
+    savedPlaylistActive: !!d.savedPlaylistActive,
+    savedPlaylistTitle: typeof d.savedPlaylistTitle === 'string' ? d.savedPlaylistTitle : '',
     spotifyPlaying: !!d.spotifyPlaying,
   });
   if (incoming === serializeSyncPayload()) return;
@@ -507,15 +559,20 @@ function applyRemoteData(d: Record<string, unknown>) {
     playlist.micQueue = parseQueue(d.micQueue);
     playlist.radioQueue = parseQueue(d.radioQueue);
     playlist.albumQueue = parseQueue(d.albumQueue);
+    playlist.savedPlaylistQueue = parseQueue(d.savedPlaylistQueue);
     const mi = typeof d.micIndex === 'number' ? d.micIndex : 0;
     const ri = typeof d.radioIndex === 'number' ? d.radioIndex : 0;
     const ai = typeof d.albumIndex === 'number' ? d.albumIndex : 0;
+    const pi = typeof d.savedPlaylistIndex === 'number' ? d.savedPlaylistIndex : 0;
     playlist.micIndex = Math.max(0, Math.min(Math.max(0, playlist.micQueue.length - 1), mi));
     playlist.radioIndex = Math.max(0, Math.min(Math.max(0, playlist.radioQueue.length - 1), ri));
     playlist.albumIndex = Math.max(0, Math.min(Math.max(0, playlist.albumQueue.length - 1), ai));
+    playlist.savedPlaylistIndex = Math.max(0, Math.min(Math.max(0, playlist.savedPlaylistQueue.length - 1), pi));
     playlist.playListMode = parseMode(d.playListMode);
     playlist.spotifyRadio = !!d.spotifyRadio;
     playlist.spotifyAlbumActive = !!d.spotifyAlbumActive;
+    playlist.savedPlaylistActive = !!d.savedPlaylistActive;
+    playlist.savedPlaylistTitle = typeof d.savedPlaylistTitle === 'string' ? d.savedPlaylistTitle : '';
     playlist.spotifyPlaying = !!d.spotifyPlaying;
     paintNpFromQueues();
   } finally {

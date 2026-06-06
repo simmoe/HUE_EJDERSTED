@@ -63,7 +63,7 @@ class WSStore {
   // Tunables
   private readonly HEARTBEAT_MS = 20_000;         // send ping every 20s
   private readonly STALE_MS = 45_000;             // no message in 45s → force reconnect
-  private readonly RELOAD_AFTER_DOWN_MS = 120_000; // WS down >2 min → reload page
+  private readonly RECONNECT_NUDGE_AFTER_DOWN_MS = 120_000;
 
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) return;
@@ -146,10 +146,11 @@ class WSStore {
         console.warn('[WS] stale — forcing reconnect');
         try { this.ws.close(); } catch { /* */ }
       }
-      // Hard reload if WS has been down too long (backend restart, cert rotation, hung renderer, ...)
-      if (!this.connected && this.downSince && now - this.downSince > this.RELOAD_AFTER_DOWN_MS) {
-        console.warn('[WS] down > 2 min — reloading page');
-        window.location.reload();
+      // Keep reconnecting in-place. A hard reload is too visible on the kiosk and
+      // looks like Chrome restarted when Android briefly suspends networking.
+      if (!this.connected && this.downSince && now - this.downSince > this.RECONNECT_NUDGE_AFTER_DOWN_MS) {
+        console.warn('[WS] down > 2 min — retrying without page reload');
+        if (!this.reconnectTimer) this._scheduleReconnect();
       }
     }, 5_000);
 

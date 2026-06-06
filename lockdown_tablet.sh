@@ -4,6 +4,7 @@
 
 ADB="$1"
 if [ -z "$ADB" ]; then echo "Usage: $0 <adb-serial>"; exit 1; fi
+MULTIAPP="com.velis.apartmentterminal"
 
 echo "=== 1. Disable ALL auto-updates ==="
 adb -s $ADB shell pm disable-user --user 0 com.android.vending
@@ -16,10 +17,12 @@ echo "=== 2. Mute ALL sounds ==="
 for stream in 0 1 2 3 4 5 6 7 8 9 10; do
   adb -s $ADB shell cmd media_session volume --stream $stream --set 0 2>/dev/null
 done
+adb -s $ADB shell cmd media_session volume --stream 2 --set 7 2>/dev/null
+adb -s $ADB shell cmd media_session volume --stream 5 --set 7 2>/dev/null
 adb -s $ADB shell settings put system notification_sound ""
 adb -s $ADB shell settings put system ringtone ""
 adb -s $ADB shell settings put system alarm_alert ""
-adb -s $ADB shell settings put global zen_mode 2
+adb -s $ADB shell settings put global zen_mode 0
 adb -s $ADB shell settings put system haptic_feedback_enabled 0
 adb -s $ADB shell settings put system vibrate_when_ringing 0
 adb -s $ADB shell settings put system sound_effects_enabled 0
@@ -33,8 +36,15 @@ adb -s $ADB shell settings put global auto_restart_enabled 0
 adb -s $ADB shell settings put global scheduled_power_on_off_enabled 0
 
 echo "=== 4. Disable notifications/interruptions ==="
-adb -s $ADB shell settings put global heads_up_notifications_enabled 0
-adb -s $ADB shell cmd notification set_dnd on 2>/dev/null || true
+adb -s $ADB shell settings put global heads_up_notifications_enabled 1
+adb -s $ADB shell cmd notification set_dnd off 2>/dev/null || true
+adb -s $ADB shell dumpsys deviceidle whitelist +$MULTIAPP 2>/dev/null || true
+adb -s $ADB shell cmd appops set $MULTIAPP RUN_IN_BACKGROUND allow 2>/dev/null || true
+adb -s $ADB shell cmd appops set $MULTIAPP RUN_ANY_IN_BACKGROUND allow 2>/dev/null || true
+adb -s $ADB shell cmd appops set $MULTIAPP SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+adb -s $ADB shell cmd appops set $MULTIAPP WAKE_LOCK allow 2>/dev/null || true
+adb -s $ADB shell cmd appops set $MULTIAPP RECORD_AUDIO allow 2>/dev/null || true
+adb -s $ADB shell cmd appops set $MULTIAPP CAMERA allow 2>/dev/null || true
 
 echo "=== 5. Switch ADB to fixed port 5555 ==="
 adb -s $ADB tcpip 5555

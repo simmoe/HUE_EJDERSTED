@@ -90,13 +90,13 @@ Serveren kører som systemd-service på Pi'en og starter automatisk ved boot.
 
 ```bash
 # Tjek status
-sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl status hue --no-pager"
+sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo systemctl status hue --no-pager"
 
 # Genstart
-sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
+sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
 
 # Se logs
-sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo journalctl -u hue -f"
+sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo journalctl -u hue -f"
 ```
 
 **Kiosk URL (Galaxy A12 / Chrome)**: `https://192.168.86.16:8443`
@@ -108,19 +108,39 @@ sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo journalctl -u hue -f"
 Kør disse trin fra projektets rodmappe på Mac'en:
 
 ```bash
-cd /Users/simon/Documents/Git/HUE_EJDERSTED
+# Fra Pi (SSH) — port 5555 er fast (sat via `adb tcpip 5555` + lockdown_tablet.sh)
+sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16
 
-# 1. Forbind ADB (porten skifter — tjek Developer Options på telefonen)
-adb connect 192.168.86.15:<PORT>
+# 1. Forbind ADB
+adb connect 192.168.86.15:5555
 
-# 2. Sæt landscape + immersive + åbn Chrome
-ADB="192.168.86.15:<PORT>"
+# 2. Sæt landscape + immersive + fjern volume-HUD + åbn Chrome
+ADB="192.168.86.15:5555"
 adb -s $ADB shell settings put system accelerometer_rotation 0
 adb -s $ADB shell settings put system user_rotation 1
 adb -s $ADB shell settings put global policy_control "immersive.full=com.android.chrome"
+adb -s $ADB shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny
 adb -s $ADB shell am force-stop com.android.chrome
 adb -s $ADB shell am start -a android.intent.action.VIEW -d "https://192.168.86.16:8443"
 ```
+
+**NB**: Den fysiske volumenknap sidder i klemme pga. kiosk-kabinettet. Kør `SYSTEM_ALERT_WINDOW deny`
+(og gerne `TOAST_WINDOW deny`) efter genstart — **også via** `POST /api/kiosk` ved splash.
+
+### Kan man bare «slukke for system overlays»?
+
+**Nej, ikke på den måde man ofte tror.** I Android betyder «overlays» typisk enten:
+
+- **Tredjepartsapps** der tegner ovenpå andre apps (*Indstillinger → Apps → Vis over andre apps*), eller  
+- **Udviklertilstand → Deaktiver HW-overlays** (kun compositor/GPU-sti — intet med volumen-UI at gøre).
+
+**Samsungs volumen-panel** er en integreret del af `com.android.systemui`. Det er *ikke* et almindeligt
+«draw on top»-overlay, så der findes **ingen én global ADB-toggle** der slår *alle* systemdialoger fra.
+
+- `appops … SYSTEM_ALERT_WINDOW deny` hjælper **når det virker på din One UI-build**, men **er ikke garanteret**
+  mod hardware-volumen-hold (stuck key) — Samsung kan stadig vise panelet.
+- **Uden root**: den eneste pålidelige løsning er at **løsne den fysiske knap** eller **blokere
+  input-enheden** (kræver typisk root / specialværktøj).
 
 Første gang skal det self-signed certifikat accepteres i Chrome (Avanceret → Fortsæt).
 
@@ -146,9 +166,9 @@ sed -i '' 's/hue-v17/hue-v18/g' static/sw.js   # Bump SW-cache!
 npm run build
 cd ..
 git add -A && git commit -m "deploy" && git push
-sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "cd ~/HUE_EJDERSTED && git pull"
-sshpass -p 'k18Medh18' scp -r backend/static simmoe@192.168.86.16:~/HUE_EJDERSTED/backend/
-sshpass -p 'k18Medh18' ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
+sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "cd ~/HUE_EJDERSTED && git pull"
+sshpass -p "$PI_PASS" scp -r backend/static simmoe@192.168.86.16:~/HUE_EJDERSTED/backend/
+sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
 ```
 
 **Cache-version**: Filen `frontend/static/sw.js` har `const CACHE = 'hue-vNN'`.
@@ -162,7 +182,7 @@ Disse kan trigges via `POST /api/kiosk`. ADB er installeret på Pi'en og parret 
 Backend finder dynamisk telefonens ADB-serial via `_get_adb_serial()` (kører `adb devices`).
 
 ```bash
-ADB="adb -s 192.168.86.15:<PORT>"
+ADB="adb -s 192.168.86.15:5555"
 
 # Lås landskab
 $ADB shell settings put system accelerometer_rotation 0
@@ -172,16 +192,17 @@ $ADB shell settings put system user_rotation 1
 $ADB shell settings put system screen_brightness_mode 0
 $ADB shell settings put system screen_brightness 255
 
-# Fjern volume-HUD overlay
-$ADB shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny
+# Skjul SystemUI-overlays (volume-HUD, toasts — virker ikke altid mod Samsung volume-dialog)
+$ADB shell cmd appops set com.android.systemui SYSTEM_ALERT_WINDOW deny
+$ADB shell cmd appops set com.android.systemui TOAST_WINDOW deny
 
 # Immersive mode (fjern system bars)
 $ADB shell settings put global policy_control "immersive.full=com.android.chrome"
 ```
 
-For at genaktivere volume-HUD: `... SYSTEM_ALERT_WINDOW allow`.
+For at genaktivere: `cmd appops set com.android.systemui SYSTEM_ALERT_WINDOW allow` (og evt. `TOAST_WINDOW allow`).
 
-**Bemærk**: ADB-port på telefonen skifter ved genstart af trådløs debugging.
+**Bemærk**: Uden `adb tcpip 5555` (eller første `lockdown_tablet.sh`) skifter trådløs ADB-port ved genstart — ellers brug **5555** som i netværkstabellen.
 
 ---
 
@@ -217,7 +238,7 @@ WebSocket-beskeder (JSON):
 - **Svelte 5** med runes (`$state`, `$derived`, `$effect`)
 - **To-panel layout**: LYD (venstre) + LYS (højre), altid side-by-side (50/50)
 - **Altid landskab** — ingen media queries, ingen portrait-support
-- **Dim/clock**: Efter 30s inaktivitet dæmpes skærmen (ADB brightness → 12) og et ur vises. Touch (pointerdown) vækker.
+- **Dim/clock**: Efter 30s inaktivitet dæmpes skærmen (ADB brightness → 60) og et ur vises. Touch (pointerdown) vækker.
 - **Splash**: "EJDERSTED" splash ved load → tap dismiss → trigger `/api/kiosk` + fullscreen + wake lock
 - **VolumeKnob.svelte**: Cirkulær knob-komponent til B&O-volumen
 - **Vertical sliders**: Hue-rum har vertikale lysstyrke-sliders
@@ -279,6 +300,9 @@ curl -X PUT http://192.168.86.188:8080/BeoZone/Zone/Sound/Volume/Speaker/Level \
 
 ### "Skærm dæmpes ikke / ur vises ikke"
 → Dim-timer starter efter splash dismiss. Kun `pointerdown` (touch) resetter. ADB er installeret og parret på Pi — brightness-kommandoer kører fra begge. Tjek at `/api/brightness/{level}` virker.
+
+### "Volumeknap i klemme / Samsung volume-slider dækker kiosken"
+→ Se **§5** (*Kan man bare «slukke for system overlays»?*). Kør `POST /api/kiosk` (splash) eller manuelt `cmd appops set … deny`. Hvis panelet stadig kommer: One UI ignorer det ofte ved **holdt hardware-tast** — overvej fysisk at løsne knappen, root/key-layout, eller kiosk-app med device owner.
 
 ### "Spotify virker ikke"
 → Tjek `spotify_config.json` findes på Pi. Tjek auth: `curl -sk https://192.168.86.16:8443/api/spotify/status`. Tokens kan udløbe — re-auth kræver `python3.13 spotify_auth.py` på Mac og kopier config til Pi.

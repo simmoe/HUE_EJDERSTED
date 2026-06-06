@@ -34,6 +34,7 @@ REPO_ROOT = BASE_DIR.parent
 DEVICES_FILE = REPO_ROOT / "devices.json"
 STATIC_DIR = BASE_DIR / "static"
 HUB_GLOBALS_FILE = REPO_ROOT / "hub_globals.json"
+MULTIAPP_PACKAGE = "com.velis.apartmentterminal"
 
 # ─── HTTP client ──────────────────────────────────────────────────────────────
 _http = httpx.AsyncClient(timeout=2.5)
@@ -479,6 +480,7 @@ async def _get_adb_serial() -> str | None:
         pass
     return None
 
+
 @app.put("/api/brightness/{level}")
 async def set_brightness(level: int):
     level = max(0, min(255, level))
@@ -507,23 +509,33 @@ async def trigger_kiosk():
         f"adb -s {serial} shell settings put system screen_brightness 255",
         # Never turn the screen off (int32 max ms ≈ 24.8 days; Android wraps internally)
         f"adb -s {serial} shell settings put system screen_off_timeout 2147483647",
-        f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome",
+        f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome,{MULTIAPP_PACKAGE}",
+        # Skjul toast/overlay fra SystemUI (volume-HUD m.m. — se KIOSK.md §5/§11)
+        f"adb -s {serial} shell cmd appops set com.android.systemui SYSTEM_ALERT_WINDOW deny",
+        f"adb -s {serial} shell cmd appops set com.android.systemui TOAST_WINDOW deny",
         f"adb -s {serial} shell cmd statusbar collapse",
-        # Mute everything
+        # Keep doorphone calls audible, while media stays muted.
         f"adb -s {serial} shell media volume --stream 1 --set 0",
-        f"adb -s {serial} shell media volume --stream 2 --set 0",
+        f"adb -s {serial} shell media volume --stream 2 --set 7",
         f"adb -s {serial} shell media volume --stream 3 --set 0",
         f"adb -s {serial} shell media volume --stream 4 --set 0",
-        f"adb -s {serial} shell media volume --stream 5 --set 0",
-        f"adb -s {serial} shell settings put global zen_mode 2",
+        f"adb -s {serial} shell media volume --stream 5 --set 7",
+        f"adb -s {serial} shell settings put global zen_mode 0",
+        f"adb -s {serial} shell cmd notification set_dnd off",
         # Prevent updates & restarts
         f"adb -s {serial} shell settings put global stay_on_while_plugged_in 3",
-        f"adb -s {serial} shell settings put global heads_up_notifications_enabled 0",
-        # Exempt Chrome from Doze / App Standby / battery optimizations
-        # so background timers and WebSockets don't get suspended.
+        f"adb -s {serial} shell settings put global heads_up_notifications_enabled 1",
+        # Exempt Chrome and MultiApp from Doze / App Standby optimizations.
         f"adb -s {serial} shell dumpsys deviceidle whitelist +com.android.chrome",
+        f"adb -s {serial} shell dumpsys deviceidle whitelist +{MULTIAPP_PACKAGE}",
         f"adb -s {serial} shell cmd appops set com.android.chrome RUN_IN_BACKGROUND allow",
         f"adb -s {serial} shell cmd appops set com.android.chrome RUN_ANY_IN_BACKGROUND allow",
+        f"adb -s {serial} shell cmd appops set {MULTIAPP_PACKAGE} RUN_IN_BACKGROUND allow",
+        f"adb -s {serial} shell cmd appops set {MULTIAPP_PACKAGE} RUN_ANY_IN_BACKGROUND allow",
+        f"adb -s {serial} shell cmd appops set {MULTIAPP_PACKAGE} SYSTEM_ALERT_WINDOW allow",
+        f"adb -s {serial} shell cmd appops set {MULTIAPP_PACKAGE} WAKE_LOCK allow",
+        f"adb -s {serial} shell cmd appops set {MULTIAPP_PACKAGE} RECORD_AUDIO allow",
+        f"adb -s {serial} shell cmd appops set {MULTIAPP_PACKAGE} CAMERA allow",
     ]
     for cmd in cmds:
         proc = await asyncio.create_subprocess_shell(
@@ -633,6 +645,34 @@ async def spotify_radio(data: dict = Body(default_factory=dict)):
 async def spotify_radio_stop():
     return await spotify.stop_radio()
 
+@app.post("/api/spotify/radio/save")
+async def spotify_radio_save(data: dict = Body(default_factory=dict)):
+    tracks = data.get("tracks") or []
+    if not isinstance(tracks, list):
+        tracks = []
+    import logging
+    logging.warning(f"[radio/save] seed_name={data.get('seed_name')!r} tracks_len={len(tracks)} sample={tracks[:2]!r}")
+    return await spotify.save_radio_playlist(
+        (data.get("seed_name") or "").strip(),
+        (data.get("seed_artist") or "").strip(),
+        tracks,
+    )
+
+@app.delete("/api/spotify/playlist/{playlist_id}")
+async def spotify_delete_playlist(playlist_id: str):
+    return await spotify.unfollow_playlist(playlist_id)
+
+@app.delete("/api/spotify/playlist/{playlist_id}/track")
+async def spotify_delete_playlist_track(playlist_id: str, data: dict = Body(default_factory=dict)):
+    position = data.get("position")
+    if not isinstance(position, int):
+        position = None
+    return await spotify.remove_playlist_track(
+        playlist_id,
+        (data.get("track_uri") or "").strip(),
+        position,
+    )
+
 @app.post("/api/spotify/album/build")
 async def spotify_album_build(data: dict = Body(default_factory=dict)):
     return await spotify.build_album_queue_from_track_uri((data.get("track_uri") or "").strip())
@@ -652,6 +692,14 @@ async def spotify_save(data: dict | None = Body(default=None)):
 async def spotify_is_saved(uri: str | None = None):
     u = (uri or "").strip() or None
     return {"saved": await spotify.is_track_saved(u)}
+
+@app.get("/api/spotify/playlists")
+async def spotify_playlists(limit: int = 50, offset: int = 0):
+    return await spotify.list_playlists(limit=limit, offset=offset)
+
+@app.post("/api/spotify/playlist/build")
+async def spotify_playlist_build(data: dict = Body(default_factory=dict)):
+    return await spotify.build_playlist_queue((data.get("playlist_uri") or "").strip())
 
 # ─── REST: Podcasts ───────────────────────────────────────────────────────────
 # Hardkodet liste. Hver podcast har en `source` der bestemmer afspilningsvej:
