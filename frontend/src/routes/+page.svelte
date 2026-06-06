@@ -933,6 +933,9 @@
             >
               {radioSaveLoading ? '· · ·' : radioSaveDone ? 'playliste gemt' : 'gem'}
             </button>
+            {#if radioSaveMessage}
+              <div class="radio-save-message" role="status">{radioSaveMessage}</div>
+            {/if}
           </div>
           <div class="unified-vol">
             <input
@@ -1825,6 +1828,15 @@
   }
   .radio-actions .action-btn {
     width: 88px;
+  }
+  .radio-save-message {
+    max-width: 240px;
+    color: #777;
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    line-height: 1.35;
+    text-align: center;
+    text-transform: uppercase;
   }
 
   .np-next-title {

@@ -65,6 +65,25 @@ def _save(cfg: dict) -> None:
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
 
+def _spotify_error(r: httpx.Response) -> str:
+    detail = ""
+    try:
+        body = r.json()
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict):
+                detail = str(err.get("message") or "")
+            elif isinstance(err, str):
+                detail = err
+    except Exception:
+        detail = r.text[:120]
+    retry_after = r.headers.get("retry-after")
+    if r.status_code == 429 and retry_after:
+        detail = f"{detail} - prøv igen om {retry_after}s" if detail else f"prøv igen om {retry_after}s"
+    suffix = f": {detail}" if detail else ""
+    return f"{r.status_code}{suffix}"
+
+
 class Spotify:
     def __init__(self):
         self._cfg = _load()
@@ -661,17 +680,22 @@ class Spotify:
         title_seed = seed_name.strip() or "Radio"
         artist_suffix = f" - {seed_artist.strip()}" if seed_artist.strip() else ""
         name = f"{title_seed}{artist_suffix}"
-        cr = await self._http.post(
-            f"{API}/me/playlists",
-            headers=h,
-            json={
-                "name": name,
-                "public": False,
-                "description": "Ejdersted radio gemt fra kiosken.",
-            },
-        )
+        try:
+            cr = await self._http.post(
+                f"{API}/me/playlists",
+                headers=h,
+                json={
+                    "name": name,
+                    "public": False,
+                    "description": "Ejdersted radio gemt fra kiosken.",
+                },
+            )
+        except httpx.TimeoutException:
+            return {"ok": False, "error": "Spotify svarede ikke i tide"}
+        except httpx.HTTPError as e:
+            return {"ok": False, "error": f"Spotify-forbindelse fejlede: {type(e).__name__}"}
         if cr.status_code != 201:
-            return {"ok": False, "error": f"Kunne ikke oprette playliste ({cr.status_code})"}
+            return {"ok": False, "error": f"Kunne ikke oprette playliste ({_spotify_error(cr)})"}
         playlist = cr.json()
         pid = playlist.get("id")
         if not pid:
@@ -682,14 +706,19 @@ class Spotify:
         for i in range(0, len(uris), 100):
             batch = uris[i:i + 100]
             logging.warning(f"[save_radio] Adding {len(batch)} tracks to {pid}: {batch[:3]}")
-            r = await self._http.post(
-                f"{API}/playlists/{pid}/items",
-                headers=h,
-                json={"uris": batch},
-            )
+            try:
+                r = await self._http.post(
+                    f"{API}/playlists/{pid}/items",
+                    headers=h,
+                    json={"uris": batch},
+                )
+            except httpx.TimeoutException:
+                return {"ok": False, "error": "Playliste oprettet, men Spotify timeoutede på tracks"}
+            except httpx.HTTPError as e:
+                return {"ok": False, "error": f"Playliste oprettet, men Spotify-forbindelse fejlede: {type(e).__name__}"}
             logging.warning(f"[save_radio] Spotify responded: {r.status_code} {r.text[:300]}")
             if r.status_code not in (200, 201):
-                return {"ok": False, "error": f"Playliste oprettet, men tracks fejlede ({r.status_code})"}
+                return {"ok": False, "error": f"Playliste oprettet, men tracks fejlede ({_spotify_error(r)})"}
 
         return {
             "ok": True,
@@ -966,19 +995,7 @@ class Spotify:
             except httpx.HTTPError as e:
                 return {"ok": False, "error": f"Spotify-forbindelse fejlede: {type(e).__name__}", "playlists": rows}
             if r.status_code != 200:
-                detail = ""
-                try:
-                    body = r.json()
-                    if isinstance(body, dict):
-                        err = body.get("error")
-                        if isinstance(err, dict):
-                            detail = str(err.get("message") or "")
-                        elif isinstance(err, str):
-                            detail = err
-                except Exception:
-                    detail = r.text[:120]
-                suffix = f": {detail}" if detail else ""
-                return {"ok": False, "error": f"Kunne ikke hente playlister ({r.status_code}){suffix}", "playlists": rows}
+                return {"ok": False, "error": f"Kunne ikke hente playlister ({_spotify_error(r)})", "playlists": rows}
             data = r.json()
             for p in data.get("items", []) or []:
                 if not p:
