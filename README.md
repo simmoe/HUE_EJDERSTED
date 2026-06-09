@@ -1,79 +1,76 @@
-# B&O Volume Controller
+# HUE_EJDERSTED
 
-Simpel webapp til at styre volumen på Bang & Olufsen **Mozart-platform** højttalere (A9 gen 4, M5, Beosound Emerge, Beosound Level, m.fl.) over det lokale netværk.
+FastAPI + SvelteKit kiosk/hub for Ejdersted.
 
-Virker uanset lydkilde — AirPlay, Bluetooth, Spotify Connect osv. — fordi volumen styres direkte via højttalerens REST API, ikke via lydstrømmens protokol.
+The app supports runtime profiles:
 
----
+- `home`: Vesterbro kiosk with B&O, Philips Hue, Spotify, podcasts, playlists and ADB kiosk controls.
+- `garden`: kolonihave kiosk with the Android phone camera first, while home-only integrations are disabled.
 
-## Krav
+See:
 
-- Python 3.9+
-- Højttalere og computer på **samme lokale netværk** (WiFi eller LAN)
-- B&O Mozart-platform enhed (A9 4. gen, M5, Beosound Emerge, Level, Theatre, Stage)
+- `docs/architecture.md`
+- `docs/home.md`
+- `docs/garden.md`
+- `KIOSK.md`
 
----
+## Local Development
 
-## Installation
-
-```bash
-cd HUE_EJDERSTED
-
-# Installer afhængigheder (bruger Python 3.13 fra /usr/local/bin)
-/usr/local/bin/python3.13 -m pip install -r requirements.txt
-```
-
-> På macOS med Xcode-problemer: brug `/usr/local/bin/python3.13` i stedet for `python3`.
-
-## Start
+Backend:
 
 ```bash
-/usr/local/bin/python3.13 app.py
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r backend/requirements.txt
+python backend/main.py
 ```
 
-Åbn derefter **http://localhost:5000** i en browser.
+Frontend:
 
-For at styre fra mobil: åbn **http://<din-macs-ip>:5000** på mobilens browser.  
-Find din Macs IP med `ipconfig getifaddr en0` i Terminal.
+```bash
+cd frontend
+npm ci
+npm run dev
+```
 
----
+Static build for FastAPI:
 
-## Auto-opdagelse
+```bash
+cd frontend
+npm run build
+```
 
-Appen søger automatisk efter B&O Mozart-enheder via **mDNS/Bonjour** (`_beoremote._tcp`).  
-Opdages en enhed, tilføjes den automatisk og gemmes i `devices.json`.
+`frontend/svelte.config.js` writes the static build to `backend/static`, which is served by `backend/main.py`.
 
-Virker ikke auto-opdagelse (f.eks. pga. netværksindstillinger), kan du tilføje enheder manuelt:
+## Runtime Config
 
-1. Find højttalerens IP-adresse i din **routers DHCP-tabel** eller i **B&O-appen** under enhedsinfo.
-2. Skriv IP'en i feltet "Tilføj enhed manuelt" i webapp'en.
+Runtime config comes from environment variables supplied by the machine/global
+setup, not from project-local `.env` or JSON files. If no overrides are present,
+the backend uses home-compatible defaults.
 
----
+Common overrides:
 
-## Højttalerens Mozart REST API
+```bash
+HUB_SITE=garden
+HUB_PUBLIC_URL=https://host:8443
+HUB_FEATURE_CAMERA=true
+HUB_FEATURE_AUDIO=false
+HUB_FEATURE_HUE=false
+HUB_FEATURE_SPOTIFY=false
+HUB_FEATURE_PODCASTS=false
+HUB_FEATURE_PLAYLISTS=false
+HUB_FEATURE_ADBKIOSK=true
+HUB_KIOSK_PHONE_IP=...
+HUB_KIOSK_ADB_SERIAL=...:5555
+```
 
-Appen kalder disse endepunkter direkte på højttaleren:
+## Deploy
 
-| Metode | URL | Beskrivelse |
-|--------|-----|-------------|
-| `GET`  | `http://<ip>:8080/BeoZone/Zone/Sound/Volume/Speaker/Level` | Hent nuværende volumen |
-| `PUT`  | `http://<ip>:8080/BeoZone/Zone/Sound/Volume/Speaker/Level` | Sæt volumen (`{"level": 50}`) |
+Export deploy/runtime variables from your global setup, then deploy:
 
-Ingen autentificering kræves på lokalt netværk.
+```bash
+PI_HOST=simmoe@host HUB_SITE=garden HUB_PUBLIC_URL=https://host:8443 \
+./deploy.sh garden
+```
 
----
-
-## Fejlfinding
-
-**Højttaleren vises som offline**  
-- Tjek at højttaleren er på samme netværk
-- Prøv at pinge: `ping <højttaler-ip>`
-- Prøv direkte: `curl http://<ip>:8080/BeoZone/Zone/Sound/Volume/Speaker/Level`
-
-**Auto-opdagelse finder ingenting**  
-- mDNS kan blokeres af managed/enterprise netværk
-- Tilføj IP manuelt — find IP i B&O-appen eller din routers interface
-
-**"Invalid IP/hostname" for et hostname**  
-- Prøv med IP-adressen i stedet
-- Tjek at `.local`-navne virker: `ping BeosoundA9.local`
+Do not commit real passwords, Hue usernames, Spotify tokens, Firebase config, device state or TLS certificates.

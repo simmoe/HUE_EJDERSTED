@@ -19,6 +19,9 @@ spotify_config.json
 devices.json
 gemini_api_key.txt
 hub_globals.json
+hub_config.json
+hub_config.*.json
+deploy.*.env
 
 # TLS certs
 certs/

@@ -17,14 +17,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
 
 import bo_dlna
 import bo_link
 import sr
+import hub_config
 from hue import HueBridge, start_hue_mdns
 from spotify import Spotify, BEO_A9_IP, BEO_M5_IP
 
@@ -34,7 +35,10 @@ REPO_ROOT = BASE_DIR.parent
 DEVICES_FILE = REPO_ROOT / "devices.json"
 STATIC_DIR = BASE_DIR / "static"
 HUB_GLOBALS_FILE = REPO_ROOT / "hub_globals.json"
-MULTIAPP_PACKAGE = "com.velis.apartmentterminal"
+MULTIAPP_PACKAGE = hub_config.multiapp_package()
+CAMERA_DIR = REPO_ROOT / "runtime" / "camera"
+CAMERA_SNAPSHOT_FILE = CAMERA_DIR / "latest.jpg"
+MAX_CAMERA_SNAPSHOT_BYTES = 2_500_000
 
 # ─── HTTP client ──────────────────────────────────────────────────────────────
 _http = httpx.AsyncClient(timeout=2.5)
@@ -58,12 +62,17 @@ devices_lock = asyncio.Lock()
 def _ensure_known_speakers() -> None:
     """Pre-seed devices for the fixed B&O speakers, so UI is never empty even
     if mDNS is silent at boot. mDNS may overwrite name/IP later when it sees them."""
-    known = (
-        (BEO_A9_IP, "BeoPlay A9"),
-        (BEO_M5_IP, "Beoplay M5"),
-    )
+    if not hub_config.feature_enabled("audio"):
+        return
+    configured = hub_config.known_speakers()
+    known = configured or [
+        {"ip": BEO_A9_IP, "name": "BeoPlay A9"},
+        {"ip": BEO_M5_IP, "name": "Beoplay M5"},
+    ]
     changed = False
-    for ip, name in known:
+    for speaker in known:
+        ip = speaker["ip"]
+        name = speaker["name"]
         dev_id = ip.replace(".", "_")
         if dev_id not in devices:
             devices[dev_id] = {
@@ -190,43 +199,45 @@ async def poll_loop():
         await asyncio.sleep(2)
 
         # ── B&O ──────────────────────────────────────────────────────────────
-        async with devices_lock:
-            devs = list(devices.values())
+        if hub_config.feature_enabled("audio"):
+            async with devices_lock:
+                devs = list(devices.values())
 
-        for dev in devs:
-            dev_id = dev["id"]
-            # Start notify stream task if not already running
-            task = _notify_tasks.get(dev_id)
-            if task is None or task.done():
-                _notify_tasks[dev_id] = asyncio.create_task(
-                    beo_notify_listener(dev_id, dev["ip"])
-                )
-            try:
-                level = await beo_get_volume(dev["ip"])
-                state = {"level": level, "online": True}
-            except Exception:
-                cached_level = volume_cache.get(dev_id, {}).get("level", 0)
-                state = {"level": cached_level, "online": False}
+            for dev in devs:
+                dev_id = dev["id"]
+                # Start notify stream task if not already running
+                task = _notify_tasks.get(dev_id)
+                if task is None or task.done():
+                    _notify_tasks[dev_id] = asyncio.create_task(
+                        beo_notify_listener(dev_id, dev["ip"])
+                    )
+                try:
+                    level = await beo_get_volume(dev["ip"])
+                    state = {"level": level, "online": True}
+                except Exception:
+                    cached_level = volume_cache.get(dev_id, {}).get("level", 0)
+                    state = {"level": cached_level, "online": False}
 
-            if volume_cache.get(dev_id) != state:
-                volume_cache[dev_id] = state
-                await manager.broadcast({
-                    "type": "volume_update",
-                    "device_id": dev_id,
-                    **state,
-                })
+                if volume_cache.get(dev_id) != state:
+                    volume_cache[dev_id] = state
+                    await manager.broadcast({
+                        "type": "volume_update",
+                        "device_id": dev_id,
+                        **state,
+                    })
 
         # ── Hue ──────────────────────────────────────────────────────────────
         global hue_rooms_cache, hue_status_cache
-        new_status = hue_bridge.status()
-        if new_status != hue_status_cache:
-            hue_status_cache = new_status
-            await manager.broadcast({"type": "hue_status", **new_status})
-        if hue_bridge.paired:
-            rooms = await hue_bridge.get_rooms()
-            if rooms is not None and rooms != hue_rooms_cache:
-                hue_rooms_cache = rooms
-                await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
+        if hub_config.feature_enabled("hue"):
+            new_status = hue_bridge.status()
+            if new_status != hue_status_cache:
+                hue_status_cache = new_status
+                await manager.broadcast({"type": "hue_status", **new_status})
+            if hue_bridge.paired:
+                rooms = await hue_bridge.get_rooms()
+                if rooms is not None and rooms != hue_rooms_cache:
+                    hue_rooms_cache = rooms
+                    await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
 
 # ─── mDNS discovery ───────────────────────────────────────────────────────────
 def _device_id(ip: str) -> str:
@@ -280,23 +291,26 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
 
     # Force Android kiosk settings on startup (reuses /api/kiosk logic)
-    serial = await _get_adb_serial()
-    if serial:
-        print(f"[ADB] Kiosk phone (Galaxy A12) connected: {serial}")
-        # Trigger full kiosk lockdown via the endpoint handler
-        await trigger_kiosk()
+    if hub_config.feature_enabled("adbKiosk"):
+        serial = await _get_adb_serial()
+        if serial:
+            print(f"[ADB] Kiosk phone connected: {serial}")
+            # Trigger full kiosk lockdown via the endpoint handler
+            await trigger_kiosk()
 
     hue_bridge = HueBridge()
     poll_task = asyncio.create_task(poll_loop())
 
     zc = Zeroconf()
-    beo_listener = BeoListener(loop)
-    ServiceBrowser(zc, "_beoremote._tcp.local.", beo_listener)
+    if hub_config.feature_enabled("audio"):
+        beo_listener = BeoListener(loop)
+        ServiceBrowser(zc, "_beoremote._tcp.local.", beo_listener)
 
     async def on_hue_found(ip: str):
         await manager.broadcast({"type": "hue_status", **hue_bridge.status()})
 
-    start_hue_mdns(hue_bridge, loop, zc, on_found=on_hue_found)
+    if hub_config.feature_enabled("hue"):
+        start_hue_mdns(hue_bridge, loop, zc, on_found=on_hue_found)
 
     yield
 
@@ -327,6 +341,7 @@ async def websocket_endpoint(ws: WebSocket):
             "hue_status": hue_bridge.status(),
             "hue_rooms": hue_rooms_cache,
             "now_playing": now_playing_cache,
+            "config": hub_config.public_config(),
         }))
 
         async for text in ws.iter_text():
@@ -343,6 +358,8 @@ async def websocket_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("type") == "set_volume":
+                if not hub_config.feature_enabled("audio"):
+                    continue
                 dev_id = str(msg.get("device_id", ""))
                 try:
                     level = max(0, min(100, int(msg["level"])))
@@ -369,6 +386,8 @@ async def websocket_endpoint(ws: WebSocket):
                             "message": str(e),
                         }))
             elif msg.get("type") == "set_hue_brightness":
+                if not hub_config.feature_enabled("hue"):
+                    continue
                 room_id = str(msg.get("room_id", ""))
                 try:
                     brightness = max(0, min(100, int(msg["brightness"])))
@@ -395,11 +414,15 @@ async def websocket_endpoint(ws: WebSocket):
 # ─── REST: device management ──────────────────────────────────────────────────
 @app.get("/api/devices")
 async def get_devices():
+    if not hub_config.feature_enabled("audio"):
+        return []
     async with devices_lock:
         return list(devices.values())
 
 @app.post("/api/devices")
 async def add_device(data: dict):
+    if not hub_config.feature_enabled("audio"):
+        return JSONResponse({"error": "Audio er deaktiveret for denne profil"}, status_code=404)
     host = (data.get("ip") or "").strip()
     name = (data.get("name") or "").strip()
     if not host:
@@ -424,6 +447,8 @@ async def add_device(data: dict):
 
 @app.delete("/api/devices/{device_id}")
 async def delete_device(device_id: str):
+    if not hub_config.feature_enabled("audio"):
+        return JSONResponse({"error": "Audio er deaktiveret for denne profil"}, status_code=404)
     async with devices_lock:
         if device_id not in devices:
             return JSONResponse({"error": "Enhed ikke fundet"}, status_code=404)
@@ -436,10 +461,14 @@ async def delete_device(device_id: str):
 # ─── REST: Hue bridge ────────────────────────────────────────────────────────
 @app.get("/api/hue/status")
 async def hue_status():
+    if not hub_config.feature_enabled("hue"):
+        return {"ip": None, "paired": False, "disabled": True}
     return hue_bridge.status()
 
 @app.post("/api/hue/pair")
 async def hue_pair(data: dict = {}):
+    if not hub_config.feature_enabled("hue"):
+        return {"ok": False, "error": "Hue er deaktiveret for denne profil"}
     # Tillad manuel IP-override
     if ip := (data.get("ip") or "").strip():
         hue_bridge.set_ip(ip)
@@ -453,13 +482,15 @@ async def hue_pair(data: dict = {}):
     return result
 
 # ─── ADB constants (kiosk: Samsung Galaxy A12, se KIOSK.md) ───────────────────
-KIOSK_PHONE_IP = "192.168.86.15"
-ADB_SERIAL = f"{KIOSK_PHONE_IP}:5555"  # fast port — sat via `adb tcpip 5555`
+KIOSK_PHONE_IP = hub_config.kiosk_phone_ip()
+ADB_SERIAL = hub_config.adb_serial()
 
 # ─── REST: Screen brightness (ADB) ───────────────────────────────────────────
 
 async def _get_adb_serial() -> str | None:
     """Return ADB serial for the kiosk phone (Galaxy A12), auto-reconnecting if needed."""
+    if not hub_config.feature_enabled("adbKiosk") or not ADB_SERIAL:
+        return None
     try:
         proc = await asyncio.create_subprocess_exec(
             "adb", "devices",
@@ -483,6 +514,8 @@ async def _get_adb_serial() -> str | None:
 
 @app.put("/api/brightness/{level}")
 async def set_brightness(level: int):
+    if not hub_config.feature_enabled("adbKiosk"):
+        return {"ok": False, "error": "adbKiosk disabled"}
     level = max(0, min(255, level))
     serial = await _get_adb_serial()
     if not serial:
@@ -498,6 +531,8 @@ async def set_brightness(level: int):
 
 @app.post("/api/kiosk")
 async def trigger_kiosk():
+    if not hub_config.feature_enabled("adbKiosk"):
+        return {"ok": False, "error": "adbKiosk disabled"}
     serial = await _get_adb_serial()
     if not serial:
         return {"ok": False, "error": "no ADB device"}
@@ -545,6 +580,11 @@ async def trigger_kiosk():
     return {"ok": True}
 
 # ─── Hub globals (Firebase m.m. — hub_globals.json, ikke i git) ───────────────
+@app.get("/api/config")
+async def app_config():
+    return hub_config.public_config()
+
+
 @app.get("/api/config/firebase")
 async def hub_firebase_config():
     """Returnerer Firebase web client config til frontend (tom objekt hvis fil mangler)."""
@@ -561,16 +601,22 @@ async def hub_firebase_config():
 # ─── REST: Spotify ────────────────────────────────────────────────────────────
 @app.get("/api/spotify/status")
 async def spotify_status():
+    if not hub_config.feature_enabled("spotify"):
+        return {"configured": False, "authenticated": False, "disabled": True}
     return {"configured": spotify.configured, "authenticated": spotify.authenticated}
 
 @app.get("/api/spotify/login")
 async def spotify_login():
+    if not hub_config.feature_enabled("spotify"):
+        return JSONResponse({"error": "Spotify disabled"}, status_code=404)
     if not spotify.configured:
         return JSONResponse({"error": "Spotify not configured"}, status_code=500)
     return RedirectResponse(spotify.login_url())
 
 @app.get("/api/spotify/callback")
 async def spotify_callback(code: str = ""):
+    if not hub_config.feature_enabled("spotify"):
+        return JSONResponse({"error": "Spotify disabled"}, status_code=404)
     if not code:
         return JSONResponse({"error": "No code"}, status_code=400)
     ok = await spotify.handle_callback(code)
@@ -580,6 +626,8 @@ async def spotify_callback(code: str = ""):
 
 @app.post("/api/spotify/voice")
 async def spotify_voice(data: dict):
+    if not hub_config.feature_enabled("spotify"):
+        return JSONResponse({"error": "Spotify disabled"}, status_code=404)
     transcript = (data.get("transcript") or "").strip()
     if not transcript:
         return JSONResponse({"error": "No transcript"}, status_code=400)
@@ -588,22 +636,32 @@ async def spotify_voice(data: dict):
 
 @app.get("/api/spotify/now-playing")
 async def spotify_now_playing():
+    if not hub_config.feature_enabled("spotify"):
+        return {}
     return await spotify.now_playing() or {}
 
 @app.get("/api/spotify/devices")
 async def spotify_devices():
+    if not hub_config.feature_enabled("spotify"):
+        return []
     return await spotify.devices()
 
 @app.post("/api/spotify/pause")
 async def spotify_pause():
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return {"ok": await spotify.pause()}
 
 @app.post("/api/spotify/resume")
 async def spotify_resume():
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return {"ok": await spotify.resume()}
 
 @app.post("/api/spotify/play-uris")
 async def spotify_play_uris(data: dict = Body(default_factory=dict)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     uris = data.get("uris") or []
     offset = int(data.get("offset") or 0)
     position_ms = int(data.get("position_ms") or 0)
@@ -617,15 +675,21 @@ async def spotify_play_uris(data: dict = Body(default_factory=dict)):
 
 @app.post("/api/spotify/skip")
 async def spotify_skip():
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return {"ok": await spotify.skip()}
 
 
 @app.post("/api/spotify/previous")
 async def spotify_previous():
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return {"ok": await spotify.previous()}
 
 @app.post("/api/spotify/radio/build")
 async def spotify_radio_build(data: dict = Body(default_factory=dict)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return await spotify.build_radio_queue(
         (data.get("seed_uri") or "").strip(),
         (data.get("seed_name") or "").strip(),
@@ -635,6 +699,8 @@ async def spotify_radio_build(data: dict = Body(default_factory=dict)):
 @app.post("/api/spotify/radio")
 async def spotify_radio(data: dict = Body(default_factory=dict)):
     """Byg radio-kø (kræver JSON-body med seed_uri)."""
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return await spotify.build_radio_queue(
         (data.get("seed_uri") or "").strip(),
         (data.get("seed_name") or "").strip(),
@@ -643,10 +709,14 @@ async def spotify_radio(data: dict = Body(default_factory=dict)):
 
 @app.delete("/api/spotify/radio")
 async def spotify_radio_stop():
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return await spotify.stop_radio()
 
 @app.post("/api/spotify/radio/save")
 async def spotify_radio_save(data: dict = Body(default_factory=dict)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     tracks = data.get("tracks") or []
     if not isinstance(tracks, list):
         tracks = []
@@ -660,10 +730,14 @@ async def spotify_radio_save(data: dict = Body(default_factory=dict)):
 
 @app.delete("/api/spotify/playlist/{playlist_id}")
 async def spotify_delete_playlist(playlist_id: str):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return await spotify.unfollow_playlist(playlist_id)
 
 @app.delete("/api/spotify/playlist/{playlist_id}/track")
 async def spotify_delete_playlist_track(playlist_id: str, data: dict = Body(default_factory=dict)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     position = data.get("position")
     if not isinstance(position, int):
         position = None
@@ -675,14 +749,20 @@ async def spotify_delete_playlist_track(playlist_id: str, data: dict = Body(defa
 
 @app.post("/api/spotify/album/build")
 async def spotify_album_build(data: dict = Body(default_factory=dict)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return await spotify.build_album_queue_from_track_uri((data.get("track_uri") or "").strip())
 
 @app.post("/api/spotify/album")
 async def spotify_album(data: dict = Body(default_factory=dict)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return await spotify.build_album_queue_from_track_uri((data.get("track_uri") or "").strip())
 
 @app.post("/api/spotify/save")
 async def spotify_save(data: dict | None = Body(default=None)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     uri = (data or {}).get("uri") if data else None
     if isinstance(uri, str):
         uri = uri.strip() or None
@@ -690,15 +770,21 @@ async def spotify_save(data: dict | None = Body(default=None)):
 
 @app.get("/api/spotify/is-saved")
 async def spotify_is_saved(uri: str | None = None):
+    if not hub_config.feature_enabled("spotify"):
+        return {"saved": False}
     u = (uri or "").strip() or None
     return {"saved": await spotify.is_track_saved(u)}
 
 @app.get("/api/spotify/playlists")
 async def spotify_playlists(limit: int = 50, offset: int = 0):
+    if not hub_config.feature_enabled("spotify"):
+        return {"items": []}
     return await spotify.list_playlists(limit=limit, offset=offset)
 
 @app.post("/api/spotify/playlist/build")
 async def spotify_playlist_build(data: dict = Body(default_factory=dict)):
+    if not hub_config.feature_enabled("spotify"):
+        return {"ok": False, "error": "Spotify disabled"}
     return await spotify.build_playlist_queue((data.get("playlist_uri") or "").strip())
 
 # ─── REST: Podcasts ───────────────────────────────────────────────────────────
@@ -788,6 +874,8 @@ async def _build_podcast_list() -> list[dict]:
 @app.get("/api/podcasts")
 async def list_podcasts(refresh: int = 0):
     """Hardkodet liste af podcasts, beriget med cover + seneste afsnit. Cache 30 min."""
+    if not hub_config.feature_enabled("podcasts"):
+        return []
     global _podcast_cache, _podcast_cache_at
     now = time.time()
     if refresh or not _podcast_cache or (now - _podcast_cache_at) >= PODCAST_CACHE_TTL:
@@ -839,6 +927,8 @@ async def _play_latest_sr(sh: dict) -> tuple[bool, str, dict]:
 @app.post("/api/podcasts/play-latest")
 async def play_latest_podcast(data: dict = Body(default_factory=dict)):
     """Spil seneste afsnit af et show på B&O M5. Dispatcher per source."""
+    if not hub_config.feature_enabled("podcasts"):
+        return JSONResponse({"ok": False, "error": "Podcasts disabled"}, status_code=404)
     global _active_podcast_engine
     show_id = (data.get("show_id") or "").strip()
     if not show_id:
@@ -867,6 +957,8 @@ async def play_latest_podcast(data: dict = Body(default_factory=dict)):
 @app.get("/api/podcasts/{show_id}/episodes")
 async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
     """Hent en side af afsnit (drill-in). Dispatcher per source."""
+    if not hub_config.feature_enabled("podcasts"):
+        return {"episodes": [], "has_more": False, "offset": offset}
     sh = _find_show(show_id)
     # Default til Spotify hvis show_id er ukendt (bagudkompatibilitet)
     src = sh["source"] if sh else "spotify"
@@ -910,6 +1002,8 @@ async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
 @app.post("/api/podcasts/play")
 async def play_specific_episode(data: dict = Body(default_factory=dict)):
     """Spil et specifikt afsnit. Dispatcher per URI-prefix."""
+    if not hub_config.feature_enabled("podcasts"):
+        return JSONResponse({"ok": False, "error": "Podcasts disabled"}, status_code=404)
     global _active_podcast_engine
     uri = (data.get("episode_uri") or "").strip()
     if not uri:
@@ -946,6 +1040,8 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
 @app.post("/api/podcasts/pause")
 async def pause_podcast():
     """Pauser den senest startede podcast — dispatcher efter aktiv engine."""
+    if not hub_config.feature_enabled("podcasts"):
+        return {"ok": False, "error": "Podcasts disabled"}
     if _active_podcast_engine == "dlna":
         ok, detail = await bo_dlna.pause()
         return {"ok": ok, "detail": detail, "engine": "dlna"}
@@ -956,6 +1052,8 @@ async def pause_podcast():
 @app.get("/api/spotify/token")
 async def spotify_token():
     """Return access token for Web Playback SDK (kræver `streaming` i seneste OAuth-scope)."""
+    if not hub_config.feature_enabled("spotify"):
+        return JSONResponse({"error": "Spotify disabled"}, status_code=404)
     token = await spotify.access_token_for_web_playback()
     if not token:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
@@ -971,6 +1069,67 @@ async def spotify_token():
         )
     return {"token": token, "scope": gs or None}
 
+
+# ─── REST: Garden camera snapshot POC ─────────────────────────────────────────
+@app.post("/api/camera/snapshot")
+async def upload_camera_snapshot(request: Request):
+    if not hub_config.feature_enabled("camera"):
+        return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+
+    content_type = request.headers.get("content-type", "")
+    if "image/jpeg" not in content_type:
+        return JSONResponse({"ok": False, "error": "Expected image/jpeg"}, status_code=415)
+
+    body = await request.body()
+    if not body:
+        return JSONResponse({"ok": False, "error": "Empty snapshot"}, status_code=400)
+    if len(body) > MAX_CAMERA_SNAPSHOT_BYTES:
+        return JSONResponse({"ok": False, "error": "Snapshot too large"}, status_code=413)
+
+    CAMERA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_file = CAMERA_SNAPSHOT_FILE.with_suffix(".tmp")
+    tmp_file.write_bytes(body)
+    tmp_file.replace(CAMERA_SNAPSHOT_FILE)
+    return {"ok": True, "bytes": len(body), "ts": CAMERA_SNAPSHOT_FILE.stat().st_mtime}
+
+
+@app.get("/api/camera/latest.jpg")
+async def latest_camera_snapshot():
+    if not hub_config.feature_enabled("camera"):
+        return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if not CAMERA_SNAPSHOT_FILE.is_file():
+        return JSONResponse({"ok": False, "error": "No snapshot yet"}, status_code=404)
+    return FileResponse(
+        CAMERA_SNAPSHOT_FILE,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/api/camera/status")
+async def camera_snapshot_status():
+    if not hub_config.feature_enabled("camera"):
+        return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if not CAMERA_SNAPSHOT_FILE.is_file():
+        return {"ok": True, "available": False, "ts": None, "age": None, "bytes": 0}
+    stat = CAMERA_SNAPSHOT_FILE.stat()
+    return {
+        "ok": True,
+        "available": True,
+        "ts": stat.st_mtime,
+        "age": max(0, time.time() - stat.st_mtime),
+        "bytes": stat.st_size,
+    }
+
+
+@app.get("/dashboard")
+async def dashboard_page():
+    dashboard_file = STATIC_DIR / "dashboard.html"
+    if dashboard_file.is_file():
+        return FileResponse(dashboard_file, media_type="text/html")
+    return JSONResponse({"ok": False, "error": "Dashboard not built"}, status_code=404)
+
+
 # ─── Static files (SvelteKit build) — mount last ──────────────────────────────
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
@@ -985,7 +1144,7 @@ if __name__ == "__main__":
 
     try:
         if use_tls:
-            print("Home Hub → https://localhost:8443")
+            print(f"{hub_config.CONFIG.get('site', 'home')} Hub → https://localhost:8443")
             uvicorn.run(
                 app,
                 host="0.0.0.0",
@@ -995,7 +1154,7 @@ if __name__ == "__main__":
                 ssl_keyfile=str(key),
             )
         else:
-            print("Home Hub → http://localhost:8000")
+            print(f"{hub_config.CONFIG.get('site', 'home')} Hub → http://localhost:8000")
             uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
     except OSError as e:
         if e.errno == errno.EADDRINUSE:

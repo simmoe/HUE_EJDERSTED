@@ -32,6 +32,8 @@
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
+  const enabled = (feature: keyof typeof store.config.features) => store.config.features[feature];
+
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
 
@@ -75,11 +77,11 @@
     document.documentElement.requestFullscreen?.().catch(() => {});
     requestWakeLock();
     // Trigger ADB kiosk setup (landscape, brightness, volume HUD)
-    fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
+    if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
     showSplash = false;
     resetDim();
     // Efter brugertryk: Web Playback SDK må bruge audio; Chrome bliver Connect-enhed «Ejdersted».
-    void initSpotifyWebPlayer();
+    if (enabled('spotify')) void initSpotifyWebPlayer();
   }
 
   let stopPlaylistHub: (() => void) | undefined;
@@ -89,25 +91,39 @@
     store.connect();
     updateClock();
     clockInterval = setInterval(updateClock, 1000);
-    void initSpotifyWebPlayer();
-    void initPlaylistHub().then((stop) => {
-      stopPlaylistHub = stop;
-    });
-    void initRadioLibrary().then((stop) => {
-      stopRadioLibrary = stop;
-    });
+    void fetch('/api/config')
+      .then((r) => r.json())
+      .then((cfg) => {
+        store.config = cfg;
+        if (enabled('spotify')) void initSpotifyWebPlayer();
+        if (enabled('spotify')) {
+          void initPlaylistHub().then((stop) => {
+            stopPlaylistHub = stop;
+          });
+        }
+        if (enabled('playlists')) {
+          void initRadioLibrary().then((stop) => {
+            stopRadioLibrary = stop;
+          });
+        }
+        if (enabled('podcasts')) void loadPodcasts();
+      })
+      .catch(() => {
+        if (enabled('spotify')) void initSpotifyWebPlayer();
+      });
     // Re-apply kiosk settings once on page load. Do not run it on every visibility
     // change; Android may briefly hide/show Chrome around system overlays.
-    setTimeout(() => fetch('/api/kiosk', { method: 'POST' }).catch(() => {}), 1500);
+    setTimeout(() => {
+      if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
+    }, 1500);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         requestWakeLock();
-        void initSpotifyWebPlayer();
+        if (enabled('spotify')) void initSpotifyWebPlayer();
       }
     });
     // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
     document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
-    void loadPodcasts();
     return () => {
       clearInterval(clockInterval);
       stopPlaylistHub?.();
@@ -121,12 +137,13 @@
   let nextPageName = $state('');
 
   function readNextPageName() {
-    const el = pagesEl?.children[2] as HTMLElement | undefined;
+    const el = pagesEl?.children[2] as HTMLElement | undefined
+      ?? pagesEl?.children[1] as HTMLElement | undefined;
     nextPageName = el?.querySelector('.col-header')?.textContent ?? '';
   }
 
   function advance() {
-    if (advancing || !pagesEl) return;
+    if (advancing || !pagesEl || pagesEl.children.length < 2) return;
     advancing = true;
     const pageW = pagesEl.clientWidth / 2;  // each page = 50%
     pagesEl.scrollTo({ left: pageW, behavior: 'smooth' });
@@ -135,7 +152,7 @@
     function onDone() {
       pagesEl.removeEventListener('scrollend', onDone);
       const first = pagesEl.firstElementChild;
-      if (first) pagesEl.appendChild(first);
+      if (first && pagesEl.children.length > 1) pagesEl.appendChild(first);
       pagesEl.scrollTo({ left: 0, behavior: 'instant' });
       advancing = false;
       readNextPageName();
@@ -247,8 +264,8 @@
   let radioSaveDone = $state(false);
 
   // ── Vertical card carousel ──────────────────────────────────────────────
-  let lydInner: HTMLDivElement;
-  let lysInner: HTMLDivElement;
+  let lydInner = $state<HTMLDivElement>();
+  let lysInner = $state<HTMLDivElement>();
   let cardAdvancing = $state(false);
   let nextLydCard = $state('');
   let nextLysCard = $state('');
@@ -392,7 +409,7 @@
   let activeEpisodeId = $state('');
   let loadingPodcastId = $state('');
   let loadingEpisodeId = $state('');
-  let podcastInner: HTMLDivElement;
+  let podcastInner = $state<HTMLDivElement>();
   let nextPodcastCard = $state('');
   let prevPodcastCard = $state('');
 
@@ -577,7 +594,7 @@
   let loadingTrackIndex = $state(-1);
   let deletingTrackIndex = $state(-1);
   let activePlaylistId = $state('');
-  let playlistInner: HTMLDivElement;
+  let playlistInner = $state<HTMLDivElement>();
   let nextPlaylistCard = $state('');
   let prevPlaylistCard = $state('');
 
@@ -716,7 +733,7 @@
   <!-- Splash screen for fullscreen entry -->
   {#if showSplash}
     <div class="splash" onclick={dismissSplash} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && dismissSplash()}>
-      <span class="splash-title">EJDERSTED</span>
+      <span class="splash-title">{store.config.site === 'garden' ? 'HAVEN' : 'EJDERSTED'}</span>
     </div>
   {/if}
 
@@ -756,12 +773,24 @@
   <!-- ── Swipe container ───────────────────────────────────────────────────── -->
   <div class="pages" bind:this={pagesEl}>
 
+    {#if enabled('camera') && store.config.site === 'garden'}
+      <!-- PAGE · KAMERA (garden-first) ────────────────────────────────────── -->
+      <section class="page page--primary-camera">
+        <div class="col-header">KAMERA</div>
+        <div class="scroll-inner camera-page">
+          <CameraCard />
+        </div>
+      </section>
+    {/if}
+
     <!-- PAGE 0 · LYD ─────────────────────────────────────────────────────── -->
+    {#if enabled('audio') || enabled('spotify')}
     <section class="page">
       <div class="col-header">LYD</div>
       <div class="scroll-inner" bind:this={lydInner}>
 
         <!-- Now Playing (default card, always visible) -->
+        {#if enabled('spotify')}
         <div class="np-card" data-name="Afspiller">
           <div class="np-info">
             {#if playlist.spotifyTitle}
@@ -860,7 +889,9 @@
             <span class="unified-vol-value">{unifiedVolume}</span>
           </div>
         </div>
+        {/if}
 
+        {#if enabled('audio')}
         {#each store.devices as device (device.id)}
           {@const vol = store.volumes[device.id] ?? { level: 0, online: false }}
           <Card name={device.name} status={vol.online ? 'online' : 'offline'} online={vol.online} pulse={pulsingDevices[device.id]}>
@@ -886,8 +917,10 @@
         {#if store.devices.length === 0 && store.connected}
           <p class="empty">Ingen højttalere fundet.</p>
         {/if}
+        {/if}
 
         <!-- Spotify Voice -->
+        {#if enabled('spotify')}
         <Card
           name="Musik"
           status={playlist.spotifyRadioLoading
@@ -904,17 +937,20 @@
         >
           <SpotifyVoice onvoice={handleVoicePayload} />
         </Card>
+        {/if}
 
       </div>
-      <button type="button" class="card-arrow card-arrow--lyd" onclick={() => advanceCard(lydInner, 'lyd')} aria-label="Næste kort">
+      <button type="button" class="card-arrow card-arrow--lyd" onclick={() => lydInner && advanceCard(lydInner, 'lyd')} aria-label="Næste kort">
         <span class="arrow-label">{nextLydCard}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
     </section>
+    {/if}
 
     <!-- PAGE 1 · LYS ─────────────────────────────────────────────────────── -->
+    {#if enabled('hue')}
     <section class="page">
       <div class="col-header">LYS</div>
       <div class="scroll-inner" bind:this={lysInner}>
@@ -979,15 +1015,17 @@
         {/if}
 
       </div>
-      <button type="button" class="card-arrow card-arrow--lys" onclick={() => advanceCard(lysInner, 'lys')} aria-label="Næste kort">
+      <button type="button" class="card-arrow card-arrow--lys" onclick={() => lysInner && advanceCard(lysInner, 'lys')} aria-label="Næste kort">
         <span class="arrow-label">{nextLysCard}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
     </section>
+    {/if}
 
     <!-- PAGE 2 · PLAYLISTER ──────────────────────────────────────────────── -->
+    {#if enabled('playlists')}
     <section class="page">
       {#if drilledPlaylist}
         <div class="col-header drill-header">
@@ -1120,8 +1158,10 @@
         </button>
       {/if}
     </section>
+    {/if}
 
     <!-- PAGE 3 · PODCAST ──────────────────────────────────────────────────── -->
+    {#if enabled('podcasts')}
     <section class="page">
       {#if drilledShow}
         <div class="col-header drill-header">
@@ -1245,14 +1285,17 @@
         </button>
       {/if}
     </section>
+    {/if}
 
     <!-- PAGE 4 · KAMERA ──────────────────────────────────────────────────── -->
+    {#if enabled('camera') && store.config.site !== 'garden'}
     <section class="page">
       <div class="col-header">KAMERA</div>
       <div class="scroll-inner camera-page">
         <CameraCard />
       </div>
     </section>
+    {/if}
 
   </div>
 </main>
@@ -1413,6 +1456,9 @@
     flex-direction: column;
     overflow: hidden;
     position: relative;
+  }
+  .page--primary-camera {
+    flex-basis: 100%;
   }
 
   /* ── Advance arrow ────────────────────────────────────────────────────────── */

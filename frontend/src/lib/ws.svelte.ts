@@ -30,8 +30,36 @@ export interface NowPlaying {
   album: string;
 }
 
+export interface HubConfig {
+  site: 'home' | 'garden' | string;
+  publicUrl: string;
+  features: {
+    camera: boolean;
+    audio: boolean;
+    hue: boolean;
+    spotify: boolean;
+    podcasts: boolean;
+    playlists: boolean;
+    adbKiosk: boolean;
+  };
+}
+
+export const defaultHubConfig: HubConfig = {
+  site: 'home',
+  publicUrl: '',
+  features: {
+    camera: true,
+    audio: true,
+    hue: true,
+    spotify: true,
+    podcasts: true,
+    playlists: true,
+    adbKiosk: true,
+  },
+};
+
 type ServerMsg =
-  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; now_playing: Record<string, NowPlaying> }
+  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; now_playing: Record<string, NowPlaying>; config?: HubConfig }
   | { type: 'device_added'; device: Device }
   | { type: 'device_removed'; device_id: string }
   | { type: 'volume_update'; device_id: string; level: number; online: boolean }
@@ -46,6 +74,7 @@ class WSStore {
   hueStatus = $state<HueStatus>({ ip: null, paired: false });
   hueRooms = $state<HueRoom[]>([]);
   nowPlaying = $state<Record<string, NowPlaying>>({});
+  config = $state<HubConfig>(defaultHubConfig);
   connected = $state(false);
 
   private ws: WebSocket | null = null;
@@ -181,6 +210,7 @@ class WSStore {
         this.hueStatus = msg.hue_status;
         this.hueRooms = msg.hue_rooms;
         this.nowPlaying = msg.now_playing ?? {};
+        this.config = msg.config ?? defaultHubConfig;
         break;
       case 'device_added':
         this.devices = [

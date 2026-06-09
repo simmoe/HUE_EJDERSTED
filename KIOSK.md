@@ -7,10 +7,16 @@
 
 ## 1. Overblik
 
-En **Samsung Galaxy A12**-telefon kører Chrome i fuldskærmskiosk-mode og viser en
-touch-baseret home automation UI (lysstyring via Philips Hue + volumenkontrol
-for B&O-højttalere + Spotify voice control). Backend er en FastAPI Python-server
-der kører på en Raspberry Pi 5 (produktion) eller en Mac (udvikling).
+En Android-telefon kører Chrome eller kiosk-app i fuldskærm og viser en
+touch-baseret home automation UI. Backend er en FastAPI Python-server der kører
+på en Raspberry Pi eller en Mac.
+
+Appen bruger runtime-profiler:
+
+- `home`: Vesterbro-kiosk med B&O, Philips Hue, Spotify, podcasts og ADB-kiosk.
+- `garden`: kolonihave-kiosk med telefonens kamera først og home-only moduler deaktiveret.
+
+Se også `docs/architecture.md`, `docs/home.md` og `docs/garden.md`.
 
 ### Kiosk-skærm — Samsung Galaxy A12
 
@@ -37,11 +43,14 @@ Reference: [GSMArena — Galaxy A12](https://www.gsmarena.com/samsung_galaxy_a12
 
 ## 2. Netværk
 
-Alle enheder har faste IP'er via Google Home DHCP-reservationer.
+Home-profilens enheder har faste IP'er via Google Home DHCP-reservationer.
+Garden-profilens konkrete IP'er og credentials kommer fra global/maskin-lokal
+secret setup som environment variables, ikke fra projekt-lokale `.env` eller
+JSON-filer.
 
 | Enhed | IP | Port | Bemærkning |
 |---|---|---|---|
-| Raspberry Pi 5 (prod server) | `192.168.86.16` | `8443` (HTTPS) | SSH: simmoe / k18Medh18 |
+| Raspberry Pi 5 (home server) | `192.168.86.16` | `8443` (HTTPS) | SSH user: `simmoe`; password/key is local-only |
 | Mac (dev) | `192.168.86.13` | `8443` (HTTPS) | Kun til udvikling |
 | Kiosk-telefon (Samsung Galaxy A12) | `192.168.86.15` | ADB: variabel | Trådløs ADB port skifter ved genstart |
 | Philips Hue Bridge | `192.168.86.25` | HTTPS (clipv2) | |
@@ -74,7 +83,7 @@ Pi bruger certs i `certs/`, Mac bruger mkcert-genererede certs.
 │   ├── package.json
 │   └── svelte.config.js
 ├── certs/               ← TLS-certifikater (IKKE i git)
-├── deploy.sh            ← Deploy-script: Mac → Pi
+├── deploy.sh            ← Profilbaseret deploy-script: Mac → Pi
 ├── devices.json         ← Persisteret B&O-enhedsliste
 ├── hue_config.json      ← Hue bridge IP + username (IKKE i git)
 ├── spotify_config.json  ← Spotify OAuth tokens (IKKE i git)
@@ -90,13 +99,13 @@ Serveren kører som systemd-service på Pi'en og starter automatisk ved boot.
 
 ```bash
 # Tjek status
-sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo systemctl status hue --no-pager"
+ssh "$PI_HOST" "sudo systemctl status hue --no-pager"
 
 # Genstart
-sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
+ssh "$PI_HOST" "sudo systemctl restart hue"
 
 # Se logs
-sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo journalctl -u hue -f"
+ssh "$PI_HOST" "sudo journalctl -u hue -f"
 ```
 
 **Kiosk URL (Galaxy A12 / Chrome)**: `https://192.168.86.16:8443`
@@ -108,8 +117,8 @@ sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo journalctl -u hue -f"
 Kør disse trin fra projektets rodmappe på Mac'en:
 
 ```bash
-# Fra Pi (SSH) — port 5555 er fast (sat via `adb tcpip 5555` + lockdown_tablet.sh)
-sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16
+# Fra Pi (SSH) — port 5555 kan sættes via `adb tcpip 5555` + lockdown_tablet.sh
+ssh "$PI_HOST"
 
 # 1. Forbind ADB
 adb connect 192.168.86.15:5555
@@ -152,24 +161,16 @@ Første gang skal det self-signed certifikat accepteres i Chrome (Avanceret → 
 > Under fejlretning og iterativ udvikling: brug `npm run dev` lokalt (Vite på :5173).
 
 ```bash
-# Alt-i-én deploy (git push, pull på Pi, sync static, restart service)
-./deploy.sh
+# Home
+./deploy.sh home
 
-# Med frontend rebuild først
-./deploy.sh --build
+# Garden
+./deploy.sh garden
 ```
 
-Manuelt:
-```bash
-cd frontend
-sed -i '' 's/hue-v17/hue-v18/g' static/sw.js   # Bump SW-cache!
-npm run build
-cd ..
-git add -A && git commit -m "deploy" && git push
-sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "cd ~/HUE_EJDERSTED && git pull"
-sshpass -p "$PI_PASS" scp -r backend/static simmoe@192.168.86.16:~/HUE_EJDERSTED/backend/
-sshpass -p "$PI_PASS" ssh simmoe@192.168.86.16 "sudo systemctl restart hue"
-```
+Export deploy/runtime-værdier fra global setup før deploy, fx `PI_HOST`,
+`PI_PASS`, `HUB_SITE`, `HUB_PUBLIC_URL`, `HUB_KIOSK_ADB_SERIAL` og `KIOSK_URL`.
+Real credentials, IP overrides and kiosk URLs skal holdes uden for projekttræet.
 
 **Cache-version**: Filen `frontend/static/sw.js` har `const CACHE = 'hue-vNN'`.
 Bump ALTID dette tal inden build — ellers ser telefonen den gamle version.
