@@ -25,6 +25,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "podcasts": True,
         "playlists": True,
         "adbKiosk": True,
+        "solar": False,
     },
     "kiosk": {
         "phoneIp": "192.168.86.15",
@@ -35,6 +36,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         {"ip": "192.168.86.20", "name": "BeoPlay A9"},
         {"ip": "192.168.86.21", "name": "Beoplay M5"},
     ],
+    "audio": {
+        "defaultTarget": "",
+        "targets": {},
+    },
+    "solar": {
+        "gpioPin": 17,
+        "activeHigh": True,
+        "lat": 55.6761,
+        "lon": 12.5683,
+        "sunriseOffsetMin": 30,
+        "sunsetOffsetMin": 90,
+        "tz": "Europe/Copenhagen",
+    },
 }
 
 
@@ -78,7 +92,7 @@ def _apply_env_overrides() -> None:
         CONFIG["publicUrl"] = public_url
 
     features = CONFIG.setdefault("features", {})
-    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk"):
+    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk", "solar"):
         value = _bool_env(f"HUB_FEATURE_{feature.upper()}")
         if value is not None:
             features[feature] = value
@@ -93,6 +107,12 @@ def _apply_env_overrides() -> None:
         if value is not None:
             kiosk[key] = value
 
+    audio = CONFIG.setdefault("audio", {})
+    if target := os.environ.get("HUB_AUDIO_DEFAULT_TARGET"):
+        audio["defaultTarget"] = target
+    if device := os.environ.get("HUB_AUDIO_SPOTIFY_DEVICE"):
+        audio["spotifyDevice"] = device
+
 
 _apply_env_overrides()
 
@@ -100,6 +120,19 @@ _apply_env_overrides()
 def feature_enabled(name: str) -> bool:
     features = CONFIG.get("features", {})
     return bool(features.get(name))
+
+
+def site() -> str:
+    return str(CONFIG.get("site") or "home")
+
+
+def bo_speakers_enabled() -> bool:
+    """B&O Mozart/BeoLink speakers are a home-only concept (Vesterbro).
+
+    Garden routes audio to configured output targets (BlueALSA etc.) instead, so
+    it must not seed, discover, poll or BeoLink-expand the Vesterbro B&O units.
+    """
+    return feature_enabled("audio") and site() == "home"
 
 
 def kiosk_phone_ip() -> str:
@@ -130,10 +163,70 @@ def known_speakers() -> list[dict[str, str]]:
     return out
 
 
+def audio_targets() -> list[dict[str, Any]]:
+    """Configured output targets, normalized to include an `id` field.
+
+    The garden profile can define these in hub_config.json without changing the
+    browser contract. Example:
+    {"audio": {"defaultTarget": "storm_lite", "targets": {"storm_lite": {...}}}}
+    """
+    audio = CONFIG.get("audio", {})
+    raw_targets = audio.get("targets", {}) if isinstance(audio, dict) else {}
+    items = raw_targets.items() if isinstance(raw_targets, dict) else enumerate(raw_targets if isinstance(raw_targets, list) else [])
+    out: list[dict[str, Any]] = []
+    for key, value in items:
+        if not isinstance(value, dict):
+            continue
+        target = dict(value)
+        target_id = str(target.get("id") or key).strip()
+        if not target_id:
+            continue
+        target["id"] = target_id
+        out.append(target)
+    return out
+
+
+def default_audio_target() -> str:
+    audio = CONFIG.get("audio", {})
+    return str(audio.get("defaultTarget") or "") if isinstance(audio, dict) else ""
+
+
+def spotify_connect_device() -> str:
+    """Preferred Spotify Connect device name to route playback to.
+
+    Garden sets this to the on-Pi librespot device (e.g. "Ejdersted Garden") so
+    playback lands on the Pi → BlueALSA → speaker instead of a browser/web player.
+    """
+    audio = CONFIG.get("audio", {})
+    configured = str(audio.get("spotifyDevice") or "") if isinstance(audio, dict) else ""
+    if configured:
+        return configured
+    return "Ejdersted Garden" if site() == "garden" else ""
+
+
+def solar_config() -> dict[str, Any]:
+    """Solar charge-relay settings (GPIO pin, polarity, location, sun offsets)."""
+    solar = CONFIG.get("solar", {})
+    return solar if isinstance(solar, dict) else {}
+
+
 def public_config() -> dict[str, Any]:
     """Configuration safe for the browser."""
+    targets = [
+        {
+            "id": t["id"],
+            "name": str(t.get("name") or t["id"]),
+            "type": str(t.get("type") or ""),
+            "default": t["id"] == default_audio_target(),
+        }
+        for t in audio_targets()
+    ]
     return {
         "site": CONFIG.get("site", "home"),
         "publicUrl": CONFIG.get("publicUrl", ""),
         "features": CONFIG.get("features", {}),
+        "audio": {
+            "defaultTarget": default_audio_target(),
+            "targets": targets,
+        },
     }

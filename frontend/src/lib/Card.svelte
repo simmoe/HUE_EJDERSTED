@@ -20,17 +20,19 @@
 
 <style>
   .card {
+    height: calc(100dvh - 48px);
     min-height: calc(100dvh - 48px);
     max-height: calc(100dvh - 48px);
     overflow: hidden;
     display: grid;
-    grid-template-rows: 10dvh 70dvh 20dvh;
-    align-items: center;
-    padding: 24px 32px;
+    grid-template-rows: 38px minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+    padding: 18px 32px 62px;
     border-radius: 0;
     background: none;
     border: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     transition: border-color 1.2s ease;
   }
 

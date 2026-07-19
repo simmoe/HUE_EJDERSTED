@@ -48,9 +48,23 @@ Garden-profilens konkrete IP'er og credentials kommer fra global/maskin-lokal
 secret setup som environment variables, ikke fra projekt-lokale `.env` eller
 JSON-filer.
 
+**Garden dashboard via Tailscale**: Det uafhængige garden-dashboard åbnes udefra
+via Tailscale, ikke via Vesterbro LAN og ikke ved at refreshe Android-kioskerne.
+Brug `https://100.111.167.54:8443/dashboard` eller
+`https://kolonihave-pi:8443/dashboard` hvis MagicDNS virker. Dashboardet er kun
+viewer/control-flade; garden-kiosken selv kører stadig lokalt på garden-Pi'en.
+
+**Garden audio target**: Androiden er kun kiosk/UI. Pi'en er audio-controller og
+skal sende Spotify-afspilning til kendte output targets. Aktuelt kendt target er
+`garden_storm_lite` (`bluealsa`, `NowGo Storm Lite`,
+`F4:4E:FD:57:3A:AB`). Nye Bluetooth-højttalere tilføjes manuelt i
+global/local config; frontend skal kun kunne vise status og kalde "forbind igen"
+på et kendt target, hvis højttaleren har været koblet til en telefon.
+
 | Enhed | IP | Port | Bemærkning |
 |---|---|---|---|
 | Raspberry Pi 5 (home server) | `192.168.86.16` | `8443` (HTTPS) | SSH user: `simmoe`; password/key is local-only |
+| Raspberry Pi (garden, Tailscale) | `100.111.167.54` / `kolonihave-pi` | `8443` (HTTPS) | Bruges til `/dashboard` udefra |
 | Mac (dev) | `192.168.86.13` | `8443` (HTTPS) | Kun til udvikling |
 | Kiosk-telefon (Samsung Galaxy A12) | `192.168.86.15` | ADB: variabel | Trådløs ADB port skifter ved genstart |
 | Philips Hue Bridge | `192.168.86.25` | HTTPS (clipv2) | |
@@ -130,7 +144,7 @@ adb -s $ADB shell settings put system user_rotation 1
 adb -s $ADB shell settings put global policy_control "immersive.full=com.android.chrome"
 adb -s $ADB shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny
 adb -s $ADB shell am force-stop com.android.chrome
-adb -s $ADB shell am start -a android.intent.action.VIEW -d "https://192.168.86.16:8443"
+adb -s $ADB shell am start -a android.intent.action.VIEW -d "https://192.168.86.16:8443" com.android.chrome
 ```
 
 **NB**: Den fysiske volumenknap sidder i klemme pga. kiosk-kabinettet. Kør `SYSTEM_ALERT_WINDOW deny`

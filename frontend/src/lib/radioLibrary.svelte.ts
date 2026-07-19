@@ -20,6 +20,9 @@ export type RadioPlaylist = {
   updatedAt: number;
 };
 
+export const SAVED_SONGS_PLAYLIST_ID = 'gemte-sange';
+export const SAVED_SONGS_PLAYLIST_NAME = 'Gemte sange';
+
 export const radioLibrary = $state({
   playlists: [] as RadioPlaylist[],
   loading: true,
@@ -150,6 +153,39 @@ export async function saveRadioPlaylist(seed: QTrack, tracks: QTrack[]): Promise
     }, { merge: true });
   });
   return saved;
+}
+
+export async function saveTrackToSavedSongs(track: QTrack): Promise<{ playlist: RadioPlaylist; added: boolean }> {
+  const clean = parseTrack(track);
+  if (!clean) throw new Error('Ingen sang at gemme');
+  const ref = await ensureDocRef();
+  const now = Date.now();
+  let result: { playlist: RadioPlaylist; added: boolean } | null = null;
+
+  await runTransaction(getFirestore(ref.firestore.app), async (tx) => {
+    const snap = await tx.get(ref);
+    const items = parseItems(snap.exists() ? snap.data().items : []);
+    const existing = items.find((p) => p.id === SAVED_SONGS_PLAYLIST_ID || p.name === SAVED_SONGS_PLAYLIST_NAME);
+    const others = items.filter((p) => p !== existing);
+    const alreadySaved = !!existing?.tracks.some((t) => t.uri === clean.uri);
+    const savedSongs: RadioPlaylist = {
+      id: SAVED_SONGS_PLAYLIST_ID,
+      name: SAVED_SONGS_PLAYLIST_NAME,
+      seedName: '',
+      seedArtist: '',
+      tracks: alreadySaved ? (existing?.tracks ?? []) : [clean, ...(existing?.tracks ?? [])],
+      createdAt: existing?.createdAt || now,
+      updatedAt: alreadySaved ? (existing?.updatedAt || now) : now,
+    };
+    result = { playlist: savedSongs, added: !alreadySaved };
+    tx.set(ref, {
+      items: [savedSongs, ...others],
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+  });
+
+  if (!result) throw new Error('Kunne ikke gemme sang');
+  return result;
 }
 
 export async function deleteRadioPlaylist(id: string): Promise<void> {

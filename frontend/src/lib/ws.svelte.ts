@@ -30,6 +30,38 @@ export interface NowPlaying {
   album: string;
 }
 
+export interface AudioTargetSummary {
+  id: string;
+  name: string;
+  type: string;
+  default: boolean;
+}
+
+export interface AudioTargetStatus extends AudioTargetSummary {
+  online: boolean;
+  paired: boolean;
+  trusted: boolean;
+  connected: boolean;
+  playback: boolean;
+  volume?: number;
+  error?: string;
+}
+
+export type SolarMode = 'auto' | 'on' | 'off';
+
+export interface SolarStatus {
+  enabled: boolean;
+  relayOn?: boolean;
+  mode?: SolarMode;
+  onTime?: string | null;
+  offTime?: string | null;
+  sunrise?: string | null;
+  sunset?: string | null;
+  withinWindow?: boolean;
+  simulated?: boolean;
+  now?: string;
+}
+
 export interface HubConfig {
   site: 'home' | 'garden' | string;
   publicUrl: string;
@@ -41,6 +73,11 @@ export interface HubConfig {
     podcasts: boolean;
     playlists: boolean;
     adbKiosk: boolean;
+    solar: boolean;
+  };
+  audio?: {
+    defaultTarget: string;
+    targets: AudioTargetSummary[];
   };
 }
 
@@ -55,11 +92,17 @@ export const defaultHubConfig: HubConfig = {
     podcasts: true,
     playlists: true,
     adbKiosk: true,
+    solar: false,
+  },
+  audio: {
+    defaultTarget: '',
+    targets: [],
   },
 };
 
 type ServerMsg =
-  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; now_playing: Record<string, NowPlaying>; config?: HubConfig }
+  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus }
+  | ({ type: 'solar_status' } & SolarStatus)
   | { type: 'device_added'; device: Device }
   | { type: 'device_removed'; device_id: string }
   | { type: 'volume_update'; device_id: string; level: number; online: boolean }
@@ -75,6 +118,7 @@ class WSStore {
   hueRooms = $state<HueRoom[]>([]);
   nowPlaying = $state<Record<string, NowPlaying>>({});
   config = $state<HubConfig>(defaultHubConfig);
+  solar = $state<SolarStatus>({ enabled: false });
   connected = $state(false);
 
   private ws: WebSocket | null = null;
@@ -211,7 +255,13 @@ class WSStore {
         this.hueRooms = msg.hue_rooms;
         this.nowPlaying = msg.now_playing ?? {};
         this.config = msg.config ?? defaultHubConfig;
+        if (msg.solar) this.solar = msg.solar;
         break;
+      case 'solar_status': {
+        const { type, ...rest } = msg;
+        this.solar = rest as SolarStatus;
+        break;
+      }
       case 'device_added':
         this.devices = [
           ...this.devices.filter((d) => d.id !== msg.device.id),
@@ -269,6 +319,12 @@ class WSStore {
     );
   }
 
+  setSolarMode(mode: SolarMode) {
+    // Optimistic: reflect the chosen mode immediately; backend confirms via solar_status.
+    this.solar = { ...this.solar, mode };
+    this.ws?.send(JSON.stringify({ type: 'set_solar_mode', mode }));
+  }
+
   setHueBrightness(roomId: string, brightness: number) {
     // Optimistic update
     this.hueRooms = this.hueRooms.map((r) =>
@@ -308,6 +364,26 @@ class WSStore {
 
   async removeDevice(deviceId: string) {
     await fetch(`/api/devices/${deviceId}`, { method: 'DELETE' });
+  }
+
+  async getAudioTargets(): Promise<AudioTargetStatus[]> {
+    const r = await fetch('/api/audio/targets');
+    if (!r.ok) return [];
+    return (await r.json()) as AudioTargetStatus[];
+  }
+
+  async connectAudioTarget(targetId: string): Promise<AudioTargetStatus> {
+    const r = await fetch(`/api/audio/targets/${encodeURIComponent(targetId)}/connect`, { method: 'POST' });
+    return (await r.json()) as AudioTargetStatus;
+  }
+
+  async setAudioTargetVolume(targetId: string, level: number): Promise<{ ok: boolean; volume?: number; error?: string }> {
+    const r = await fetch(`/api/audio/targets/${encodeURIComponent(targetId)}/volume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level }),
+    });
+    return (await r.json()) as { ok: boolean; volume?: number; error?: string };
   }
 }
 

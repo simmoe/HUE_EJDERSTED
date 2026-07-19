@@ -170,12 +170,12 @@
 
   <!-- Track (grå) -->
   <path d={trackPath} fill="none"
-    stroke="#595959" stroke-width={SW} stroke-linecap="round" />
+    stroke="#9b9b9b" stroke-width={SW} stroke-linecap="round" />
 
   <!-- Value arc (blå/grå ved mute) -->
   {#if valuePath}
     <path d={valuePath} fill="none"
-      stroke={muted ? '#595959' : '#0080c8'} stroke-width={SW} stroke-linecap="round"
+      stroke={muted ? '#9b9b9b' : '#0080c8'} stroke-width={SW} stroke-linecap="round"
       filter={dragging ? `url(#glow-${uid})` : undefined}
       class="value-arc" />
   {/if}
@@ -218,7 +218,7 @@
     transition: fill 0.2s;
   }
   .number.muted {
-    fill: #595959;
+    fill: #9b9b9b;
   }
   .value-arc {
     transition: filter 0.15s ease;

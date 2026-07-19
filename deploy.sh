@@ -29,11 +29,11 @@ HUB_PUBLIC_URL="${HUB_PUBLIC_URL:-${KIOSK_URL:-}}"
 
 if [[ "$HUB_SITE" == "garden" ]]; then
   HUB_FEATURE_CAMERA="${HUB_FEATURE_CAMERA:-true}"
-  HUB_FEATURE_AUDIO="${HUB_FEATURE_AUDIO:-false}"
+  HUB_FEATURE_AUDIO="${HUB_FEATURE_AUDIO:-true}"
   HUB_FEATURE_HUE="${HUB_FEATURE_HUE:-false}"
-  HUB_FEATURE_SPOTIFY="${HUB_FEATURE_SPOTIFY:-false}"
-  HUB_FEATURE_PODCASTS="${HUB_FEATURE_PODCASTS:-false}"
-  HUB_FEATURE_PLAYLISTS="${HUB_FEATURE_PLAYLISTS:-false}"
+  HUB_FEATURE_SPOTIFY="${HUB_FEATURE_SPOTIFY:-true}"
+  HUB_FEATURE_PODCASTS="${HUB_FEATURE_PODCASTS:-true}"
+  HUB_FEATURE_PLAYLISTS="${HUB_FEATURE_PLAYLISTS:-true}"
   HUB_FEATURE_ADBKIOSK="${HUB_FEATURE_ADBKIOSK:-true}"
 fi
 
@@ -127,11 +127,21 @@ RUNTIME_ENV=$(mktemp)
   [[ -n "${HUB_KIOSK_PHONE_IP:-}" ]] && echo "HUB_KIOSK_PHONE_IP=$HUB_KIOSK_PHONE_IP"
   [[ -n "${HUB_KIOSK_ADB_SERIAL:-${KIOSK_ADB_SERIAL:-}}" ]] && echo "HUB_KIOSK_ADB_SERIAL=${HUB_KIOSK_ADB_SERIAL:-$KIOSK_ADB_SERIAL}"
   [[ -n "${HUB_KIOSK_MULTIAPP_PACKAGE:-}" ]] && echo "HUB_KIOSK_MULTIAPP_PACKAGE=$HUB_KIOSK_MULTIAPP_PACKAGE"
+  [[ -n "${HUB_AUDIO_DEFAULT_TARGET:-}" ]] && echo "HUB_AUDIO_DEFAULT_TARGET=$HUB_AUDIO_DEFAULT_TARGET"
+  [[ -n "${HUB_AUDIO_SPOTIFY_DEVICE:-}" ]] && echo "HUB_AUDIO_SPOTIFY_DEVICE=$HUB_AUDIO_SPOTIFY_DEVICE"
+  if [[ "$HUB_SITE" == "garden" ]]; then
+    echo "GOOGLE_APPLICATION_CREDENTIALS=${HUB_GOOGLE_APPLICATION_CREDENTIALS:-$PI_REPO_DIR/runtime/firebase/garden-camera-evidence.json}"
+  fi
 } > "$RUNTIME_ENV"
 scp_copy "$RUNTIME_ENV" "$PI_HOST:/tmp/hue.runtime.env"
 rm -f "$RUNTIME_ENV"
 ssh_run "$SUDO mkdir -p /etc/hue && $SUDO mv /tmp/hue.runtime.env /etc/hue/runtime.env && $SUDO chmod 600 /etc/hue/runtime.env"
 ssh_run "grep -q '^EnvironmentFile=-/etc/hue/runtime.env$' /etc/systemd/system/hue.service || $SUDO sed -i '/^Environment=PYTHONUNBUFFERED=1$/a EnvironmentFile=-/etc/hue/runtime.env' /etc/systemd/system/hue.service; $SUDO systemctl daemon-reload"
+
+if [[ "$HUB_SITE" == "garden" ]]; then
+  echo "→ Ensuring garden AAC/M4A playback support..."
+  ssh_run "if ! command -v ffmpeg >/dev/null; then $SUDO apt-get update && $SUDO apt-get install -y ffmpeg; fi"
+fi
 
 echo "→ Restarting $SERVICE_NAME..."
 ssh_run "$SUDO systemctl restart '$SERVICE_NAME'"
@@ -148,5 +158,5 @@ fi
 
 if [[ -n "${KIOSK_ADB_SERIAL:-}" && -n "${KIOSK_URL:-}" ]]; then
   echo "→ Refreshing kiosk browser..."
-  ssh_run "adb connect '$KIOSK_ADB_SERIAL' 2>/dev/null; if adb -s '$KIOSK_ADB_SERIAL' get-state 2>/dev/null | grep -q '^device$'; then adb -s '$KIOSK_ADB_SERIAL' shell am force-stop com.android.chrome; sleep 1; adb -s '$KIOSK_ADB_SERIAL' shell am start -a android.intent.action.VIEW -d '$KIOSK_URL'; else echo 'No kiosk phone via ADB'; fi"
+  ssh_run "adb connect '$KIOSK_ADB_SERIAL' 2>/dev/null; if adb -s '$KIOSK_ADB_SERIAL' get-state 2>/dev/null | grep -q '^device$'; then adb -s '$KIOSK_ADB_SERIAL' shell am start -a android.intent.action.VIEW -d '$KIOSK_URL' com.android.chrome; else echo 'No kiosk phone via ADB'; fi"
 fi

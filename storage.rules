@@ -1,0 +1,14 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /ejdersted/garden/events/{eventId}/{fileName} {
+      allow read: if fileName == 'snapshot.jpg' || fileName == 'metadata.json';
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

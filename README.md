@@ -7,6 +7,12 @@ The app supports runtime profiles:
 - `home`: Vesterbro kiosk with B&O, Philips Hue, Spotify, podcasts, playlists and ADB kiosk controls.
 - `garden`: kolonihave kiosk with the Android phone camera first, while home-only integrations are disabled.
 
+Garden remote access is through Tailscale. Open the independent camera dashboard
+at `https://100.111.167.54:8443/dashboard` or `https://kolonihave-pi:8443/dashboard`
+when MagicDNS resolves. Do not try to reach the garden dashboard through the
+Vesterbro LAN IPs, and do not refresh either Android kiosk just to view the
+dashboard.
+
 See:
 
 - `docs/architecture.md`

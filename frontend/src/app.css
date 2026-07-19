@@ -7,12 +7,12 @@
 
 :root {
   --black:    #000000;
-  --dark:     #595959;
-  --mid:      #888888;
-  --light:    #ebebeb;
+  --dark:     #9b9b9b;
+  --mid:      #c2c2c2;
+  --light:    #f2f2f2;
   --accent:   #0080c8;
-  --surface:  rgba(255, 255, 255, 0.03);
-  --border:   rgba(255, 255, 255, 0.07);
+  --surface:  rgba(255, 255, 255, 0.06);
+  --border:   rgba(255, 255, 255, 0.16);
 }
 
 html, body {

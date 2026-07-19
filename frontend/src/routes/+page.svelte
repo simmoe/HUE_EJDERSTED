@@ -7,10 +7,13 @@
   import FeedbackOverlay from '$lib/FeedbackOverlay.svelte';
   import CameraCard from '$lib/CameraCard.svelte';
   import { showFeedback } from '$lib/feedback.svelte';
+  import type { AudioTargetStatus } from '$lib/ws.svelte';
   import {
     radioLibrary,
     initRadioLibrary,
     saveRadioPlaylist,
+    saveTrackToSavedSongs,
+    SAVED_SONGS_PLAYLIST_NAME,
     deleteRadioPlaylist,
     deleteRadioTrack,
     type RadioPlaylist,
@@ -23,12 +26,15 @@
     togglePlayPause,
     spotifyNextTrack,
     spotifyPreviousTrack,
-    toggleRadio,
+    togglePlaylistContext,
+    isPlaylistContextActive,
     playAlbum,
     handleVoicePayload,
     stopMusicForExternalPlayback,
     paintNpFromQueues,
     playFromCurrentIndex,
+    setPodcastTransportFromPlayer,
+    clearPodcastTransport,
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
@@ -47,23 +53,54 @@
   }
 
   // ── Auto-dim: dæmp skærmen efter 30s inaktivitet ───────────────────────────
+  const CLOCK_IDLE_DELAY_MS = 30_000;
   let dimmed = $state(false);
-  let dimTimer: ReturnType<typeof setTimeout>;
+  let idleInterval: ReturnType<typeof setInterval>;
+  let lastActivityAt = Date.now();
 
   async function setBrightness(level: number) {
     try { await fetch(`/api/brightness/${level}`, { method: 'PUT' }); } catch {}
   }
 
-  function resetDim() {
+  function lockLandscape() {
+    const orientation = screen.orientation as ScreenOrientation & {
+      lock?: (orientation: 'landscape') => Promise<void>;
+    };
+    orientation?.lock?.('landscape').catch(() => {});
+  }
+
+  function requestFullscreenAndKiosk() {
+    document.documentElement.requestFullscreen?.()
+      .then(lockLandscape)
+      .catch(lockLandscape);
+    setTimeout(lockLandscape, 250);
+    requestWakeLock();
+    if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
+  }
+
+  function resetDim(wakeKiosk = false) {
+    if (showSplash) return;
+    lastActivityAt = Date.now();
+    if (wakeKiosk && dimmed) requestFullscreenAndKiosk();
     if (dimmed) setBrightness(255);
     dimmed = false;
-    clearTimeout(dimTimer);
-    dimTimer = setTimeout(() => { dimmed = true; setBrightness(60); }, 30_000);
+  }
+
+  function noteActivity(wakeKiosk = false) {
+    resetDim(wakeKiosk);
+  }
+
+  function updateIdleState() {
+    if (showSplash || dimmed || Date.now() - lastActivityAt < CLOCK_IDLE_DELAY_MS) return;
+    dimmed = true;
+    setBrightness(60);
   }
 
   // ── Clock ──────────────────────────────────────────────────────────────────
   let clockTime = $state('');
   let clockInterval: ReturnType<typeof setInterval>;
+  let podcastPlayerInterval: ReturnType<typeof setInterval>;
+  let audioTargetInterval: ReturnType<typeof setInterval>;
 
   function updateClock() {
     const now = new Date();
@@ -74,28 +111,69 @@
   let showSplash = $state(true);
 
   function dismissSplash() {
-    document.documentElement.requestFullscreen?.().catch(() => {});
-    requestWakeLock();
-    // Trigger ADB kiosk setup (landscape, brightness, volume HUD)
-    if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
+    requestFullscreenAndKiosk();
     showSplash = false;
     resetDim();
     // Efter brugertryk: Web Playback SDK må bruge audio; Chrome bliver Connect-enhed «Ejdersted».
-    if (enabled('spotify')) void initSpotifyWebPlayer();
+    // Ikke i garden — der spiller Pi'ens librespot, ikke browseren.
+    if (enabled('spotify') && !isGarden()) void initSpotifyWebPlayer();
   }
 
   let stopPlaylistHub: (() => void) | undefined;
   let stopRadioLibrary: (() => void) | undefined;
+  let audioTargets = $state<AudioTargetStatus[]>([]);
+  let connectingAudioTarget = $state('');
+
+  async function refreshAudioTargets() {
+    if (!enabled('audio')) return;
+    try {
+      const next = await store.getAudioTargets();
+      const onlineVolumes: Record<string, number> = {};
+      for (const target of next) {
+        if (target.online && typeof target.volume === 'number') {
+          onlineVolumes[target.id] = target.volume;
+        }
+      }
+      audioTargetVolumes = onlineVolumes;
+      audioTargets = next;
+    } catch {
+      audioTargets = [];
+      audioTargetVolumes = {};
+    }
+  }
+
+  async function reconnectAudioTarget(targetId: string) {
+    if (connectingAudioTarget) return;
+    connectingAudioTarget = targetId;
+    try {
+      const result = await store.connectAudioTarget(targetId);
+      audioTargets = [
+        result,
+        ...audioTargets.filter((target) => target.id !== targetId),
+      ].sort((a, b) => Number(b.default) - Number(a.default));
+      showFeedback(result.online ? `forbundet: ${result.name}` : (result.error ?? 'kunne ikke forbinde'), {
+        kind: result.online ? 'success' : 'error',
+        duration: 6000,
+      });
+    } catch {
+      showFeedback('kunne ikke forbinde højttaler', { kind: 'error', duration: 6000 });
+    } finally {
+      connectingAudioTarget = '';
+    }
+  }
 
   onMount(() => {
     store.connect();
     updateClock();
     clockInterval = setInterval(updateClock, 1000);
+    idleInterval = setInterval(updateIdleState, 500);
     void fetch('/api/config')
       .then((r) => r.json())
       .then((cfg) => {
         store.config = cfg;
-        if (enabled('spotify')) void initSpotifyWebPlayer();
+        // Garden routes Spotify through the on-Pi librespot device, so the kiosk
+        // must NOT become a Web Playback (Connect) endpoint itself.
+        if (enabled('spotify') && !isGarden()) void initSpotifyWebPlayer();
         if (enabled('spotify')) {
           void initPlaylistHub().then((stop) => {
             stopPlaylistHub = stop;
@@ -106,7 +184,21 @@
             stopRadioLibrary = stop;
           });
         }
-        if (enabled('podcasts')) void loadPodcasts();
+        void refreshAudioTargets();
+        if (enabled('audio')) {
+          audioTargetInterval = setInterval(() => {
+            void refreshAudioTargets();
+          }, 10_000);
+        }
+        if (enabled('podcasts')) {
+          void loadPodcasts();
+          void refreshPodcastPlayer(false);
+          podcastPlayerInterval = setInterval(() => {
+            if (playlist.activeTransport === 'podcast' || activePodcastPlayer.active) {
+              void refreshPodcastPlayer();
+            }
+          }, 1500);
+        }
       })
       .catch(() => {
         if (enabled('spotify')) void initSpotifyWebPlayer();
@@ -119,13 +211,32 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         requestWakeLock();
-        if (enabled('spotify')) void initSpotifyWebPlayer();
+        lockLandscape();
+        if (enabled('spotify') && !isGarden()) void initSpotifyWebPlayer();
       }
     });
-    // Only reset dim on actual screen touches — NOT keydown (volume button is held by case)
-    document.addEventListener('pointerdown', () => { if (!showSplash) resetDim(); }, { passive: true });
+    const onDirectActivity = () => noteActivity(true);
+    const onContinuousActivity = () => noteActivity(false);
+    // Keep auto-dim tied to real UI activity. Avoid keydown: the case can hold volume buttons.
+    document.addEventListener('pointerdown', onDirectActivity, { passive: true });
+    document.addEventListener('pointermove', onContinuousActivity, { passive: true });
+    document.addEventListener('click', onDirectActivity, { passive: true });
+    document.addEventListener('input', onContinuousActivity, { passive: true });
+    document.addEventListener('change', onContinuousActivity, { passive: true });
+    document.addEventListener('focusin', onDirectActivity, { passive: true });
+    document.addEventListener('scroll', onContinuousActivity, { passive: true, capture: true });
     return () => {
       clearInterval(clockInterval);
+      clearInterval(idleInterval);
+      clearInterval(audioTargetInterval);
+      clearInterval(podcastPlayerInterval);
+      document.removeEventListener('pointerdown', onDirectActivity);
+      document.removeEventListener('pointermove', onContinuousActivity);
+      document.removeEventListener('click', onDirectActivity);
+      document.removeEventListener('input', onContinuousActivity);
+      document.removeEventListener('change', onContinuousActivity);
+      document.removeEventListener('focusin', onDirectActivity);
+      document.removeEventListener('scroll', onContinuousActivity, { capture: true });
       stopPlaylistHub?.();
       stopRadioLibrary?.();
     };
@@ -177,7 +288,7 @@
 
   $effect(() => {
     void playlist.radioQueue;
-    void playlist.spotifyRadio;
+    void playlist.playListMode;
     radioSaveDone = false;
   });
 
@@ -212,12 +323,35 @@
     }
   }
 
-  // ── Samlet volumen: én slider styrer alle online B&O-højttalere ──────────────
+  // ── Samlet volumen ──────────────────────────────────────────────────────────
+  // Home: én slider styrer alle online B&O-højttalere.
+  // Garden: samme slider styrer den forbundne BlueALSA-output-target.
   let unifiedVolume = $state(40);
   let unifiedDragging = false;
+  let targetVolTimer: ReturnType<typeof setTimeout> | null = null;
+  let audioTargetVolumes = $state<Record<string, number>>({});
+
+  const isGarden = () => store.config.site === 'garden';
+
+  function gardenAudioTargetId(): string {
+    return store.config.audio?.defaultTarget || audioTargets[0]?.id || '';
+  }
 
   $effect(() => {
     if (unifiedDragging) return;
+    const nextTargetVolumes: Record<string, number> = {};
+    for (const target of audioTargets) {
+      if (typeof target.volume === 'number') nextTargetVolumes[target.id] = target.volume;
+    }
+    if (Object.entries(nextTargetVolumes).some(([id, volume]) => audioTargetVolumes[id] !== volume)) {
+      audioTargetVolumes = { ...audioTargetVolumes, ...nextTargetVolumes };
+    }
+    if (isGarden()) {
+      const id = gardenAudioTargetId();
+      const targetVolume = audioTargetVolumes[id] ?? audioTargets.find((t) => t.id === id)?.volume;
+      if (typeof targetVolume === 'number') unifiedVolume = targetVolume;
+      return;
+    }
     const online = store.devices
       .map((d) => store.volumes[d.id])
       .filter((v) => v?.online);
@@ -226,8 +360,39 @@
     unifiedVolume = avg;
   });
 
+  function readTargetVolume(target: AudioTargetStatus): number {
+    if (!target.online) return 0;
+    return audioTargetVolumes[target.id] ?? target.volume ?? unifiedVolume;
+  }
+
+  function writeLocalTargetVolume(targetId: string, level: number) {
+    audioTargetVolumes = { ...audioTargetVolumes, [targetId]: level };
+    audioTargets = audioTargets.map((target) =>
+      target.id === targetId ? { ...target, volume: level } : target
+    );
+  }
+
+  function queueTargetVolume(targetId: string, level: number) {
+    writeLocalTargetVolume(targetId, level);
+    if (targetVolTimer) clearTimeout(targetVolTimer);
+    targetVolTimer = setTimeout(() => {
+      targetVolTimer = null;
+      void store.setAudioTargetVolume(targetId, level).then((result) => {
+        if (result.ok && typeof result.volume === 'number') {
+          writeLocalTargetVolume(targetId, result.volume);
+          if (targetId === gardenAudioTargetId()) unifiedVolume = result.volume;
+        }
+      });
+    }, 120);
+  }
+
   function setUnifiedVolume(level: number) {
     unifiedVolume = level;
+    if (isGarden()) {
+      const id = gardenAudioTargetId();
+      if (id) queueTargetVolume(id, level);
+      return;
+    }
     for (const d of store.devices) {
       if (store.volumes[d.id]?.online) {
         store.setVolume(d.id, level);
@@ -260,7 +425,7 @@
   }
 
   let spotifySaved = $state(false);
-  let radioSaveLoading = $state(false);
+  let saveLoading = $state(false);
   let radioSaveDone = $state(false);
 
   // ── Vertical card carousel ──────────────────────────────────────────────
@@ -317,6 +482,11 @@
     if (!lydInner) return;
     registerScrollToNowPlaying(() => {
       if (!lydInner) return;
+      const lydPage = lydInner.closest('.page') as HTMLElement | null;
+      if (pagesEl && lydPage) {
+        pagesEl.scrollTo({ left: lydPage.offsetLeft, behavior: 'smooth' });
+        setTimeout(readNextPageName, 350);
+      }
       while (lydInner.firstElementChild && !lydInner.firstElementChild.classList.contains('np-card')) {
         lydInner.appendChild(lydInner.firstElementChild);
       }
@@ -324,45 +494,63 @@
     });
   });
 
-  async function checkSaved() {
-    if (!playlist.spotifyTrackUri) {
-      spotifySaved = false;
-      return;
-    }
-    try {
-      const r = await fetch(`/api/spotify/is-saved?uri=${encodeURIComponent(playlist.spotifyTrackUri)}`);
-      const data = await r.json();
-      spotifySaved = !!data.saved;
-    } catch {
-      spotifySaved = false;
-    }
+  function checkSaved() {
+    spotifySaved = isCurrentTrackSaved();
   }
 
-  async function toggleSave() {
-    if (!playlist.spotifyTrackUri) return;
-    try {
-      const r = await fetch('/api/spotify/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uri: playlist.spotifyTrackUri }),
-      });
-      const data = await r.json();
-      if (data.ok) spotifySaved = !!data.saved;
-    } catch {}
+  function currentDisplayedTrack() {
+    if (!playlist.spotifyTrackUri?.startsWith('spotify:track:')) return null;
+    return {
+      uri: playlist.spotifyTrackUri,
+      name: playlist.spotifyTitle,
+      artist: playlist.spotifyArtist,
+    };
   }
 
-  async function saveCurrentRadio() {
-    if (radioSaveLoading || radioSaveDone || !playlist.radioQueue.length) return;
-    const seed = playlist.radioQueue[0];
-    radioSaveLoading = true;
+  function isCurrentTrackSaved() {
+    const uri = playlist.spotifyTrackUri;
+    if (!uri) return false;
+    return radioLibrary.playlists.some((p) => p.name === SAVED_SONGS_PLAYLIST_NAME && p.tracks.some((t) => t.uri === uri));
+  }
+
+  // A radio playlist is saveable whenever we're in the radio context with a
+  // multi-track queue — independent of the transient spotifyRadio *playback*
+  // flag, which finishActiveQueuePlayback() clears when the clock elapses.
+  function isRadioPlaylistSaveable() {
+    return playlist.playListMode === 'radio' && playlist.radioQueue.length > 1;
+  }
+
+  function currentSaveLabel() {
+    if (isRadioPlaylistSaveable()) return radioSaveDone ? 'PLAYLISTE GEMT' : 'GEM PLAYLISTE';
+    if (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive) return 'PLAYLISTE GEMT';
+    return isCurrentTrackSaved() ? 'GEMT' : 'GEM';
+  }
+
+  async function saveCurrentSelection() {
+    if (saveLoading || !playlist.spotifyTrackUri) return;
+    saveLoading = true;
     try {
-      const saved = await saveRadioPlaylist(seed, playlist.radioQueue);
-      radioSaveDone = true;
-      showFeedback(`Gemt: ${saved.name}`, { kind: 'success' });
+      if (isRadioPlaylistSaveable()) {
+        const seed = playlist.radioQueue[0];
+        const saved = await saveRadioPlaylist(seed, playlist.radioQueue);
+        radioSaveDone = true;
+        showFeedback(`Playliste gemt som "${saved.name}" (${saved.tracks.length} sange)`, { kind: 'success', duration: 7000 });
+        return;
+      }
+      const track = currentDisplayedTrack();
+      if (!track) return;
+      const result = await saveTrackToSavedSongs(track);
+      spotifySaved = true;
+      showFeedback(
+        result.added
+          ? `"${track.name}" er gemt i "${SAVED_SONGS_PLAYLIST_NAME}"`
+          : `"${track.name}" ligger allerede i "${SAVED_SONGS_PLAYLIST_NAME}"`,
+        { kind: 'success', duration: 7000 },
+      );
     } catch (e) {
       showFeedback((e as Error).message || 'Kunne ikke gemme', { kind: 'error' });
     } finally {
-      radioSaveLoading = false;
+      saveLoading = false;
     }
   }
 
@@ -402,9 +590,44 @@
     duration_ms: number;
   };
 
+  type PodcastPlayerState = {
+    active: boolean;
+    source: string;
+    showId: string;
+    showTitle: string;
+    episodeId: string;
+    episodeUri: string;
+    episodeTitle: string;
+    episodeIndex: number;
+    queue: Episode[];
+    playing: boolean;
+    positionMs: number;
+    durationMs: number;
+    updatedAt: number;
+    error?: string;
+  };
+
+  const emptyPodcastPlayer: PodcastPlayerState = {
+    active: false,
+    source: '',
+    showId: '',
+    showTitle: '',
+    episodeId: '',
+    episodeUri: '',
+    episodeTitle: '',
+    episodeIndex: 0,
+    queue: [],
+    playing: false,
+    positionMs: 0,
+    durationMs: 0,
+    updatedAt: 0,
+  };
+
   let podcasts = $state<Podcast[]>([]);
   let podcastsLoading = $state(true);
   let podcastsError = $state('');
+  let activePodcastPlayer = $state<PodcastPlayerState>({ ...emptyPodcastPlayer });
+  let seekingPodcast = $state(false);
   let activePodcastId = $state('');
   let activeEpisodeId = $state('');
   let loadingPodcastId = $state('');
@@ -412,6 +635,7 @@
   let podcastInner = $state<HTMLDivElement>();
   let nextPodcastCard = $state('');
   let prevPodcastCard = $state('');
+  let showPodcastQueue = $state(false);
 
   function updatePodcastScrollLabels() {
     if (!podcastInner) return;
@@ -441,6 +665,27 @@
     setTimeout(updatePodcastScrollLabels, 350);
   }
 
+  function scrollToPodcastNow() {
+    if (!podcastInner) return;
+    const row = podcastInner.querySelector<HTMLElement>('[data-podcast-current="true"]');
+    row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  function openPodcastQueue() {
+    if (!activePodcastPlayer.active && playlist.podcastQueue.length === 0) return;
+    closeDrill();
+    showPodcastQueue = true;
+    requestAnimationFrame(() => {
+      podcastInner?.scrollTo({ top: 0, behavior: 'smooth' });
+      updatePodcastScrollLabels();
+    });
+  }
+
+  function closePodcastQueue() {
+    showPodcastQueue = false;
+    requestAnimationFrame(updatePodcastScrollLabels);
+  }
+
   // ── Drill-in state (per show, holdt indenfor podcast-kolonnen) ────────────
   let drilledShow = $state<Podcast | null>(null);
   let drilledEpisodes = $state<Episode[]>([]);
@@ -448,6 +693,90 @@
   let drilledHasMore = $state(false);
   let drilledLoadingMore = $state(false);
   const EPISODE_PAGE_SIZE = 20;
+
+  function normalizePodcastPlayer(player: Partial<PodcastPlayerState> | undefined): PodcastPlayerState {
+    if (!player) return { ...emptyPodcastPlayer };
+    const queue = Array.isArray(player.queue) ? player.queue : [];
+    return {
+      ...emptyPodcastPlayer,
+      ...player,
+      active: !!player.active,
+      queue: queue.map((ep) => ({
+        id: String(ep.id ?? ''),
+        uri: String(ep.uri ?? ''),
+        name: String(ep.name ?? ''),
+        release_date: String(ep.release_date ?? ''),
+        duration_ms: Number(ep.duration_ms ?? 0),
+      })),
+      episodeIndex: Number(player.episodeIndex ?? 0),
+      positionMs: Number(player.positionMs ?? 0),
+      durationMs: Number(player.durationMs ?? 0),
+      updatedAt: Number(player.updatedAt ?? Date.now()),
+      playing: !!player.playing,
+    };
+  }
+
+  function adoptPodcastPlayer(player: Partial<PodcastPlayerState> | undefined, push = true) {
+    const next = normalizePodcastPlayer(player);
+    activePodcastPlayer = next;
+    activePodcastId = next.active ? next.showId : '';
+    activeEpisodeId = next.active ? next.episodeId : '';
+    if (next.active) {
+      setPodcastTransportFromPlayer(next as unknown as Record<string, unknown>, push);
+    } else {
+      clearPodcastTransport(push);
+    }
+  }
+
+  async function refreshPodcastPlayer(push = true) {
+    if (!enabled('podcasts')) return;
+    try {
+      const r = await fetch('/api/podcasts/player');
+      const data = await r.json();
+      if (seekingPodcast) return;
+      if (data?.ok && data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>, push);
+    } catch {
+      /* backend kan være midt i restart */
+    }
+  }
+
+  async function postPodcastControl(path: string, body?: Record<string, unknown>) {
+    const r = await fetch(`/api/podcasts/player/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await r.json();
+    if (data?.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
+    if (!data?.ok) showFeedback((data?.error as string) || 'Podcast-kontrol fejlede', { kind: 'error' });
+    return !!data?.ok;
+  }
+
+  async function togglePodcastPlayPause() {
+    if (!activePodcastPlayer.active) return;
+    await postPodcastControl(activePodcastPlayer.playing ? 'pause' : 'resume');
+  }
+
+  async function clearPodcastQueue() {
+    await postPodcastControl('clear');
+  }
+
+  async function seekPodcast(offsetSeconds: number) {
+    await postPodcastControl('seek', { offsetSeconds });
+  }
+
+  async function seekPodcastTo(positionMs: number) {
+    seekingPodcast = false;
+    await postPodcastControl('seek', { positionSeconds: Math.max(0, positionMs) / 1000 });
+  }
+
+  async function podcastNext() {
+    await postPodcastControl('next');
+  }
+
+  async function podcastPrevious() {
+    await postPodcastControl('previous');
+  }
 
   async function loadPodcasts(refresh = false) {
     podcastsLoading = podcasts.length === 0;
@@ -467,12 +796,7 @@
   async function playPodcast(showId: string) {
     if (loadingPodcastId) return;
     if (activePodcastId === showId) {
-      try {
-        // Generic pause — backend ved selv om det er Spotify- eller DLNA-baseret
-        await fetch('/api/podcasts/pause', { method: 'POST' });
-      } catch {}
-      activePodcastId = '';
-      activeEpisodeId = '';
+      await togglePodcastPlayPause();
       return;
     }
     loadingPodcastId = showId;
@@ -485,8 +809,12 @@
       });
       const data = await r.json();
       if (data.ok) {
-        activePodcastId = showId;
-        activeEpisodeId = (data.episode?.id as string) || '';
+        if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
+        else {
+          activePodcastId = showId;
+          activeEpisodeId = (data.episode?.id as string) || '';
+        }
+        openPodcastQueue();
       } else {
         showFeedback((data.detail as string) || 'Afspilning fejlede', { kind: 'error' });
       }
@@ -540,11 +868,7 @@
   async function playEpisode(ep: Episode) {
     if (loadingEpisodeId) return;
     if (activeEpisodeId === ep.id) {
-      try {
-        await fetch('/api/podcasts/pause', { method: 'POST' });
-      } catch {}
-      activePodcastId = '';
-      activeEpisodeId = '';
+      await togglePodcastPlayPause();
       return;
     }
     loadingEpisodeId = ep.id;
@@ -557,8 +881,12 @@
       });
       const data = await r.json();
       if (data.ok) {
-        activeEpisodeId = ep.id;
-        activePodcastId = drilledShow?.show_id ?? '';
+        if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
+        else {
+          activeEpisodeId = ep.id;
+          activePodcastId = drilledShow?.show_id ?? '';
+        }
+        openPodcastQueue();
       } else {
         showFeedback((data.detail as string) || 'Afspilning fejlede', { kind: 'error' });
       }
@@ -587,6 +915,22 @@
     const h = Math.floor(totalMin / 60);
     const m = totalMin % 60;
     return m === 0 ? `${h} t` : `${h} t ${m} min`;
+  }
+
+  function formatProgress(ms: number): string {
+    const total = Math.max(0, Math.floor((ms || 0) / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function isPodcastTransport(): boolean {
+    // The physical backend is authoritative. Firestore can briefly retain a
+    // completed podcast transport and must not turn the music Play button into
+    // a no-op after the backend has marked that podcast inactive.
+    return activePodcastPlayer.active;
   }
 
   // ── Cached radio playlists ───────────────────────────────────────────────
@@ -648,10 +992,14 @@
   async function playSpotifyPlaylist(p: RadioPlaylist) {
     if (loadingPlaylistId) return;
     loadingPlaylistId = p.id;
-    stopMusicForExternalPlayback();
-    startCachedPlaylist(p);
-    activePlaylistId = p.id;
-    loadingPlaylistId = '';
+    try {
+      stopMusicForExternalPlayback();
+      startCachedPlaylist(p);
+      activePlaylistId = p.id;
+      await playFromCurrentIndex();
+    } finally {
+      loadingPlaylistId = '';
+    }
   }
 
   function openPlaylistDrill(p: RadioPlaylist) {
@@ -709,23 +1057,30 @@
   async function playTrackFromDrilledPlaylist(track: PlaylistTrack, index: number) {
     if (!drilledPlaylist || loadingTrackIndex >= 0 || deletingTrackIndex >= 0) return;
     loadingTrackIndex = index;
-    if (activePlaylistId === drilledPlaylist.id && playlist.savedPlaylistQueue.length > 0) {
-      playlist.savedPlaylistIndex = index;
-      paintNpFromQueues();
+    try {
+      if (activePlaylistId === drilledPlaylist.id && playlist.savedPlaylistQueue.length > 0) {
+        playlist.savedPlaylistIndex = index;
+        paintNpFromQueues();
+      } else {
+        stopMusicForExternalPlayback();
+        startCachedPlaylist(drilledPlaylist);
+        activePlaylistId = drilledPlaylist.id;
+        playlist.savedPlaylistIndex = index;
+        paintNpFromQueues();
+      }
       await playFromCurrentIndex();
+    } finally {
       loadingTrackIndex = -1;
-      return;
     }
-    stopMusicForExternalPlayback();
-    startCachedPlaylist(drilledPlaylist);
-    activePlaylistId = drilledPlaylist.id;
-    playlist.savedPlaylistIndex = index;
-    paintNpFromQueues();
-    await playFromCurrentIndex();
-    loadingTrackIndex = -1;
   }
 
 </script>
+
+<svelte:head>
+  <title>{isGarden() ? 'Haven · Ejdersted' : 'Ejdersted · HUE'}</title>
+  <meta name="application-name" content={isGarden() ? 'Haven · Ejdersted' : 'Ejdersted · HUE'} />
+  <meta name="apple-mobile-web-app-title" content={isGarden() ? 'Haven' : 'Ejdersted'} />
+</svelte:head>
 
 <main>
   <FeedbackOverlay />
@@ -783,6 +1138,47 @@
       </section>
     {/if}
 
+    <!-- PAGE · SOL (garden solar charge relay) ──────────────────────────── -->
+    {#if enabled('solar')}
+    <section class="page">
+      <div class="col-header">SOL</div>
+      <div class="scroll-inner">
+        <Card
+          name="Solcelle"
+          status={store.solar.mode === 'on' ? 'Manuel · tændt' : store.solar.mode === 'off' ? 'Manuel · slukket' : 'Automatisk'}
+          online={!!store.solar.relayOn}
+        >
+          <div class="solar">
+            <div class="solar-state" class:on={store.solar.relayOn}>
+              <span class="solar-state-dot"></span>
+              <span class="solar-state-label">{store.solar.relayOn ? 'Solcelle tilsluttet' : 'Solcelle afbrudt'}</span>
+            </div>
+
+            <div class="solar-schedule">
+              <div class="solar-sched-row">
+                <span class="solar-sched-label">Tænder</span>
+                <span class="solar-sched-time">{store.solar.onTime ?? '–'}</span>
+              </div>
+              <div class="solar-sched-row">
+                <span class="solar-sched-label">Slukker</span>
+                <span class="solar-sched-time">{store.solar.offTime ?? '–'}</span>
+              </div>
+              <div class="solar-sun">
+                sol op {store.solar.sunrise ?? '–'} · sol ned {store.solar.sunset ?? '–'}
+              </div>
+            </div>
+
+            <div class="solar-modes" role="group" aria-label="Solcelle-styring">
+              <button type="button" class="action-btn" class:active={store.solar.mode === 'on'} onclick={() => store.setSolarMode('on')}>tænd</button>
+              <button type="button" class="action-btn" class:active={store.solar.mode === 'auto'} onclick={() => store.setSolarMode('auto')}>auto</button>
+              <button type="button" class="action-btn" class:active={store.solar.mode === 'off'} onclick={() => store.setSolarMode('off')}>sluk</button>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </section>
+    {/if}
+
     <!-- PAGE 0 · LYD ─────────────────────────────────────────────────────── -->
     {#if enabled('audio') || enabled('spotify')}
     <section class="page">
@@ -793,52 +1189,64 @@
         {#if enabled('spotify')}
         <div class="np-card" data-name="Afspiller">
           <div class="np-info">
-            {#if playlist.spotifyTitle}
+            {#if isPodcastTransport()}
+              <span class="np-card-title">{activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast'}</span>
+              <span class="np-card-artist">{activePodcastPlayer.showTitle || playlist.podcastShowTitle || 'Podcast'}</span>
+              <div class="np-track-nav" class:np-track-nav--single={activePodcastPlayer.queue.length <= 1} role="group" aria-label="Podcast">
+                {#if activePodcastPlayer.queue.length > 1}
+                  <button type="button" class="np-track-nav-btn" onclick={podcastPrevious} aria-label="Forrige episode">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="15 18 9 12 15 6" />
+                    </svg>
+                  </button>
+                {/if}
+                <button type="button" class="np-save-btn" onclick={() => scrollToPodcastNow()} aria-label="Åbn aktiv podcast">
+                  episode
+                </button>
+                {#if activePodcastPlayer.queue.length > 1}
+                  <button type="button" class="np-track-nav-btn" onclick={podcastNext} aria-label="Næste episode">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </button>
+                {/if}
+              </div>
+              <div class="np-podcast-progress">
+                {formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}
+                {#if activePodcastPlayer.durationMs || playlist.podcastDurationMs}
+                  / {formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
+                {/if}
+              </div>
+            {:else if playlist.spotifyTitle}
               <span class="np-card-title">{playlist.spotifyTitle}</span>
               {#if playlist.spotifyArtist}<span class="np-card-artist">{playlist.spotifyArtist}</span>{/if}
-              {#if activeQueue().length > 1}
-                <div class="np-track-nav" role="group" aria-label="Sang">
+              <div class="np-track-nav" class:np-track-nav--single={activeQueue().length <= 1} role="group" aria-label="Sang">
+                {#if activeQueue().length > 1}
                   <button type="button" class="np-track-nav-btn" onclick={spotifyPreviousTrack} aria-label="Forrige i køen">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <polyline points="15 18 9 12 15 6" />
                     </svg>
                   </button>
-                  <button
-                    type="button"
-                    class="heart-btn"
-                    class:saved={spotifySaved}
-                    onclick={toggleSave}
-                    disabled={!playlist.spotifyTrackUri}
-                    aria-label={spotifySaved ? 'Fjern fra liked' : 'Gem sang'}
-                  >
-                    <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" fill={spotifySaved ? 'currentColor' : 'none'}>
-                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-                    </svg>
-                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="np-save-btn"
+                  class:saved={spotifySaved || radioSaveDone}
+                  class:loading={saveLoading}
+                  onclick={saveCurrentSelection}
+                  disabled={saveLoading || !playlist.spotifyTrackUri || (isRadioPlaylistSaveable() && radioSaveDone)}
+                  aria-label={isRadioPlaylistSaveable() ? 'Gem radio som playliste' : 'Gem sang'}
+                >
+                  {saveLoading ? '· · ·' : currentSaveLabel()}
+                </button>
+                {#if activeQueue().length > 1}
                   <button type="button" class="np-track-nav-btn" onclick={spotifyNextTrack} aria-label="Næste i køen">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <polyline points="9 18 15 12 9 6" />
                     </svg>
                   </button>
-                </div>
-              {:else}
-                <div class="np-track-nav np-track-nav--single" aria-hidden="true">
-                  <span class="np-track-nav-spacer"></span>
-                  <button
-                    type="button"
-                    class="heart-btn"
-                    class:saved={spotifySaved}
-                    onclick={toggleSave}
-                    disabled={!playlist.spotifyTrackUri}
-                    aria-label={spotifySaved ? 'Fjern fra liked' : 'Gem sang'}
-                  >
-                    <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" fill={spotifySaved ? 'currentColor' : 'none'}>
-                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-                    </svg>
-                  </button>
-                  <span class="np-track-nav-spacer"></span>
-                </div>
-              {/if}
+                {/if}
+              </div>
               {#if playlist.spotifyNextTitle}
                 <div class="np-next-streamer">
                   <span class="np-next-title">{playlist.spotifyNextTitle}</span>
@@ -850,29 +1258,8 @@
               <span class="np-card-artist">Brug mikrofonen nedenfor for at tilføje til køen</span>
             {/if}
           </div>
-          <div class="action-row">
-            <button type="button" class="action-btn" onclick={togglePlayPause}>
-              {playlist.spotifyPlaying ? 'pause' : 'play'}
-            </button>
-            <button type="button" class="action-btn" class:active={playlist.spotifyRadio} class:loading={playlist.spotifyRadioLoading} onclick={toggleRadio} disabled={playlist.spotifyRadioLoading}>
-              {playlist.spotifyRadioLoading ? '· · ·' : 'radio'}
-            </button>
-            <button type="button" class="action-btn" class:active={playlist.spotifyAlbumActive} class:loading={playlist.spotifyAlbumLoading} onclick={playAlbum} disabled={playlist.spotifyAlbumLoading}>
-              {playlist.spotifyAlbumLoading ? '· · ·' : 'album'}
-            </button>
-          </div>
-          <div class="radio-actions">
-            <button
-              type="button"
-              class="action-btn"
-              class:loading={radioSaveLoading}
-              onclick={saveCurrentRadio}
-              disabled={radioSaveLoading || radioSaveDone || !playlist.spotifyRadio || playlist.radioQueue.length <= 1}
-            >
-              {radioSaveLoading ? '· · ·' : radioSaveDone ? 'playliste gemt' : 'gem'}
-            </button>
-          </div>
-          <div class="unified-vol">
+          <div class="unified-vol unified-vol--horizontal np-volume" aria-label="Afspiller-volumen">
+            <span class="unified-vol-label">vol</span>
             <input
               type="range"
               min="0"
@@ -884,39 +1271,143 @@
               onchange={(e) => { unifiedDragging = false; setUnifiedVolume(+(e.currentTarget as HTMLInputElement).value); }}
               onpointerup={() => { unifiedDragging = false; }}
               onpointercancel={() => { unifiedDragging = false; }}
-              aria-label="Samlet volumen for alle højttalere"
+              aria-label="Afspiller-volumen"
             />
             <span class="unified-vol-value">{unifiedVolume}</span>
+          </div>
+          <div class="action-row np-actions">
+            <button type="button" class="action-btn" onclick={isPodcastTransport() ? togglePodcastPlayPause : togglePlayPause}>
+              {isPodcastTransport() ? (activePodcastPlayer.playing ? 'pause' : 'play') : (playlist.spotifyPlaying ? 'pause' : 'play')}
+            </button>
+            {#if isPodcastTransport()}
+              <button type="button" class="action-btn" onclick={() => seekPodcast(-30)}>-30s</button>
+              <button type="button" class="action-btn" onclick={() => seekPodcast(30)}>+30s</button>
+            {:else}
+              <button type="button" class="action-btn" class:active={isPlaylistContextActive()} class:loading={playlist.spotifyRadioLoading} onclick={togglePlaylistContext} disabled={playlist.spotifyRadioLoading}>
+                {playlist.spotifyRadioLoading ? '· · ·' : 'playliste'}
+              </button>
+              <button type="button" class="action-btn" class:active={playlist.spotifyAlbumActive} class:loading={playlist.spotifyAlbumLoading} onclick={playAlbum} disabled={playlist.spotifyAlbumLoading}>
+                {playlist.spotifyAlbumLoading ? '· · ·' : 'album'}
+              </button>
+            {/if}
           </div>
         </div>
         {/if}
 
         {#if enabled('audio')}
-        {#each store.devices as device (device.id)}
-          {@const vol = store.volumes[device.id] ?? { level: 0, online: false }}
-          <Card name={device.name} status={vol.online ? 'online' : 'offline'} online={vol.online} pulse={pulsingDevices[device.id]}>
-            <div class="knob-wrap">
-              <VolumeKnob
-                value={muteState[device.id]?.muted ? 0 : vol.level}
-                muted={muteState[device.id]?.muted ?? false}
-                disabled={!vol.online || (muteState[device.id]?.muted ?? false)}
-                onchange={(v) => store.setVolume(device.id, v)}
-                onmute={() => toggleMute(device.id, vol.level)}
-              />
-            </div>
-            {#if store.nowPlaying[device.id]?.name}
-              {@const np = store.nowPlaying[device.id]}
-              <div class="now-playing">
-                <span class="np-title">{np.name}</span>
-                {#if np.artist}<span class="np-artist">{np.artist}</span>{/if}
+          {#if !isGarden() && store.devices.length > 0}
+            <Card
+              name="Højttalere"
+              status={`${store.devices.filter((d) => store.volumes[d.id]?.online).length}/${store.devices.length} online`}
+              online={store.devices.some((d) => store.volumes[d.id]?.online)}
+              pulse={store.devices.some((d) => pulsingDevices[d.id])}
+            >
+              <div class="speaker-mixer">
+                {#each store.devices as device (device.id)}
+                  {@const vol = store.volumes[device.id] ?? { level: 0, online: false }}
+                  {@const muted = muteState[device.id]?.muted ?? false}
+                  <div class="speaker-channel" class:offline={!vol.online} class:muted>
+                    <div class="speaker-fader">
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={muted ? 0 : vol.level}
+                        disabled={!vol.online}
+                        aria-label={`Volumen ${device.name}`}
+                        oninput={(e) => {
+                          const level = +(e.currentTarget as HTMLInputElement).value;
+                          if (muted && level > 0) muteState[device.id] = { muted: false, prev: muteState[device.id]?.prev ?? vol.level };
+                          store.setVolume(device.id, level);
+                        }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      class="speaker-label"
+                      onclick={() => toggleMute(device.id, vol.level)}
+                      disabled={!vol.online}
+                      aria-label={muted ? `Slå ${device.name} til` : `Mute ${device.name}`}
+                    >
+                      <span class="speaker-name">{device.name}</span>
+                      <span class="speaker-level">{muted ? 'muted' : `${vol.level}`}</span>
+                    </button>
+                    {#if store.nowPlaying[device.id]?.name}
+                      {@const np = store.nowPlaying[device.id]}
+                      <div class="speaker-now-playing">
+                        <span>{np.name}</span>
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
               </div>
-            {/if}
-          </Card>
-        {/each}
+            </Card>
+          {/if}
 
-        {#if store.devices.length === 0 && store.connected}
-          <p class="empty">Ingen højttalere fundet.</p>
-        {/if}
+          {#if !isGarden() && store.devices.length === 0 && store.connected}
+            <p class="empty">Ingen højttalere fundet.</p>
+          {/if}
+
+          {#if audioTargets.length > 0}
+            <Card
+              name="Audio output"
+              status={`${audioTargets.filter((target) => target.online).length}/${audioTargets.length} online`}
+              online={audioTargets.some((target) => target.online)}
+            >
+              <div class="audio-targets">
+                {#each audioTargets as target (target.id)}
+                  <div class="audio-target" class:offline={!target.online}>
+                    <div class="audio-target-row">
+                      <div class="audio-target-main">
+                        <span class="audio-target-name">{target.name}</span>
+                        <span class="audio-target-status">
+                          {target.online ? 'forbundet' : target.connected ? 'tilsluttet uden lydprofil' : 'ikke forbundet'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        class="action-btn audio-target-connect"
+                        class:loading={connectingAudioTarget === target.id}
+                        disabled={!!connectingAudioTarget}
+                        onclick={() => reconnectAudioTarget(target.id)}
+                      >
+                        {connectingAudioTarget === target.id ? 'forbinder' : 'forbind igen'}
+                      </button>
+                    </div>
+                    <div class="unified-vol unified-vol--horizontal audio-target-vol">
+                      <span class="unified-vol-label">vol</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        class="unified-vol-slider"
+                        value={readTargetVolume(target)}
+                        disabled={!target.online}
+                        oninput={(e) => {
+                          unifiedDragging = true;
+                          const level = +(e.currentTarget as HTMLInputElement).value;
+                          unifiedVolume = level;
+                          queueTargetVolume(target.id, level);
+                        }}
+                        onchange={(e) => {
+                          unifiedDragging = false;
+                          const level = +(e.currentTarget as HTMLInputElement).value;
+                          unifiedVolume = level;
+                          queueTargetVolume(target.id, level);
+                        }}
+                        onpointerup={() => { unifiedDragging = false; }}
+                        onpointercancel={() => { unifiedDragging = false; }}
+                        aria-label={`Volumen ${target.name}`}
+                      />
+                      <span class="unified-vol-value">{readTargetVolume(target)}</span>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </Card>
+          {/if}
         {/if}
 
         <!-- Spotify Voice -->
@@ -924,13 +1415,13 @@
         <Card
           name="Musik"
           status={playlist.spotifyRadioLoading
-            ? 'Opbygger radio…'
+            ? 'Opbygger playliste…'
             : playlist.spotifyAlbumLoading
               ? 'Henter album…'
               : playlist.playListMode === 'playlist'
                 ? (playlist.savedPlaylistTitle || 'Playliste')
                 : playlist.playListMode === 'radio'
-                  ? 'Song Radio (lokal kø)'
+                  ? 'Playliste (lokal kø)'
                   : playlist.playListMode === 'album'
                     ? 'Album (lokal kø)'
                     : 'Mikrofon-kø'}
@@ -1163,7 +1654,16 @@
     <!-- PAGE 3 · PODCAST ──────────────────────────────────────────────────── -->
     {#if enabled('podcasts')}
     <section class="page">
-      {#if drilledShow}
+      {#if showPodcastQueue}
+        <div class="col-header drill-header">
+          <button type="button" class="drill-back" onclick={closePodcastQueue} aria-label="Tilbage til podcast-liste">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+            <span class="drill-back-label">Afspiller nu</span>
+          </button>
+        </div>
+      {:else if drilledShow}
         <div class="col-header drill-header">
           <button type="button" class="drill-back" onclick={closeDrill} aria-label="Tilbage til podcast-liste">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -1177,7 +1677,52 @@
       {/if}
 
       <div class="scroll-inner list-scroll" bind:this={podcastInner} onscroll={updatePodcastScrollLabels}>
-        {#if drilledShow}
+        {#if showPodcastQueue}
+          <div class="podcast-queue-view" data-podcast-current="true">
+            <div class="podcast-queue-now">
+              <span class="podcast-show">Spiller nu</span>
+              <span class="podcast-episode">{activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast'}</span>
+              <span class="podcast-meta">
+                {activePodcastPlayer.showTitle || playlist.podcastShowTitle || 'Podcast'}
+                · {formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}
+                {#if activePodcastPlayer.durationMs || playlist.podcastDurationMs}
+                  / {formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
+                {/if}
+              </span>
+            </div>
+            <div class="podcast-player-panel podcast-player-panel--queue">
+              <div class="podcast-progress-row">
+                <span>{formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}</span>
+                <input
+                  type="range"
+                  min="0"
+                  max={Math.max(1, activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
+                  step="1000"
+                  value={activePodcastPlayer.positionMs || playlist.podcastPositionMs}
+                  oninput={(e) => {
+                    seekingPodcast = true;
+                    activePodcastPlayer.positionMs = +(e.currentTarget as HTMLInputElement).value;
+                  }}
+                  onchange={(e) => seekPodcastTo(+(e.currentTarget as HTMLInputElement).value)}
+                  aria-label="Spol i podcast-afsnit"
+                />
+                <span>{formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}</span>
+              </div>
+              <div class="podcast-controls">
+                <button type="button" class="action-btn" onclick={() => seekPodcast(-30)}>-30s</button>
+                <button type="button" class="action-btn" onclick={togglePodcastPlayPause}>
+                  {activePodcastPlayer.playing || playlist.podcastPlaying ? 'pause' : 'play'}
+                </button>
+                <button type="button" class="action-btn" onclick={() => seekPodcast(30)}>+30s</button>
+              </div>
+              <div class="podcast-queue-actions podcast-queue-actions--detail">
+                <button type="button" class="action-btn" onclick={() => void refreshPodcastPlayer()}>fortsæt</button>
+                <button type="button" class="action-btn" onclick={clearPodcastQueue}>ryd kø</button>
+              </div>
+            </div>
+
+          </div>
+        {:else if drilledShow}
           {#if drilledLoading && drilledEpisodes.length === 0}
             <p class="empty">Henter afsnit…</p>
           {:else if drilledEpisodes.length === 0}
@@ -1223,6 +1768,32 @@
         {:else if podcasts.length === 0}
           <p class="empty">Ingen podcasts.</p>
         {:else}
+          {#if activePodcastPlayer.active}
+            <div class="podcast-card podcast-now" data-name="Afspiller nu" data-podcast-current="true">
+              <button type="button" class="podcast-card-main" onclick={openPodcastQueue}>
+                <div class="podcast-cover podcast-cover--now"></div>
+                <div class="podcast-info">
+                  <span class="podcast-show">Afspiller nu</span>
+                  <span class="podcast-episode">{activePodcastPlayer.episodeTitle}</span>
+                  <span class="podcast-meta">
+                    Spiller nu · {activePodcastPlayer.showTitle}
+                    · {formatProgress(activePodcastPlayer.positionMs)}
+                    {#if activePodcastPlayer.durationMs}/ {formatProgress(activePodcastPlayer.durationMs)}{/if}
+                  </span>
+                </div>
+              </button>
+              <button
+                type="button"
+                class="podcast-drill"
+                onclick={openPodcastQueue}
+                aria-label="Åbn afspiller nu"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9 6 15 12 9 18" />
+                </svg>
+              </button>
+            </div>
+          {/if}
           {#each podcasts as p (p.show_id)}
             <div
               class="podcast-card"
@@ -1319,12 +1890,12 @@
     font-weight: 300;
     letter-spacing: 0.35em;
     text-transform: uppercase;
-    color: #595959;
+    color: #9b9b9b;
     transition: color 0.3s;
   }
 
   .splash:active .splash-title {
-    color: #ebebeb;
+    color: #f2f2f2;
   }
 
   /* ── Dim overlay (kiosk sleep) ────────────────────────────────────────────── */
@@ -1386,7 +1957,7 @@
     font-size: 1.1rem;
     font-weight: 300;
     letter-spacing: 0.06em;
-    color: #ebebeb;
+    color: #f2f2f2;
     opacity: 0;
     animation: text-fade 5s ease 0.4s both;
   }
@@ -1395,7 +1966,7 @@
     font-size: 0.7rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #595959;
+    color: #9b9b9b;
     opacity: 0;
     animation: text-fade 4.5s ease 0.8s both;
   }
@@ -1434,7 +2005,7 @@
     font-weight: 400;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: #595959;
+    color: #9b9b9b;
     background: #000;
   }
 
@@ -1458,7 +2029,7 @@
     position: relative;
   }
   .page--primary-camera {
-    flex-basis: 100%;
+    flex-basis: 50%;
   }
 
   /* ── Advance arrow ────────────────────────────────────────────────────────── */
@@ -1476,10 +2047,10 @@
     border: none;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    color: #595959;
+    color: #9b9b9b;
     transition: color 0.2s;
   }
-  .advance-arrow:active { color: #ebebeb; }
+  .advance-arrow:active { color: #f2f2f2; }
   .advance-arrow svg {
     width: 18px;
     height: 18px;
@@ -1523,7 +2094,7 @@
     border: none;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    color: #595959;
+    color: #9b9b9b;
     transition: color 0.2s;
     pointer-events: auto;
   }
@@ -1531,7 +2102,7 @@
      men har ingen effekt længere — pilen ligger altid 100% bredt indenfor sin page. */
   .card-arrow--lyd,
   .card-arrow--lys { }
-  .card-arrow:active { color: #ebebeb; }
+  .card-arrow:active { color: #f2f2f2; }
   .card-arrow svg {
     width: 18px;
     height: 18px;
@@ -1562,6 +2133,220 @@
     align-self: center;
   }
 
+  .speaker-mixer {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: stretch;
+    gap: 18px;
+    width: 100%;
+    min-height: 220px;
+    padding: 8px 6px 2px;
+  }
+
+  .speaker-channel {
+    min-width: 74px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    color: #c2c2c2;
+  }
+
+  .speaker-channel.offline {
+    opacity: 0.35;
+  }
+
+  .speaker-channel.muted {
+    color: #555;
+  }
+
+  .speaker-fader {
+    position: relative;
+    width: 34px;
+    flex: 1;
+    min-height: 142px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .speaker-fader::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: 50%;
+    width: 3px;
+    transform: translateX(-50%);
+    background: rgba(255, 255, 255, 0.28);
+    border-radius: 999px;
+    pointer-events: none;
+  }
+
+  .speaker-fader input {
+    position: relative;
+    z-index: 1;
+    width: 148px;
+    height: 34px;
+    margin: 0;
+    background: transparent;
+    accent-color: #c2c2c2;
+    transform: rotate(-90deg);
+    transform-origin: center;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  .speaker-fader input::-webkit-slider-runnable-track {
+    height: 1px;
+    background: transparent;
+  }
+
+  .speaker-fader input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 28px;
+    height: 28px;
+    margin-top: -12.5px;
+    border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.72);
+    background: #0080c8;
+    box-shadow: 0 0 0 6px rgba(0, 128, 200, 0.18);
+  }
+
+  .speaker-fader input::-moz-range-track {
+    height: 1px;
+    background: transparent;
+  }
+
+  .speaker-fader input::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    background: #111;
+    box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.035);
+  }
+
+  .speaker-label {
+    max-width: 82px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .speaker-label:disabled {
+    cursor: default;
+  }
+
+  .speaker-name {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .speaker-level {
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    color: #9b9b9b;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .speaker-now-playing {
+    max-width: 82px;
+    min-height: 24px;
+    color: #555;
+    font-size: 0.62rem;
+    line-height: 1.25;
+    text-align: center;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  .audio-targets {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    height: 100%;
+    justify-content: center;
+    padding: 0 4px;
+  }
+
+  .audio-target {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+    padding: 6px 0 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  }
+
+  .audio-target-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+  }
+
+  .audio-target.offline {
+    opacity: 0.72;
+  }
+
+  .audio-target-main {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .audio-target-name {
+    color: #f2f2f2;
+    font-size: 0.95rem;
+    font-weight: 300;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .audio-target-status {
+    color: #9b9b9b;
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .audio-target-connect {
+    flex: 0 0 auto;
+    min-width: 116px;
+    padding: 8px 0 8px 10px;
+    text-align: right;
+    font-size: 0.62rem;
+  }
+
+  .audio-target-vol {
+    width: 100%;
+  }
+
   .camera-page {
     display: flex;
     align-items: center;
@@ -1569,51 +2354,103 @@
     padding: 24px 32px;
   }
 
-  /* ── Now playing ──────────────────────────────────────────────────────────── */
-  .now-playing {
+  /* ── Solcelle-kort ───────────────────────────────────────────────────────── */
+  .solar {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 3px;
-    margin-top: 2px;
-    padding: 0 8px 4px;
-    align-self: start;
+    align-self: stretch;
+    justify-content: space-evenly;
+    height: 100%;
+    width: 100%;
+    gap: 14px;
+    padding: 14px 6px;
   }
 
-  .np-title {
-    font-size: 0.8rem;
-    color: #ebebeb;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
+  .solar-state {
+    display: flex;
+    align-items: center;
+    gap: 16px;
   }
 
-  .np-artist {
-    font-size: 0.65rem;
-    letter-spacing: 0.06em;
-    color: #595959;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
+  .solar-state-dot {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: #333;
+    transition: background 0.5s ease, box-shadow 0.5s ease;
+  }
+
+  .solar-state.on .solar-state-dot {
+    background: var(--accent);
+    box-shadow: 0 0 20px 3px rgba(0, 128, 200, 0.55);
+  }
+
+  .solar-state-label {
+    color: #f2f2f2;
+    font-size: 0.95rem;
+    font-weight: 300;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .solar-schedule {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .solar-sched-row {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+  }
+
+  .solar-sched-label {
+    color: #9b9b9b;
+    font-size: 0.68rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    min-width: 84px;
+    text-align: right;
+  }
+
+  .solar-sched-time {
+    color: #f2f2f2;
+    font-size: 1.7rem;
+    font-weight: 200;
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .solar-sun {
+    margin-top: 4px;
+    color: #9b9b9b;
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .solar-modes {
+    display: flex;
+    gap: 6px;
   }
 
   /* ── Now Playing card ────────────────────────────────────────────────────── */
   .np-card {
+    height: calc(100dvh - 48px);
     min-height: calc(100dvh - 48px);
     max-height: calc(100dvh - 48px);
     overflow: hidden;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) 42px 34px;
     align-items: center;
-    /* flex-start: kompakt midte, luft under action-knapper mod bundpil */
-    justify-content: flex-start;
-    gap: 18px;
-    padding: 16px 24px 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    justify-items: center;
+    gap: 6px;
+    padding: 8px 24px 62px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    position: relative;
   }
 
   .np-track-nav {
@@ -1621,8 +2458,12 @@
     flex-direction: row;
     align-items: center;
     justify-content: center;
-    gap: 4px;
+    gap: 6px;
     margin-top: 2px;
+  }
+
+  .np-track-nav--single {
+    margin-top: 4px;
   }
 
   .np-track-nav-btn {
@@ -1631,9 +2472,9 @@
     justify-content: center;
     background: none;
     border: none;
-    padding: 10px 12px;
+    padding: 10px 10px;
     margin: 0;
-    color: #4a4a4a;
+    color: #8a8a8a;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     transition: color 0.15s;
@@ -1649,18 +2490,116 @@
     color: #0080c8;
   }
 
+  .unified-vol--horizontal {
+    width: min(300px, 100%);
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .np-volume {
+    margin: 0;
+  }
+
+  .np-actions {
+    width: min(340px, 100%);
+    gap: 12px;
+    align-self: center;
+  }
+
+  .np-podcast-progress {
+    margin-top: 3px;
+    color: #9b9b9b;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .np-actions .action-btn {
+    padding: 7px 8px;
+    font-size: 0.62rem;
+    letter-spacing: 0.16em;
+  }
+
+  .unified-vol-label {
+    min-width: 30px;
+    color: #c2c2c2;
+    font-size: 0.64rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .unified-vol-slider {
+    position: relative;
+    width: 100%;
+    height: 34px;
+    margin: 0;
+    background: transparent;
+    accent-color: #0080c8;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  .unified-vol-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.3);
+  }
+
+  .unified-vol-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    margin-top: -8px;
+    border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.72);
+    background: #0080c8;
+    box-shadow: 0 0 0 4px rgba(0, 128, 200, 0.18);
+  }
+
+  .unified-vol-slider::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.3);
+  }
+
+  .unified-vol-slider::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.72);
+    background: #0080c8;
+    box-shadow: 0 0 0 4px rgba(0, 128, 200, 0.18);
+  }
+
+  .unified-vol-value {
+    min-width: 34px;
+    text-align: center;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    color: #f2f2f2;
+    font-variant-numeric: tabular-nums;
+  }
+
   .np-info {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
+    justify-content: center;
+    gap: 4px;
     max-width: 100%;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .np-card-title {
-    font-size: 1.2rem;
+    font-size: 1.04rem;
     font-weight: 300;
-    color: #ebebeb;
+    color: #f2f2f2;
     text-align: center;
     letter-spacing: 0.02em;
     overflow: hidden;
@@ -1670,34 +2609,14 @@
   }
 
   .np-card-title--muted {
-    color: #595959;
-  }
-
-  .np-track-nav--single {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    margin-top: 2px;
-  }
-
-  .np-track-nav-spacer {
-    width: 44px;
-    height: 1px;
-    flex-shrink: 0;
-  }
-
-  .heart-btn:disabled {
-    opacity: 0.35;
-    cursor: default;
+    color: #9b9b9b;
   }
 
   .np-card-artist {
-    font-size: 0.7rem;
-    letter-spacing: 0.14em;
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #595959;
+    color: #9b9b9b;
     text-align: center;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1705,32 +2624,42 @@
     max-width: 100%;
   }
 
-  .heart-btn {
+  .np-save-btn {
     background: none;
-    border: none;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    padding: 6px 4px;
-    margin: 0;
-    color: #595959;
-    transition: color 0.2s, transform 0.2s;
+    padding: 6px 10px;
+    min-width: 66px;
+    max-width: 128px;
+    color: #c2c2c2;
+    font-size: 0.58rem;
+    font-weight: 300;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.2s, border-color 0.2s;
   }
-  .heart-btn svg {
-    width: 22px;
-    height: 22px;
-    transition: fill 0.2s, transform 0.15s;
+  .np-save-btn:active {
+    color: #f2f2f2;
+    border-color: rgba(255, 255, 255, 0.18);
   }
-  .heart-btn:active svg {
-    transform: scale(1.3);
+  .np-save-btn.saved {
+    color: #c8e8ff;
+    border-color: rgba(200, 232, 255, 0.18);
   }
-  .heart-btn.saved {
-    color: #e25555;
+  .np-save-btn:disabled {
+    cursor: default;
+    opacity: 0.55;
   }
 
   .np-card-next {
     font-size: 0.7rem;
     font-weight: 300;
-    color: #888888;
+    color: #c2c2c2;
     text-align: center;
     margin-top: 4px;
     overflow: hidden;
@@ -1744,8 +2673,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    margin-top: 6px;
+    gap: 1px;
+    margin-top: 3px;
     opacity: 0;
     animation: streamer-in 0.8s ease 0.2s forwards;
   }
@@ -1753,27 +2682,16 @@
   .np-status {
     margin-top: -4px;
     min-height: 14px;
-    color: #595959;
+    color: #9b9b9b;
     font-size: 0.65rem;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     text-align: center;
   }
-  .radio-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: -8px;
-    align-items: center;
-  }
-  .radio-actions .action-btn {
-    width: 88px;
-  }
-
   .np-next-title {
-    font-size: 0.8rem;
+    font-size: 0.7rem;
     font-weight: 300;
-    color: #888;
+    color: #c2c2c2;
     text-align: center;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1782,10 +2700,10 @@
   }
 
   .np-next-artist {
-    font-size: 0.6rem;
-    letter-spacing: 0.12em;
+    font-size: 0.56rem;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #4a4a4a;
+    color: #8a8a8a;
     text-align: center;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1804,7 +2722,7 @@
     margin: 10px auto 0;
     background: none;
     border: none;
-    color: #595959;
+    color: #9b9b9b;
     font-size: 0.65rem;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -1812,7 +2730,7 @@
     padding: 6px 12px;
     transition: color 0.2s;
   }
-  .btn-text:hover { color: #888; }
+  .btn-text:hover { color: #c2c2c2; }
 
   .btn-outline {
     display: block;
@@ -1820,7 +2738,7 @@
     background: none;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 14px;
-    color: #595959;
+    color: #9b9b9b;
     font-size: 0.8rem;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -1828,7 +2746,7 @@
     cursor: pointer;
     transition: border-color 0.2s, color 0.2s;
   }
-  .btn-outline:hover { border-color: rgba(255,255,255,0.15); color: #888; }
+  .btn-outline:hover { border-color: rgba(255,255,255,0.15); color: #c2c2c2; }
 
   .btn-primary {
     flex: 1;
@@ -1856,7 +2774,7 @@
     text-transform: uppercase;
     cursor: pointer;
     background: rgba(255, 255, 255, 0.05);
-    color: #888;
+    color: #c2c2c2;
   }
 
   /* ── Forms ────────────────────────────────────────────────────────────────── */
@@ -1876,7 +2794,7 @@
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 12px;
     padding: 14px 16px;
-    color: #ebebeb;
+    color: #f2f2f2;
     font-size: 0.9rem;
     outline: none;
     transition: border-color 0.2s;
@@ -1898,19 +2816,19 @@
     font-size: 0.7rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: #595959;
+    color: #9b9b9b;
   }
 
   .pair-ip {
     font-size: 1.4rem;
     font-weight: 200;
-    color: #ebebeb;
+    color: #f2f2f2;
     letter-spacing: 0.04em;
   }
 
   .pair-hint {
     font-size: 0.85rem;
-    color: #595959;
+    color: #9b9b9b;
     line-height: 1.6;
   }
 
@@ -1921,7 +2839,7 @@
 
   .empty {
     text-align: center;
-    color: #595959;
+    color: #9b9b9b;
     font-size: 0.85rem;
     line-height: 1.6;
     padding: 40px 24px;
@@ -1941,6 +2859,9 @@
   }
   .podcast-card.active {
     background: rgba(0, 128, 200, 0.06);
+  }
+  .podcast-now {
+    background: rgba(0, 128, 200, 0.08);
   }
   .podcast-card.loading {
     opacity: 0.65;
@@ -1993,7 +2914,7 @@
     padding: 0 16px 0 8px;
     background: none;
     border: none;
-    color: #4a4a4a;
+    color: #8a8a8a;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     transition: color 0.15s, background 0.18s;
@@ -2004,7 +2925,7 @@
     display: block;
   }
   .podcast-drill:active {
-    color: #ebebeb;
+    color: #f2f2f2;
     background: rgba(255, 255, 255, 0.03);
   }
 
@@ -2017,7 +2938,7 @@
     background: none;
     border: none;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
-    color: #666;
+    color: #9b9b9b;
     font-size: 0.75rem;
     letter-spacing: 0.05em;
     cursor: pointer;
@@ -2042,6 +2963,11 @@
   }
   .podcast-cover--empty {
     background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
+  }
+  .podcast-cover--now {
+    background:
+      radial-gradient(circle at 50% 50%, rgba(0, 128, 200, 0.34), transparent 55%),
+      linear-gradient(135deg, #1a1a1a, #2a2a2a);
   }
   .playlist-text-cover {
     display: flex;
@@ -2098,7 +3024,7 @@
   .podcast-episode {
     font-size: 0.95rem;
     font-weight: 300;
-    color: #ebebeb;
+    color: #f2f2f2;
     line-height: 1.3;
     /* op til 3 linjer for længere afsnit-titler */
     display: -webkit-box;
@@ -2114,10 +3040,88 @@
   .podcast-meta {
     font-size: 0.7rem;
     letter-spacing: 0.06em;
-    color: #595959;
+    color: #9b9b9b;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .podcast-queue-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    padding: 10px 20px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .podcast-queue-actions--detail {
+    padding: 2px 0 0;
+    border-bottom: none;
+  }
+
+  .podcast-queue-view {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100dvh - 48px - 56px);
+  }
+
+  .podcast-queue-now {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 22px 24px 14px;
+    background: rgba(0, 128, 200, 0.08);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .podcast-queue-now .podcast-episode {
+    font-size: 1.02rem;
+    -webkit-line-clamp: 2;
+  }
+
+  .podcast-player-panel--queue {
+    padding-top: 14px;
+  }
+
+  .empty--compact {
+    min-height: 80px;
+    padding: 18px 24px;
+  }
+
+  .podcast-player-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 24px 16px;
+    background: rgba(0, 128, 200, 0.055);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .podcast-progress-row {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) 48px;
+    align-items: center;
+    gap: 10px;
+    color: #c2c2c2;
+    font-size: 0.64rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .podcast-progress-row input {
+    width: 100%;
+    accent-color: #0080c8;
+  }
+
+  .podcast-controls {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+  }
+
+  .podcast-controls .action-btn,
+  .podcast-queue-actions .action-btn {
+    padding: 7px 10px;
+    font-size: 0.6rem;
   }
 
   /* ── Drill-in (per show) ──────────────────────────────────────────────── */
@@ -2137,7 +3141,7 @@
     padding: 0 24px 0 16px;
     background: none;
     border: none;
-    color: #ebebeb;
+    color: #f2f2f2;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     text-align: left;
@@ -2150,14 +3154,14 @@
     height: 18px;
     flex-shrink: 0;
     transform: translateY(-2px);
-    color: #888;
+    color: #c2c2c2;
   }
   .drill-back-label {
     font-size: 0.7rem;
     font-weight: 400;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: #ebebeb;
+    color: #f2f2f2;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2222,21 +3226,21 @@
   .episode-meta-top {
     font-size: 0.65rem;
     letter-spacing: 0.08em;
-    color: #595959;
+    color: #9b9b9b;
     text-transform: uppercase;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .episode-dot {
-    color: #3a3a3a;
+    color: #6a6a6a;
     margin: 0 2px;
   }
 
   .episode-title {
     font-size: 0.9rem;
     font-weight: 300;
-    color: #ebebeb;
+    color: #f2f2f2;
     line-height: 1.35;
     display: -webkit-box;
     -webkit-line-clamp: 3;
@@ -2254,7 +3258,7 @@
     background: none;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 12px;
-    color: #888;
+    color: #c2c2c2;
     font-size: 0.75rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -2263,7 +3267,7 @@
     transition: color 0.18s, border-color 0.18s;
   }
   .episode-more:active {
-    color: #ebebeb;
+    color: #f2f2f2;
     border-color: rgba(255, 255, 255, 0.2);
   }
   .episode-more:disabled {

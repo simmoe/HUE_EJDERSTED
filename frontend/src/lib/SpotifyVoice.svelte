@@ -2,7 +2,7 @@
   /**
    * Stemme → hub returnerer kun kø-metadata; afspilning styres på +page.
    */
-  import { onMount } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { showFeedback } from '$lib/feedback.svelte';
 
   let {
@@ -12,18 +12,20 @@
   } = $props();
 
   let listening = $state(false);
-  let activeLang = $state<'en-US' | 'da-DK'>('en-US');
+  let textQuery = $state('');
+  let textSearching = $state(false);
+  let voiceLanguage = $state<'da-DK' | 'en-US'>('en-US');
+  let pressActive = false;
+  let recordingStream: MediaStream | null = null;
+  let recorder: MediaRecorder | null = null;
+  let recordingTimer: ReturnType<typeof setTimeout> | null = null;
 
   const VOICE_TIMEOUT_MS = 12_000;
-
-  // Long-press skifter sprog: tap = engelsk, hold = dansk.
-  const LONG_PRESS_MS = 450;
-  let pressTimer: ReturnType<typeof setTimeout> | null = null;
-  let longPressArmed = $state(false);
-  let pressActive = false;
+  const RECORDING_MS = 5_000;
 
   async function handleResult(transcript: string) {
     listening = false;
+    textSearching = true;
     showFeedback(transcript, { duration: 8000 });
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), VOICE_TIMEOUT_MS);
@@ -71,59 +73,129 @@
       showFeedback((e as Error)?.name === 'AbortError' ? 'hub svarer ikke' : 'ingen forbindelse', { kind: 'error', duration: 7000 });
     } finally {
       clearTimeout(timeout);
+      textSearching = false;
     }
   }
 
-  function startListening(lang: 'en-US' | 'da-DK') {
-    if (listening) return;
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { showFeedback('voice ikke understøttet', { kind: 'error' }); return; }
-    activeLang = lang;
-    const recognition = new SR();
-    recognition.lang = lang;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.continuous = false;
-    recognition.onstart = () => { listening = true; };
-    recognition.onerror = () => { listening = false; showFeedback('prøv igen', { kind: 'error' }); };
-    recognition.onnomatch = () => { listening = false; showFeedback('forstod ikke', { kind: 'error' }); };
-    recognition.onresult = (e: any) => handleResult(e.results[0][0].transcript);
-    recognition.onend = () => { listening = false; };
-    recognition.start();
+  function submitTextSearch() {
+    const q = textQuery.trim();
+    if (!q || textSearching) return;
+    textQuery = '';
+    void handleResult(q);
   }
 
-  function clearPressTimer() {
-    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  function setVoiceCaptureActive(active: boolean) {
+    window.dispatchEvent(new CustomEvent('hue:voice-capture', { detail: { active } }));
+  }
+
+  async function startListening() {
+    if (listening) return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVoiceCaptureActive(false);
+      showFeedback('lydoptagelse ikke understøttet', { kind: 'error' });
+      return;
+    }
+    try {
+      recordingStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      const preferredType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+        .find((type) => MediaRecorder.isTypeSupported(type));
+      const chunks: Blob[] = [];
+      recorder = preferredType
+        ? new MediaRecorder(recordingStream, { mimeType: preferredType })
+        : new MediaRecorder(recordingStream);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onerror = () => {
+        listening = false;
+        showFeedback('kunne ikke optage lyd', { kind: 'error' });
+      };
+      recorder.onstop = async () => {
+        if (recordingTimer) clearTimeout(recordingTimer);
+        recordingTimer = null;
+        recordingStream?.getTracks().forEach((track) => track.stop());
+        recordingStream = null;
+        const mimeType = recorder?.mimeType || preferredType || 'audio/webm';
+        recorder = null;
+        listening = false;
+        setVoiceCaptureActive(false);
+        const audio = new Blob(chunks, { type: mimeType });
+        if (!audio.size) {
+          showFeedback('ingen lyd optaget', { kind: 'error' });
+          return;
+        }
+        textSearching = true;
+        showFeedback('fortolker tale...', { duration: 12_000 });
+        try {
+          const response = await fetch('/api/spotify/voice/transcribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': mimeType,
+              'X-Voice-Language': voiceLanguage,
+            },
+            body: audio,
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data?.transcript) {
+            showFeedback(String(data?.error || 'talegenkendelse fejlede'), { kind: 'error', duration: 7000 });
+            return;
+          }
+          await handleResult(String(data.transcript));
+        } catch {
+          showFeedback('ingen forbindelse til talegenkendelse', { kind: 'error', duration: 7000 });
+        } finally {
+          textSearching = false;
+        }
+      };
+      listening = true;
+      recorder.start();
+      recordingTimer = setTimeout(() => {
+        if (recorder?.state === 'recording') recorder.stop();
+      }, RECORDING_MS);
+    } catch (error) {
+      recordingStream?.getTracks().forEach((track) => track.stop());
+      recordingStream = null;
+      recorder = null;
+      listening = false;
+      setVoiceCaptureActive(false);
+      showFeedback((error as Error)?.name === 'NotAllowedError' ? 'mikrofon ikke tilladt' : 'kunne ikke åbne mikrofonen', { kind: 'error' });
+    }
   }
 
   function onPressStart(e: PointerEvent) {
     if (listening) return;
     e.preventDefault();
     pressActive = true;
-    longPressArmed = false;
-    clearPressTimer();
-    pressTimer = setTimeout(() => {
-      if (pressActive) longPressArmed = true;
-    }, LONG_PRESS_MS);
+    // The garden kiosk continuously owns a camera MediaStream. Release it on
+    // touch-down before touch-up opens the microphone MediaStream.
+    setVoiceCaptureActive(true);
   }
 
   function onPressEnd(e: PointerEvent) {
     if (!pressActive) return;
     e.preventDefault();
     pressActive = false;
-    clearPressTimer();
-    const lang: 'en-US' | 'da-DK' = longPressArmed ? 'da-DK' : 'en-US';
-    longPressArmed = false;
-    startListening(lang);
+    void startListening();
   }
 
   function onPressCancel() {
     pressActive = false;
-    longPressArmed = false;
-    clearPressTimer();
+    setVoiceCaptureActive(false);
   }
 
-  onMount(() => () => { clearPressTimer(); });
+  onDestroy(() => {
+    if (recordingTimer) clearTimeout(recordingTimer);
+    if (recorder?.state === 'recording') recorder.stop();
+    recordingStream?.getTracks().forEach((track) => track.stop());
+    setVoiceCaptureActive(false);
+  });
 </script>
 
 <div class="center-area">
@@ -131,13 +203,11 @@
     type="button"
     class="voice-btn"
     class:listening
-    class:armed-da={longPressArmed}
-    class:listening-da={listening && activeLang === 'da-DK'}
     onpointerdown={onPressStart}
     onpointerup={onPressEnd}
     onpointercancel={onPressCancel}
-    aria-label="Stemme — kort tryk = engelsk, langt tryk = dansk"
-    title="Stemme — kort tryk EN, langt tryk DA"
+    aria-label="Tryk og tal"
+    title="Tryk og tal"
   >
     <span class="voice-ring"></span>
     <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -145,14 +215,51 @@
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="17" x2="12" y2="21" />
     </svg>
-    {#if longPressArmed || (listening && activeLang === 'da-DK')}
-      <span class="lang-badge">DA</span>
+    {#if listening}
+      <span class="lang-badge">{voiceLanguage === 'da-DK' ? 'DA' : 'EN'}</span>
     {/if}
   </button>
+
+  <div class="language-toggle" role="group" aria-label="Sprog for talegenkendelse">
+    <button
+      type="button"
+      class:active={voiceLanguage === 'da-DK'}
+      aria-pressed={voiceLanguage === 'da-DK'}
+      disabled={listening}
+      onclick={() => (voiceLanguage = 'da-DK')}
+    >
+      DA
+    </button>
+    <button
+      type="button"
+      class:active={voiceLanguage === 'en-US'}
+      aria-pressed={voiceLanguage === 'en-US'}
+      disabled={listening}
+      onclick={() => (voiceLanguage = 'en-US')}
+    >
+      EN
+    </button>
+  </div>
 
   {#if listening}
     <span class="feedback listening-text">lytter</span>
   {/if}
+
+  <form class="desktop-search" onsubmit={(e) => { e.preventDefault(); submitTextSearch(); }}>
+    <input
+      bind:value={textQuery}
+      type="search"
+      autocomplete="off"
+      autocapitalize="none"
+      spellcheck="false"
+      placeholder="søg musik"
+      aria-label="Søg musik"
+      disabled={textSearching}
+    />
+    <button type="submit" disabled={textSearching || !textQuery.trim()}>
+      {textSearching ? 'søger' : 'søg'}
+    </button>
+  </form>
 </div>
 
 <style>
@@ -166,11 +273,13 @@
 
   .voice-btn {
     position: relative;
-    width: 140px;
-    height: 140px;
+    flex: 0 0 96px;
+    width: 96px;
+    height: 96px;
+    aspect-ratio: 1;
     border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    background: none;
+    border: 2px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.025);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -178,7 +287,7 @@
     -webkit-tap-highlight-color: transparent;
     transition: border-color 0.4s ease;
     overflow: hidden;
-    color: #595959;
+    color: #9b9b9b;
   }
 
   .voice-btn:active {
@@ -186,28 +295,57 @@
   }
 
   .voice-btn.listening {
-    border-color: rgba(0, 128, 200, 0.35);
+    border-color: rgba(0, 150, 225, 0.72);
     color: #0080c8;
-  }
-
-  .voice-btn.armed-da {
-    border-color: rgba(220, 200, 110, 0.55);
-    color: #d8c87a;
   }
 
   .lang-badge {
     position: absolute;
-    bottom: 22px;
-    font-size: 0.7rem;
+    bottom: 12px;
+    font-size: 0.62rem;
     font-weight: 400;
     letter-spacing: 0.12em;
     color: #d8c87a;
     pointer-events: none;
   }
 
+  .language-toggle {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    width: 84px;
+    margin-top: -16px;
+    padding: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .language-toggle button {
+    min-height: 26px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #9b9b9b;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+  }
+
+  .language-toggle button.active {
+    background: rgba(0, 128, 200, 0.22);
+    color: #f2f2f2;
+  }
+
+  .language-toggle button:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
   .mic-icon {
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     transition: color 0.3s;
   }
 
@@ -220,7 +358,7 @@
   }
 
   .voice-btn.listening .voice-ring {
-    border-color: #0080c8;
+    border-color: rgba(0, 150, 225, 0.85);
     animation: ring-pulse 1.5s ease-in-out infinite;
   }
 
@@ -233,7 +371,7 @@
     font-size: 0.75rem;
     font-weight: 300;
     letter-spacing: 0.06em;
-    color: #ebebeb;
+    color: #f2f2f2;
     text-align: center;
     max-width: 260px;
     overflow: hidden;
@@ -243,5 +381,60 @@
 
   .listening-text {
     color: #0080c8;
+  }
+
+  .desktop-search {
+    display: none;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .desktop-search {
+      display: flex;
+      width: min(320px, 100%);
+      gap: 8px;
+      align-items: center;
+    }
+
+    .desktop-search input {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.02);
+      color: #d8d8d8;
+      font: inherit;
+      font-size: 0.8rem;
+      font-weight: 300;
+      letter-spacing: 0.04em;
+      padding: 10px 14px;
+      outline: none;
+    }
+
+    .desktop-search input:focus {
+      border-color: rgba(0, 128, 200, 0.45);
+    }
+
+    .desktop-search input::placeholder {
+      color: #9b9b9b;
+    }
+
+    .desktop-search button {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      background: none;
+      color: #c2c2c2;
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.72rem;
+      font-weight: 300;
+      letter-spacing: 0.12em;
+      padding: 10px 13px;
+      text-transform: uppercase;
+    }
+
+    .desktop-search button:disabled {
+      cursor: default;
+      opacity: 0.35;
+    }
   }
 </style>

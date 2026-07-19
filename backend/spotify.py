@@ -1,5 +1,7 @@
 """Spotify Web API — OAuth2 PKCE-fri Authorization Code flow + afspilningsstyring."""
 
+import asyncio
+import base64
 import json
 import os
 import re
@@ -8,6 +10,8 @@ import urllib.parse
 from pathlib import Path
 
 import httpx
+
+import hub_config
 
 CONFIG_FILE = Path(__file__).parent.parent / "spotify_config.json"
 GEMINI_KEY_FILE = Path(__file__).parent.parent / "gemini_api_key.txt"
@@ -89,6 +93,7 @@ class Spotify:
         self._cfg = _load()
         self._http = httpx.AsyncClient(timeout=5)
         self._gemini_http = httpx.AsyncClient(timeout=60)
+        self._last_connect_restart = 0.0
 
     @property
     def configured(self) -> bool:
@@ -202,6 +207,8 @@ class Spotify:
         if not h:
             return False
         device_id = await self._target_device_id()
+        if hub_config.site() == "garden" and not device_id:
+            return False
         params = {"device_id": device_id} if device_id else {}
         r = await self._http.put(f"{API}/me/player/pause", headers=h, params=params)
         return r.status_code in (200, 204)
@@ -211,6 +218,8 @@ class Spotify:
         if not h:
             return False
         device_id = await self._target_device_id()
+        if hub_config.site() == "garden" and not device_id:
+            return False
         params = {"device_id": device_id} if device_id else {}
         r = await self._http.post(f"{API}/me/player/next", headers=h, params=params)
         return r.status_code in (200, 204)
@@ -220,6 +229,8 @@ class Spotify:
         if not h:
             return False
         device_id = await self._target_device_id()
+        if hub_config.site() == "garden" and not device_id:
+            return False
         params = {"device_id": device_id} if device_id else {}
         r = await self._http.post(f"{API}/me/player/previous", headers=h, params=params)
         if r.status_code not in (200, 204):
@@ -231,6 +242,8 @@ class Spotify:
         if not h:
             return False
         device_id = await self._target_device_id()
+        if hub_config.site() == "garden" and not device_id:
+            return False
         params: dict = {"position_ms": position_ms}
         if device_id:
             params["device_id"] = device_id
@@ -253,10 +266,13 @@ class Spotify:
             return False, "no auth headers", 0
         off = max(0, min(offset, len(uris) - 1))
         speaker = await self._find_speaker_device_id()
+        if hub_config.site() == "garden" and not speaker:
+            return False, "Gå hen og tænd højttaleren", 0
         candidates: list[str | None] = []
         if speaker:
             candidates.append(speaker)
-        candidates.append(None)
+        if hub_config.site() != "garden":
+            candidates.append(None)
 
         body = {"uris": uris, "offset": {"position": off}, "position_ms": position_ms}
         last_snip = ""
@@ -268,6 +284,26 @@ class Spotify:
                 json=body,
             )
             if r.status_code in (200, 204):
+                if hub_config.site() == "garden":
+                    await asyncio.sleep(2)
+                    if not await self._garden_playback_matches(h, device_id, uris[off]):
+                        print("[Spotify] Connect accepted play but did not start; restarting librespot")
+                        recovered_device = await self._restart_garden_connect_device()
+                        if not recovered_device:
+                            return False, "Spotify-afspilleren kunne ikke genstarte", 0
+                        retry = await self._http.put(
+                            f"{API}/me/player/play",
+                            headers=h,
+                            params={"device_id": recovered_device},
+                            json=body,
+                        )
+                        if retry.status_code not in (200, 204):
+                            detail = f"HTTP {retry.status_code}: {retry.text[:350]}"
+                            print(f"[Spotify] play-uris recovery {detail}")
+                            return False, f"Spotify-afspilleren kunne ikke starte ({detail})", 0
+                        await asyncio.sleep(3)
+                        if not await self._garden_playback_matches(h, recovered_device, uris[off]):
+                            return False, "Spotify-afspilleren svarede, men startede ikke", 0
                 await self._beolink_expand()
                 duration_ms = await self._track_duration(uris[off], h)
                 return True, "", duration_ms
@@ -276,6 +312,45 @@ class Spotify:
         msg = f"failed {len(candidates)} attempt(s). Last: {last_snip}"
         print(f"[Spotify] play-uris {msg}")
         return False, msg, 0
+
+    async def _garden_playback_matches(self, headers: dict, device_id: str, uri: str) -> bool:
+        try:
+            response = await self._http.get(f"{API}/me/player", headers=headers)
+            if response.status_code != 200:
+                return False
+            player = response.json()
+            return (
+                bool(player.get("is_playing"))
+                and ((player.get("device") or {}).get("id") == device_id)
+                and ((player.get("item") or {}).get("uri") == uri)
+            )
+        except Exception:
+            return False
+
+    async def _restart_garden_connect_device(self) -> str | None:
+        preferred = hub_config.spotify_connect_device().strip().lower()
+        self._last_connect_restart = time.monotonic()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "sudo",
+                "-n",
+                "systemctl",
+                "restart",
+                "librespot",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=10)
+            if proc.returncode != 0:
+                return None
+            for _ in range(12):
+                await asyncio.sleep(1)
+                for device in await self.devices():
+                    if device["name"].strip().lower() == preferred:
+                        return device["id"]
+        except Exception as exc:
+            print(f"[Spotify] librespot recovery failed: {exc}")
+        return None
 
     async def _track_duration(self, uri: str, headers: dict) -> int:
         """Hent duration_ms for et track-URI fra Spotify."""
@@ -358,10 +433,13 @@ class Spotify:
         if not h:
             return False, "no auth headers"
         speaker = await self._find_speaker_device_id()
+        if hub_config.site() == "garden" and not speaker:
+            return False, "Gå hen og tænd højttaleren"
         candidates: list[str | None] = []
         if speaker:
             candidates.append(speaker)
-        candidates.append(None)
+        if hub_config.site() != "garden":
+            candidates.append(None)
 
         body = {"uris": [episode_uri], "position_ms": 0}
         last_snip = ""
@@ -438,7 +516,11 @@ class Spotify:
         return []
 
     async def _beolink_expand(self) -> None:
-        """Tell A9 to stream from M5's Spotify source + nudge M5 volume to wake audio."""
+        """Tell A9 to stream from M5's Spotify source + nudge M5 volume to wake audio.
+
+        Home-only: garden has no Vesterbro B&O units, so skip the Mozart calls."""
+        if not hub_config.bo_speakers_enabled():
+            return
         import asyncio
         try:
             M5_SPOTIFY = f"spotify:{BEO_M5_JID}"
@@ -467,8 +549,43 @@ class Spotify:
             print(f"[BeoLink] expand error: {e}")
 
     async def _find_speaker_device_id(self) -> str | None:
-        """Find the BeoPlay M5's Spotify Connect device ID (A9 has no Spotify Connect)."""
+        """Resolve the Spotify Connect device to play on.
+
+        Priority:
+        1. A site-configured Connect device by exact name (garden → on-Pi librespot
+           "Ejdersted Garden"), so playback never falls back to a browser player.
+        2. The BeoPlay M5 (home BeoLink master; A9 has no Spotify Connect).
+        3. First Speaker, then any device.
+        """
         devs = await self.devices()
+        preferred = hub_config.spotify_connect_device().strip().lower()
+        if preferred:
+            for d in devs:
+                if d["name"].strip().lower() == preferred:
+                    return d["id"]
+            if hub_config.site() == "garden":
+                now = time.monotonic()
+                if now - self._last_connect_restart >= 60:
+                    self._last_connect_restart = now
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            "sudo",
+                            "-n",
+                            "systemctl",
+                            "restart",
+                            "librespot",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await asyncio.wait_for(proc.wait(), timeout=10)
+                        if proc.returncode == 0:
+                            await asyncio.sleep(3)
+                            for d in await self.devices():
+                                if d["name"].strip().lower() == preferred:
+                                    return d["id"]
+                    except Exception as exc:
+                        print(f"[Spotify] librespot recovery failed: {exc}")
+                return None
         for d in devs:
             if "m5" in d["name"].lower() or "beoplay m5" in d["name"].lower():
                 return d["id"]
@@ -483,6 +600,8 @@ class Spotify:
         h = await self._headers()
         if not h:
             return None
+        if hub_config.site() == "garden":
+            return await self._find_speaker_device_id()
         player_data = None
         pr = await self._http.get(f"{API}/me/player", headers=h)
         if pr.status_code == 200:
@@ -510,6 +629,8 @@ class Spotify:
     async def resume(self) -> bool:
         """Resume playback on M5 + ensure BeoLink multiroom."""
         device_id = await self._find_speaker_device_id()
+        if hub_config.site() == "garden" and not device_id:
+            return False
         ok = await self.play(device_id=device_id)
         await self._beolink_expand()
         return ok
@@ -531,6 +652,50 @@ class Spotify:
                 pass
         disk = _load()
         return str(disk.get("gemini_api_key") or "").strip()
+
+    async def transcribe_audio(self, audio: bytes, mime_type: str, language: str = "en-US") -> tuple[bool, str]:
+        """Transcribe a short kiosk voice command with the existing Gemini integration."""
+        key = self._gemini_api_key()
+        if not key:
+            return False, "Talegenkendelse mangler Gemini-nøgle"
+        if not audio:
+            return False, "Tom lydoptagelse"
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{GEMINI_MODEL}:generateContent?key={key}"
+        )
+        language_name = "Danish" if language.lower().startswith("da") else "English"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {
+                        "text": (
+                            f"Transcribe this short {language_name} music voice command verbatim. "
+                            "Artist names and song titles may be in any language. "
+                            "Return only the transcript, with no quotes or explanation."
+                        )
+                    },
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": base64.b64encode(audio).decode("ascii"),
+                        }
+                    },
+                ]
+            }],
+            "generationConfig": {"temperature": 0},
+        }
+        try:
+            response = await self._gemini_http.post(url, json=payload)
+            if response.status_code != 200:
+                print(f"[Gemini transcription] error: {response.status_code} {response.text[:300]}")
+                return False, "Tale-API fejlede"
+            text = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            text = text.strip("`\"' \n")
+            return (True, text) if text else (False, "Ingen tale genkendt")
+        except Exception as exc:
+            print(f"[Gemini transcription] error: {exc}")
+            return False, "Tale-API fejlede"
 
     async def _ask_gemini(self, artist: str, track: str, n: int = 10) -> list[dict]:
         """Ask Gemini for track recommendations. Returns list of {artist, track}."""
