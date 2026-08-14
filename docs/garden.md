@@ -13,6 +13,22 @@ Initial scope:
   configured BlueALSA speaker and the local `Ejdersted Garden` Connect endpoint.
 - Remote access should use Tailscale or another private tunnel, not public camera port forwarding.
 
+## TLS (Let's Encrypt via Tailscale)
+
+Do **not** keep a self-signed cert on the garden hub. Chrome periodically drops
+trust (`ERR_CERT_AUTHORITY_INVALID`), snapshot uploads stop, and presence flips
+to a stale/blind state even though the phone camera is still running.
+
+Use Tailscale's Let's Encrypt integration instead:
+
+1. Enable **HTTPS Certificates** in the Tailscale admin DNS settings.
+2. On the Pi: `./scripts/provision-tls-cert.sh && sudo systemctl restart hue`
+3. Point the Android kiosk at the MagicDNS URL from `certs/public-url.txt`
+   (install Tailscale on the phone, same tailnet, MagicDNS on).
+4. Enable the renew timer: `scripts/hue-tls-renew.service` + `.timer`
+
+`deploy.sh garden` refreshes the cert when Tailscale is available.
+
 ## Runtime Config
 
 Garden-specific values should come from the machine/global setup as environment
