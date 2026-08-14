@@ -77,15 +77,29 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
-def _label_for_state(state: str, alert: bool = False) -> str:
+def _label_for_state(
+    state: str,
+    alert: bool = False,
+    *,
+    stale: bool = False,
+    low_light: bool = False,
+) -> str:
     if alert:
         return "ALARM"
+    # Distinguish recoverable uplink loss from genuine darkness so the kiosk
+    # does not keep shouting "blind" when Chrome dropped the self-signed cert.
+    if state == "camera_blind":
+        if stale:
+            return "Ingen snapshots"
+        if low_light:
+            return "For mørkt"
+        return "Ingen snapshots"
     return {
         "empty": "Ingen hjemme",
         "checking": "Tjekker...",
         "home": "Nogen hjemme",
         "unknown": "Ukendt",
-        "camera_blind": "Kamera blindt",
+        "camera_blind": "Ingen snapshots",
     }.get(state, "Ukendt")
 
 
@@ -414,7 +428,7 @@ class CameraPresenceService:
             **state,
             "presence": presence,
             "state": presence,
-            "label": _label_for_state(presence, alert=alert),
+            "label": _label_for_state(presence, alert=alert, stale=stale, low_light=low_light),
             "home": presence == "home",
             "armed": bool(state.get("armed")),
             "alert": alert,

@@ -75,8 +75,23 @@ på et kendt target, hvis højttaleren har været koblet til en telefon.
 Find ny port i Developer Options → Wireless debugging.
 Eksempel: `adb connect 192.168.86.15:36873`
 
-**HTTPS**: Serveren kører HTTPS med self-signed certifikat (port 8443).
-Pi bruger certs i `certs/`, Mac bruger mkcert-genererede certs.
+**HTTPS**: Garden bruger Let's Encrypt-certifikater udstedt via Tailscale
+(`scripts/provision-tls-cert.sh`). Chrome stoler på dem uden interstitial.
+Kiosk-URL skal bruge MagicDNS-navnet (fx `https://kolonihave-pi.<tailnet>.ts.net:8443`),
+ikke rå LAN-IP — ellers matcher certifikatet ikke. Installér Tailscale på
+Android-kiosken (samme tailnet + MagicDNS), eller lav en LAN-DNS-rewrite til Pi'en.
+
+Home/dev kan stadig bruge mkcert i `certs/` lokalt.
+
+Aktiver først **HTTPS Certificates** i Tailscale admin → DNS, kør derefter på Pi'en:
+
+```bash
+./scripts/provision-tls-cert.sh
+sudo cp scripts/hue-tls-renew.service scripts/hue-tls-renew.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hue-tls-renew.timer
+sudo systemctl restart hue
+```
 
 ---
 

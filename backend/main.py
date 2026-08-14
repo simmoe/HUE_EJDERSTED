@@ -12,12 +12,14 @@ import asyncio
 import errno
 import email.utils
 import json
+import os
 import signal
 import shutil
 import socket
 import contextlib
 import wave
 import time
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2280,17 +2282,45 @@ async def dashboard_page():
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
+def _tls_cert_paths() -> tuple[Path, Path]:
+    """Resolve hub TLS material. Prefer env overrides, then repo certs/."""
+    cert = Path(os.environ.get("HUB_TLS_CERT", BASE_DIR.parent / "certs" / "cert.pem"))
+    key = Path(os.environ.get("HUB_TLS_KEY", BASE_DIR.parent / "certs" / "key.pem"))
+    return cert, key
+
+
+def _describe_tls_cert(cert: Path) -> str:
+    """Best-effort subject/issuer summary so operators can spot self-signed leftovers."""
+    if not shutil.which("openssl") or not cert.is_file():
+        return cert.name
+    try:
+        proc = subprocess.run(
+            ["openssl", "x509", "-in", str(cert), "-noout", "-subject", "-issuer", "-enddate"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        text = (proc.stdout or "").strip().replace("\n", " | ")
+        return text or cert.name
+    except Exception:
+        return cert.name
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    cert = BASE_DIR.parent / "certs" / "cert.pem"
-    key = BASE_DIR.parent / "certs" / "key.pem"
+    cert, key = _tls_cert_paths()
     use_tls = cert.exists() and key.exists()
     port = 8443 if use_tls else 8000
 
     try:
         if use_tls:
-            print(f"{hub_config.CONFIG.get('site', 'home')} Hub → https://localhost:8443")
+            print(f"{hub_config.CONFIG.get('site', 'home')} Hub → https://0.0.0.0:8443")
+            print(f"TLS: {_describe_tls_cert(cert)}")
+            hint = BASE_DIR.parent / "certs" / "public-url.txt"
+            if hint.is_file():
+                print(f"Public URL hint: {hint.read_text(encoding='utf-8').strip()}")
             uvicorn.run(
                 app,
                 host="0.0.0.0",

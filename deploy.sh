@@ -100,6 +100,12 @@ ssh_run "set -e; mkdir -p '$PI_REPO_DIR'"
 echo "→ Syncing backend source..."
 scp_copy backend "$PI_HOST:$PI_REPO_DIR/"
 
+if [[ -d scripts ]]; then
+  echo "→ Syncing scripts..."
+  scp_copy scripts "$PI_HOST:$PI_REPO_DIR/"
+  ssh_run "chmod +x '$PI_REPO_DIR'/scripts/*.sh 2>/dev/null || true"
+fi
+
 if [[ -d backend/static ]]; then
   echo "→ Syncing static build..."
   scp_copy backend/static "$PI_HOST:$PI_REPO_DIR/backend/"
@@ -112,11 +118,26 @@ for local_file in gemini_api_key.txt hub_globals.json spotify_config.json hue_co
   fi
 done
 
+if [[ "$HUB_SITE" == "garden" ]]; then
+  echo "→ Ensuring garden AAC/M4A playback support..."
+  ssh_run "if ! command -v ffmpeg >/dev/null; then $SUDO apt-get update && $SUDO apt-get install -y ffmpeg; fi"
+  echo "→ Refreshing Tailscale/Let's Encrypt TLS certificate (if available)..."
+  ssh_run "if command -v tailscale >/dev/null && [[ -x '$PI_REPO_DIR/scripts/provision-tls-cert.sh' ]]; then '$PI_REPO_DIR/scripts/provision-tls-cert.sh' || echo 'TLS provision skipped (enable HTTPS Certificates in Tailscale admin)'; else echo 'No Tailscale cert provisioner on target'; fi"
+  if [[ -z "${HUB_PUBLIC_URL:-}" ]]; then
+    HINT_URL=$(ssh_run "cat '$PI_REPO_DIR/certs/public-url.txt' 2>/dev/null" || true)
+    HINT_URL="$(echo "$HINT_URL" | tr -d '\r' | tail -n 1)"
+    if [[ -n "${HINT_URL:-}" ]]; then
+      HUB_PUBLIC_URL="$HINT_URL"
+      echo "→ Using Tailscale public URL: $HUB_PUBLIC_URL"
+    fi
+  fi
+fi
+
 echo "→ Writing runtime environment..."
 RUNTIME_ENV=$(mktemp)
 {
   echo "HUB_SITE=$HUB_SITE"
-  [[ -n "$HUB_PUBLIC_URL" ]] && echo "HUB_PUBLIC_URL=$HUB_PUBLIC_URL"
+  [[ -n "${HUB_PUBLIC_URL:-}" ]] && echo "HUB_PUBLIC_URL=$HUB_PUBLIC_URL"
   [[ -n "${HUB_FEATURE_CAMERA:-}" ]] && echo "HUB_FEATURE_CAMERA=$HUB_FEATURE_CAMERA"
   [[ -n "${HUB_FEATURE_AUDIO:-}" ]] && echo "HUB_FEATURE_AUDIO=$HUB_FEATURE_AUDIO"
   [[ -n "${HUB_FEATURE_HUE:-}" ]] && echo "HUB_FEATURE_HUE=$HUB_FEATURE_HUE"
@@ -137,11 +158,6 @@ scp_copy "$RUNTIME_ENV" "$PI_HOST:/tmp/hue.runtime.env"
 rm -f "$RUNTIME_ENV"
 ssh_run "$SUDO mkdir -p /etc/hue && $SUDO mv /tmp/hue.runtime.env /etc/hue/runtime.env && $SUDO chmod 600 /etc/hue/runtime.env"
 ssh_run "grep -q '^EnvironmentFile=-/etc/hue/runtime.env$' /etc/systemd/system/hue.service || $SUDO sed -i '/^Environment=PYTHONUNBUFFERED=1$/a EnvironmentFile=-/etc/hue/runtime.env' /etc/systemd/system/hue.service; $SUDO systemctl daemon-reload"
-
-if [[ "$HUB_SITE" == "garden" ]]; then
-  echo "→ Ensuring garden AAC/M4A playback support..."
-  ssh_run "if ! command -v ffmpeg >/dev/null; then $SUDO apt-get update && $SUDO apt-get install -y ffmpeg; fi"
-fi
 
 echo "→ Restarting $SERVICE_NAME..."
 ssh_run "$SUDO systemctl restart '$SERVICE_NAME'"

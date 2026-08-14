@@ -1,0 +1,18 @@
+# Renew Tailscale/Let's Encrypt hub certificate twice daily and restart hue.
+# Install on the garden Pi:
+#   sudo cp scripts/hue-tls-renew.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hue-tls-renew.timer
+
+[Unit]
+Description=Renew HUE hub Tailscale/Let's Encrypt TLS certificate
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=simmoe
+Group=simmoe
+WorkingDirectory=/home/simmoe/HUE_EJDERSTED
+ExecStart=/home/simmoe/HUE_EJDERSTED/scripts/provision-tls-cert.sh
+ExecStartPost=/bin/systemctl restart hue.service
