@@ -9,6 +9,8 @@ Initial scope:
 - `CameraCard` uses the phone browser's `navigator.mediaDevices.getUserMedia()`.
 - Only the configured Android kiosk may publish camera snapshots. Remote browsers
   render the latest kiosk snapshot instead of opening their own camera.
+- The garden Pi owns snapshots, person detection and evidence. Ejderstedgade
+  consumes the feed through its own read-only backend proxy.
 - Hue and every Vesterbro B&O route are disabled. Garden audio uses only the
   configured BlueALSA speaker and the local `Ejdersted Garden` Connect endpoint.
 - Remote access should use Tailscale or another private tunnel, not public camera port forwarding.
@@ -38,6 +40,8 @@ Typical garden feature flags:
 
 ```bash
 HUB_SITE=garden
+HUB_CAMERA_MODE=publisher
+HUB_CAMERA_PUBLISHER_HOSTS=<garden-phone-lan-or-tailscale-ip>
 HUB_FEATURE_CAMERA=true
 HUB_FEATURE_AUDIO=true
 HUB_FEATURE_HUE=false
@@ -87,6 +91,10 @@ The camera stream resumes automatically after recording.
 ## Deploy
 
 ```bash
+PI_HOST=simmoe@kolonihave-pi \
+HUB_SITE=garden \
+HUB_CAMERA_MODE=publisher \
+HUB_PUBLIC_URL=https://kolonihave-pi.tail7947c4.ts.net:8443 \
 ./deploy.sh garden
 ```
 
@@ -95,16 +103,16 @@ garden `HUB_*` values from the global/local secret setup before deploy.
 
 ## Remote Dashboard POC
 
-Open `/dashboard` on the garden Pi URL, for example:
+Open the read-only `/dashboard` on the certificate-matching MagicDNS URL:
 
 ```text
-https://192.168.8.133:8443/dashboard
+https://kolonihave-pi.tail7947c4.ts.net:8443/dashboard
 ```
 
-The first proof of concept is a snapshot feed: the Android kiosk keeps the camera
+The feed uses snapshots rather than continuous video: the Android kiosk keeps the camera
 open locally and uploads the latest JPEG frame to the Pi every couple of seconds.
-The dashboard polls that latest image and can trigger basic kiosk controls through
-the existing ADB endpoints. This is not continuous video streaming yet.
+The dashboard polls that latest image. It deliberately has no ADB, brightness or
+alarm mutation controls.
 
 The same viewer behavior is used inside the main kiosk UI for non-kiosk browsers:
 opening the garden hub over Tailscale shows the Android kiosk feed, not the

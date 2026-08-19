@@ -32,7 +32,6 @@
   let status = $state<CameraStatus | null>(null);
   let security = $state<SecurityStatus | null>(null);
   let imageUrl = $state('/api/camera/latest.jpg');
-  let actionStatus = $state('');
   let evidenceOpen = $state(false);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -75,32 +74,6 @@
     } catch {
       status = { ok: false, available: false, ts: null, age: null, bytes: 0, error: 'offline' };
       security = null;
-    }
-  }
-
-  async function callAction(label: string, input: RequestInfo | URL, init?: RequestInit) {
-    actionStatus = `${label}...`;
-    try {
-      const res = await fetch(input, init);
-      actionStatus = res.ok ? `${label}: ok` : `${label}: fejl`;
-    } catch {
-      actionStatus = `${label}: offline`;
-    }
-  }
-
-  async function setArmed(armed: boolean) {
-    actionStatus = armed ? 'Alarm tilkobles...' : 'Alarm frakobles...';
-    try {
-      const res = await fetch('/api/security/garden/armed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ armed }),
-      });
-      const data = await res.json().catch(() => null);
-      security = normalizeSecurity(data?.security) ?? security;
-      actionStatus = res.ok ? (armed ? 'Alarm: tilkoblet' : 'Alarm: frakoblet') : 'Alarm: fejl';
-    } catch {
-      actionStatus = 'Alarm: offline';
     }
   }
 
@@ -150,9 +123,6 @@
       {/if}
     </p>
     <div class="security-actions">
-      <button onclick={() => setArmed(!security?.armed)}>
-        {security?.armed ? 'Frakobl alarm' : 'Tilkobl alarm'}
-      </button>
       {#if evidenceUrl()}
         <button onclick={() => (evidenceOpen = true)}>Vis evidence</button>
       {/if}
@@ -160,14 +130,8 @@
   </section>
 
   <section class="controls">
-    <button onclick={() => callAction('Kiosk', '/api/kiosk', { method: 'POST' })}>Reapply kiosk</button>
-    <button onclick={() => callAction('Lysstyrke', '/api/brightness/255', { method: 'PUT' })}>Brightness max</button>
     <button onclick={() => void refreshCamera()}>Refresh</button>
   </section>
-
-  {#if actionStatus}
-    <p class="action-status">{actionStatus}</p>
-  {/if}
 </main>
 
 {#if evidenceOpen && evidenceUrl()}
@@ -203,8 +167,7 @@
   }
 
   .eyebrow,
-  .status,
-  .action-status {
+  .status {
     margin: 0;
     color: rgba(255, 255, 255, 0.55);
     font-size: 0.8rem;
@@ -313,10 +276,6 @@
 
   button:active {
     transform: translateY(1px);
-  }
-
-  .action-status {
-    margin-top: 14px;
   }
 
   .modal-backdrop {

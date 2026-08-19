@@ -13,8 +13,11 @@ på en Raspberry Pi eller en Mac.
 
 Appen bruger runtime-profiler:
 
-- `home`: Vesterbro-kiosk med B&O, Philips Hue, Spotify, podcasts og ADB-kiosk.
-- `garden`: kolonihave-kiosk med telefonens kamera først og home-only moduler deaktiveret.
+- `home`: Ejderstedgade-kiosk, privat intern HTTPS og read-only viewer af haven.
+- `garden`: kolonihave-kiosk og eneste ejer/publisher af kamera-feedet.
+
+Begge installationer deployes fra samme `main`-branch. Kioskforskelle hører til
+i runtime-profiler, ikke i permanente branches.
 
 Se også `docs/architecture.md`, `docs/home.md` og `docs/garden.md`.
 
@@ -48,11 +51,11 @@ Garden-profilens konkrete IP'er og credentials kommer fra global/maskin-lokal
 secret setup som environment variables, ikke fra projekt-lokale `.env` eller
 JSON-filer.
 
-**Garden dashboard via Tailscale**: Det uafhængige garden-dashboard åbnes udefra
-via Tailscale, ikke via Vesterbro LAN og ikke ved at refreshe Android-kioskerne.
-Brug `https://100.111.167.54:8443/dashboard` eller
-`https://kolonihave-pi:8443/dashboard` hvis MagicDNS virker. Dashboardet er kun
-viewer/control-flade; garden-kiosken selv kører stadig lokalt på garden-Pi'en.
+**Garden dashboard via Tailscale**: Det uafhængige garden-dashboard åbnes
+privat via Tailscale, ikke via offentlig port-forwarding. Brug
+`https://kolonihave-pi.tail7947c4.ts.net:8443/dashboard`; den rå `100.x`-IP
+matcher ikke certifikatet. Dashboardet er read-only. Ejderstedgade-kiosken viser
+feedet gennem home-backendens same-origin, read-only proxy.
 
 **Garden audio target**: Androiden er kun kiosk/UI. Pi'en er audio-controller og
 skal sende Spotify-afspilning til kendte output targets. Aktuelt kendt target er
@@ -64,7 +67,7 @@ på et kendt target, hvis højttaleren har været koblet til en telefon.
 | Enhed | IP | Port | Bemærkning |
 |---|---|---|---|
 | Raspberry Pi 5 (home server) | `192.168.86.16` | `8443` (HTTPS) | SSH user: `simmoe`; password/key is local-only |
-| Raspberry Pi (garden, Tailscale) | `100.111.167.54` / `kolonihave-pi` | `8443` (HTTPS) | Bruges til `/dashboard` udefra |
+| Raspberry Pi (garden, Tailscale) | `kolonihave-pi.tail7947c4.ts.net` | `8443` (HTTPS) | Kameraejer; privat tailnet-adgang |
 | Mac (dev) | `192.168.86.13` | `8443` (HTTPS) | Kun til udvikling |
 | Kiosk-telefon (Samsung Galaxy A12) | `192.168.86.15` | ADB: variabel | Trådløs ADB port skifter ved genstart |
 | Philips Hue Bridge | `192.168.86.25` | HTTPS (clipv2) | |
@@ -341,9 +344,11 @@ curl -X PUT http://192.168.86.188:8080/BeoZone/Zone/Sound/Volume/Speaker/Level \
 
 ## 12. Git
 
-- **Aktiv branch**: `main`
-- **Default branch på GitHub**: `master`
-- **Backup-branch**: `category-swipe-backup` (gammel experimental swipe-UI)
+- **Kanonisk release-branch**: `main`
+- Begge fysiske kiosker deployes fra samme commit på `main`.
+- `home`/`garden` er runtime-profiler, ikke release-branches.
+- Gamle device-/feature-branches bevares kun midlertidigt under migrering og
+  slettes først efter begge kiosker er valideret.
 
 ---
 

@@ -7,6 +7,7 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 BASE_DIR = Path(__file__).parent
@@ -39,6 +40,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "audio": {
         "defaultTarget": "",
         "targets": {},
+    },
+    "camera": {
+        "mode": "",
+        "gardenHubUrl": "",
+        "publisherHosts": [],
     },
     "solar": {
         "gpioPin": 17,
@@ -79,7 +85,12 @@ def _bool_env(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
         return None
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false, got {raw!r}")
 
 
 def _apply_env_overrides() -> None:
@@ -113,8 +124,39 @@ def _apply_env_overrides() -> None:
     if device := os.environ.get("HUB_AUDIO_SPOTIFY_DEVICE"):
         audio["spotifyDevice"] = device
 
+    camera = CONFIG.setdefault("camera", {})
+    if mode := os.environ.get("HUB_CAMERA_MODE"):
+        camera["mode"] = mode.strip().lower()
+    if upstream := os.environ.get("HUB_GARDEN_HUB_URL"):
+        camera["gardenHubUrl"] = upstream.strip().rstrip("/")
+    if publisher_hosts := os.environ.get("HUB_CAMERA_PUBLISHER_HOSTS"):
+        camera["publisherHosts"] = [
+            host.strip() for host in publisher_hosts.split(",") if host.strip()
+        ]
+
 
 _apply_env_overrides()
+
+
+def validate_config(*, require_camera_upstream: bool = False) -> None:
+    configured_site = str(CONFIG.get("site") or "").strip()
+    if configured_site not in {"home", "garden"}:
+        raise ValueError(f"HUB_SITE must be home or garden, got {configured_site!r}")
+
+    mode = camera_mode()
+    expected_mode = "viewer" if configured_site == "home" else "publisher"
+    if mode != expected_mode:
+        raise ValueError(
+            f"{configured_site} profile requires HUB_CAMERA_MODE={expected_mode}, got {mode!r}"
+        )
+
+    upstream = garden_hub_url()
+    if upstream:
+        parsed = urlparse(upstream)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("HUB_GARDEN_HUB_URL must be an absolute HTTPS URL")
+    if require_camera_upstream and configured_site == "home" and feature_enabled("camera") and not upstream:
+        raise ValueError("home camera viewer requires HUB_GARDEN_HUB_URL")
 
 
 def feature_enabled(name: str) -> bool:
@@ -124,6 +166,38 @@ def feature_enabled(name: str) -> bool:
 
 def site() -> str:
     return str(CONFIG.get("site") or "home")
+
+
+def camera_mode() -> str:
+    camera = CONFIG.get("camera", {})
+    if isinstance(camera, dict) and camera.get("mode"):
+        return str(camera["mode"]).strip().lower()
+    return "publisher" if site() == "garden" else "viewer"
+
+
+def garden_hub_url() -> str:
+    camera = CONFIG.get("camera", {})
+    return str(camera.get("gardenHubUrl") or "").strip().rstrip("/") if isinstance(camera, dict) else ""
+
+
+def camera_publisher_hosts() -> set[str]:
+    camera = CONFIG.get("camera", {})
+    configured = camera.get("publisherHosts", []) if isinstance(camera, dict) else []
+    hosts = {
+        str(host).strip()
+        for host in configured
+        if str(host).strip()
+    } if isinstance(configured, list) else set()
+    kiosk_host = kiosk_phone_ip().strip()
+    adb_host = adb_serial().split(":", 1)[0].strip()
+    if kiosk_host:
+        hosts.add(kiosk_host)
+    if adb_host:
+        hosts.add(adb_host)
+    return hosts
+
+
+validate_config()
 
 
 def bo_speakers_enabled() -> bool:
@@ -225,6 +299,9 @@ def public_config() -> dict[str, Any]:
         "site": CONFIG.get("site", "home"),
         "publicUrl": CONFIG.get("publicUrl", ""),
         "features": CONFIG.get("features", {}),
+        "camera": {
+            "mode": camera_mode(),
+        },
         "audio": {
             "defaultTarget": default_audio_target(),
             "targets": targets,

@@ -27,7 +27,7 @@ import xml.etree.ElementTree as ET
 
 import httpx
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
 
@@ -62,6 +62,11 @@ GARDEN_KEEPALIVE_INTERVAL_SECONDS = 60
 
 # ─── HTTP client ──────────────────────────────────────────────────────────────
 _http = httpx.AsyncClient(timeout=2.5)
+_camera_http = httpx.AsyncClient(
+    timeout=httpx.Timeout(5.0),
+    verify=True,
+    follow_redirects=False,
+)
 
 # ─── Device storage ───────────────────────────────────────────────────────────
 def load_devices() -> dict:
@@ -534,6 +539,7 @@ async def lifespan(app: FastAPI):
         solar_ctrl.close()
     zc.close()
     await _http.aclose()
+    await _camera_http.aclose()
     await _stream_http.aclose()
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────────
@@ -876,6 +882,17 @@ async def trigger_kiosk():
 @app.get("/api/config")
 async def app_config():
     return hub_config.public_config()
+
+
+@app.get("/api/health")
+async def health():
+    return {
+        "ok": True,
+        "site": hub_config.site(),
+        "cameraMode": hub_config.camera_mode(),
+        "gardenUpstreamConfigured": bool(hub_config.garden_hub_url()),
+        "release": os.environ.get("HUB_RELEASE", "development"),
+    }
 
 
 def _load_firebase_config() -> dict:
@@ -2154,13 +2171,77 @@ def _request_client_host(request: Request) -> str:
 
 def _camera_publisher_allowed(request: Request) -> bool:
     """Only the configured garden Android kiosk may publish camera snapshots."""
-    if hub_config.site() != "garden":
-        return True
-    allowed = {hub_config.kiosk_phone_ip().strip()}
-    adb_host = hub_config.adb_serial().split(":", 1)[0].strip()
-    if adb_host:
-        allowed.add(adb_host)
-    return _request_client_host(request) in {host for host in allowed if host}
+    if hub_config.camera_mode() != "publisher" or hub_config.site() != "garden":
+        return False
+    return _request_client_host(request) in hub_config.camera_publisher_hosts()
+
+
+async def _garden_camera_get(path: str) -> httpx.Response | JSONResponse:
+    """Fetch a read-only camera resource from the garden over verified HTTPS."""
+    upstream = hub_config.garden_hub_url()
+    if not upstream:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": "Garden camera upstream is not configured",
+                "source": "garden-proxy",
+            },
+            status_code=503,
+        )
+    try:
+        response = await _camera_http.get(f"{upstream}{path}")
+    except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": f"Garden camera unavailable: {type(exc).__name__}",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    if response.status_code != 200:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": f"Garden camera returned HTTP {response.status_code}",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    return response
+
+
+async def _garden_camera_json(path: str) -> dict | JSONResponse:
+    response = await _garden_camera_get(path)
+    if isinstance(response, JSONResponse):
+        return response
+    try:
+        payload = response.json()
+    except ValueError:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": "Garden camera returned invalid JSON",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    if not isinstance(payload, dict):
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": "Garden camera returned an invalid payload",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    payload["source"] = "garden-proxy"
+    return payload
 
 
 @app.get("/api/camera/publisher")
@@ -2209,6 +2290,15 @@ async def upload_camera_snapshot(request: Request):
 async def latest_camera_snapshot():
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        response = await _garden_camera_get("/api/camera/latest.jpg")
+        if isinstance(response, JSONResponse):
+            return response
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": "no-store, max-age=0", "X-Camera-Source": "garden-proxy"},
+        )
     if not CAMERA_SNAPSHOT_FILE.is_file():
         return JSONResponse({"ok": False, "error": "No snapshot yet"}, status_code=404)
     return FileResponse(
@@ -2222,6 +2312,8 @@ async def latest_camera_snapshot():
 async def camera_snapshot_status():
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        return await _garden_camera_json("/api/camera/status")
     if not CAMERA_SNAPSHOT_FILE.is_file():
         return {"ok": True, "available": False, "ts": None, "age": None, "bytes": 0, "presence": camera_security.public_state()}
     stat = CAMERA_SNAPSHOT_FILE.stat()
@@ -2239,6 +2331,8 @@ async def camera_snapshot_status():
 async def garden_security_status():
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        return await _garden_camera_json("/api/security/garden")
     return {"ok": True, "security": camera_security.public_state()}
 
 
@@ -2246,6 +2340,11 @@ async def garden_security_status():
 async def set_garden_security_armed(data: dict = Body(default_factory=dict)):
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() != "publisher":
+        return JSONResponse(
+            {"ok": False, "error": "Camera viewers cannot change garden security state"},
+            status_code=403,
+        )
     armed = bool(data.get("armed"))
     security = await camera_security.set_armed(
         armed,
@@ -2260,6 +2359,15 @@ async def set_garden_security_armed(data: dict = Body(default_factory=dict)):
 async def garden_security_evidence(event_id: str):
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        response = await _garden_camera_get(f"/api/security/evidence/{event_id}.jpg")
+        if isinstance(response, JSONResponse):
+            return response
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": "no-store, max-age=0", "X-Camera-Source": "garden-proxy"},
+        )
     evidence = camera_security.evidence_file(event_id)
     if evidence is None:
         return JSONResponse({"ok": False, "error": "Evidence not found"}, status_code=404)

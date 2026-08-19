@@ -21,11 +21,45 @@ if [[ -z "$TARGET" || "$TARGET" == "--help" || "$TARGET" == "-h" ]]; then
   exit 1
 fi
 
+if [[ "$TARGET" != "home" && "$TARGET" != "garden" ]]; then
+  echo "Target must be home or garden, got: $TARGET" >&2
+  exit 2
+fi
+if [[ -n "$NO_BUILD" && "$NO_BUILD" != "--no-build" ]]; then
+  echo "Unknown option: $NO_BUILD" >&2
+  exit 2
+fi
+
 : "${PI_HOST:?Set PI_HOST in environment}"
 PI_REPO_DIR="${PI_REPO_DIR:-/home/simmoe/HUE_EJDERSTED}"
 SERVICE_NAME="${SERVICE_NAME:-hue}"
 HUB_SITE="${HUB_SITE:-$TARGET}"
 HUB_PUBLIC_URL="${HUB_PUBLIC_URL:-${KIOSK_URL:-}}"
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+EXPECTED_COMMIT="${DEPLOY_COMMIT:-$SOURCE_COMMIT}"
+
+if [[ "$SOURCE_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+  echo "Refusing deploy: HEAD $SOURCE_COMMIT does not match DEPLOY_COMMIT $EXPECTED_COMMIT" >&2
+  exit 2
+fi
+if [[ "${ALLOW_DIRTY_DEPLOY:-false}" != "true" && -n "$(git status --porcelain)" ]]; then
+  echo "Refusing deploy from a dirty working tree. Commit first or set ALLOW_DIRTY_DEPLOY=true." >&2
+  exit 2
+fi
+if [[ "$HUB_SITE" != "$TARGET" ]]; then
+  echo "Refusing deploy: target '$TARGET' does not match HUB_SITE '$HUB_SITE'" >&2
+  exit 2
+fi
+
+EXPECTED_CAMERA_MODE="viewer"
+if [[ "$TARGET" == "garden" ]]; then
+  EXPECTED_CAMERA_MODE="publisher"
+fi
+HUB_CAMERA_MODE="${HUB_CAMERA_MODE:-$EXPECTED_CAMERA_MODE}"
+if [[ "$HUB_CAMERA_MODE" != "$EXPECTED_CAMERA_MODE" ]]; then
+  echo "Refusing deploy: $TARGET requires HUB_CAMERA_MODE=$EXPECTED_CAMERA_MODE" >&2
+  exit 2
+fi
 
 if [[ "$HUB_SITE" == "garden" ]]; then
   HUB_FEATURE_CAMERA="${HUB_FEATURE_CAMERA:-true}"
@@ -35,6 +69,18 @@ if [[ "$HUB_SITE" == "garden" ]]; then
   HUB_FEATURE_PODCASTS="${HUB_FEATURE_PODCASTS:-true}"
   HUB_FEATURE_PLAYLISTS="${HUB_FEATURE_PLAYLISTS:-true}"
   HUB_FEATURE_ADBKIOSK="${HUB_FEATURE_ADBKIOSK:-true}"
+elif [[ "${HUB_FEATURE_CAMERA:-true}" == "true" && -z "${HUB_GARDEN_HUB_URL:-}" ]]; then
+  echo "Refusing home deploy: HUB_GARDEN_HUB_URL is required for the camera viewer" >&2
+  exit 2
+fi
+
+if [[ -n "${HUB_GARDEN_HUB_URL:-}" && ! "$HUB_GARDEN_HUB_URL" =~ ^https://[^/]+([/].*)?$ ]]; then
+  echo "HUB_GARDEN_HUB_URL must be an absolute HTTPS URL" >&2
+  exit 2
+fi
+if [[ "$HUB_SITE" == "home" && ! "$HUB_PUBLIC_URL" =~ ^https:// ]]; then
+  echo "Home uses private internal HTTPS; set HUB_PUBLIC_URL or KIOSK_URL to https://..." >&2
+  exit 2
 fi
 
 ssh_run() {
@@ -121,8 +167,8 @@ done
 if [[ "$HUB_SITE" == "garden" ]]; then
   echo "→ Ensuring garden AAC/M4A playback support..."
   ssh_run "if ! command -v ffmpeg >/dev/null; then $SUDO apt-get update && $SUDO apt-get install -y ffmpeg; fi"
-  echo "→ Refreshing Tailscale/Let's Encrypt TLS certificate (if available)..."
-  ssh_run "if command -v tailscale >/dev/null && [[ -x '$PI_REPO_DIR/scripts/provision-tls-cert.sh' ]]; then '$PI_REPO_DIR/scripts/provision-tls-cert.sh' || echo 'TLS provision skipped (enable HTTPS Certificates in Tailscale admin)'; else echo 'No Tailscale cert provisioner on target'; fi"
+  echo "→ Refreshing Tailscale/Let's Encrypt TLS certificate..."
+  ssh_run "command -v tailscale >/dev/null && [[ -x '$PI_REPO_DIR/scripts/provision-tls-cert.sh' ]] && '$PI_REPO_DIR/scripts/provision-tls-cert.sh'"
   if [[ -z "${HUB_PUBLIC_URL:-}" ]]; then
     HINT_URL=$(ssh_run "cat '$PI_REPO_DIR/certs/public-url.txt' 2>/dev/null" || true)
     HINT_URL="$(echo "$HINT_URL" | tr -d '\r' | tail -n 1)"
@@ -131,13 +177,21 @@ if [[ "$HUB_SITE" == "garden" ]]; then
       echo "→ Using Tailscale public URL: $HUB_PUBLIC_URL"
     fi
   fi
+  if [[ ! "$HUB_PUBLIC_URL" =~ ^https://[^/]+\.ts\.net(:[0-9]+)?/?$ ]]; then
+    echo "Garden HUB_PUBLIC_URL must use its HTTPS Tailscale MagicDNS .ts.net hostname" >&2
+    exit 2
+  fi
 fi
 
 echo "→ Writing runtime environment..."
 RUNTIME_ENV=$(mktemp)
 {
   echo "HUB_SITE=$HUB_SITE"
+  echo "HUB_CAMERA_MODE=$HUB_CAMERA_MODE"
+  echo "HUB_RELEASE=$SOURCE_COMMIT"
   [[ -n "${HUB_PUBLIC_URL:-}" ]] && echo "HUB_PUBLIC_URL=$HUB_PUBLIC_URL"
+  [[ -n "${HUB_GARDEN_HUB_URL:-}" ]] && echo "HUB_GARDEN_HUB_URL=$HUB_GARDEN_HUB_URL"
+  [[ -n "${HUB_CAMERA_PUBLISHER_HOSTS:-}" ]] && echo "HUB_CAMERA_PUBLISHER_HOSTS=$HUB_CAMERA_PUBLISHER_HOSTS"
   [[ -n "${HUB_FEATURE_CAMERA:-}" ]] && echo "HUB_FEATURE_CAMERA=$HUB_FEATURE_CAMERA"
   [[ -n "${HUB_FEATURE_AUDIO:-}" ]] && echo "HUB_FEATURE_AUDIO=$HUB_FEATURE_AUDIO"
   [[ -n "${HUB_FEATURE_HUE:-}" ]] && echo "HUB_FEATURE_HUE=$HUB_FEATURE_HUE"
@@ -171,6 +225,16 @@ else
   ssh_run "$SUDO journalctl -u '$SERVICE_NAME' --no-pager -n 20 2>&1"
   exit 1
 fi
+
+echo "→ Verifying deployed profile and release..."
+HEALTH_CURL="curl --fail --silent --show-error"
+if [[ "$HUB_SITE" == "home" ]]; then
+  HEALTH_CURL="$HEALTH_CURL --insecure"
+fi
+HEALTH_JSON="$(ssh_run "$HEALTH_CURL '$HUB_PUBLIC_URL/api/health'")"
+HEALTH_JSON="$HEALTH_JSON" EXPECTED_SITE="$HUB_SITE" EXPECTED_RELEASE="$SOURCE_COMMIT" python3 -c \
+  'import json,os; d=json.loads(os.environ["HEALTH_JSON"]); assert d.get("ok") is True; assert d.get("site")==os.environ["EXPECTED_SITE"]; assert d.get("release")==os.environ["EXPECTED_RELEASE"]'
+echo "✓ Health check matches $HUB_SITE @ ${SOURCE_COMMIT:0:12}"
 
 if [[ -n "${KIOSK_ADB_SERIAL:-}" && -n "${KIOSK_URL:-}" ]]; then
   echo "→ Refreshing kiosk browser..."
