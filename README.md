@@ -23,6 +23,7 @@ proxy. Neither hub is exposed by public camera port forwarding.
 See:
 
 - `docs/architecture.md`
+- `docs/branch-migration.md`
 - `docs/home.md`
 - `docs/garden.md`
 - `KIOSK.md`
