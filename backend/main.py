@@ -998,7 +998,14 @@ async def spotify_resume():
     ok = await spotify.resume()
     if ok:
         _mark_garden_audio_active()
-    return {"ok": ok, **({"detail": "Gå hen og tænd højttaleren"} if not ok and hub_config.site() == "garden" else {})}
+    return {
+        "ok": ok,
+        **(
+            {"detail": "Spotify Connect på have-Pi'en er offline"}
+            if not ok and hub_config.site() == "garden"
+            else {}
+        ),
+    }
 
 @app.post("/api/spotify/play-uris")
 async def spotify_play_uris(data: dict = Body(default_factory=dict)):
@@ -1297,17 +1304,22 @@ async def _rss_meta_and_queue(sh: dict) -> tuple[dict, list[dict]]:
 
 
 async def _garden_bluealsa_device() -> str:
-    """Return the garden speaker PCM, or one stable user-facing error."""
+    """Return the garden speaker PCM with a precise operator-facing error."""
     if hub_config.site() != "garden":
         raise RuntimeError("Garden audio is unavailable on this kiosk")
     targets = _configured_audio_targets()
     target = next((t for t in targets if t.default), targets[0] if targets else None)
     if not target or target.type != "bluealsa" or not target.mac:
-        raise RuntimeError("Gå hen og tænd højttaleren")
+        raise RuntimeError("Havehøjttaleren er ikke konfigureret")
     status = await audio_targets.target_status(target)
     if not status.get("online"):
         status = await audio_targets.connect_target(target)
     if not status.get("online"):
+        detail = str(status.get("error") or "").strip()
+        if detail:
+            raise RuntimeError(detail)
+        if status.get("connected") and not status.get("playback"):
+            raise RuntimeError("Højttaleren er forbundet, men A2DP-lydprofilen mangler")
         raise RuntimeError("Gå hen og tænd højttaleren")
     return f"bluealsa:DEV={target.mac},PROFILE=a2dp"
 

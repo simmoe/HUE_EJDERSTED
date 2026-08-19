@@ -267,7 +267,7 @@ class Spotify:
         off = max(0, min(offset, len(uris) - 1))
         speaker = await self._find_speaker_device_id()
         if hub_config.site() == "garden" and not speaker:
-            return False, "Gå hen og tænd højttaleren", 0
+            return False, "Spotify Connect på have-Pi'en er offline", 0
         candidates: list[str | None] = []
         if speaker:
             candidates.append(speaker)
@@ -434,7 +434,7 @@ class Spotify:
             return False, "no auth headers"
         speaker = await self._find_speaker_device_id()
         if hub_config.site() == "garden" and not speaker:
-            return False, "Gå hen og tænd højttaleren"
+            return False, "Spotify Connect på have-Pi'en er offline"
         candidates: list[str | None] = []
         if speaker:
             candidates.append(speaker)
