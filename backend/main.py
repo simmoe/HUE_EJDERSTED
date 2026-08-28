@@ -1156,7 +1156,13 @@ async def spotify_playlist_build(data: dict = Body(default_factory=dict)):
 #   - "rss":     Standard RSS/Omny MP3 → mpg123 → Pi/BlueALSA (garden)
 # show_id ud mod frontend prefixes med source for ikke-Spotify shows så det er entydigt.
 PODCAST_SHOWS: list[dict] = [
-    {"source": "spotify", "id": "6FVyoDMn4GKxveMegJ2Yih", "fallback_name": "Fodboldlisten"},
+    {
+        "source": "rss",
+        "id": "fodboldlisten",
+        "fallback_name": "Fodboldlisten",
+        "order": "latest",
+        "feed": "https://api.dr.dk/podcasts/v1/feeds/fodboldlisten.xml?format=podcast",
+    },
     {"source": "spotify", "id": "5d4yba4KbcBTtwZ8glscZZ", "fallback_name": "Det næste kapitel"},
     {"source": "sr",      "id": "4914", "fallback_name": "Text och musik med Eric Schüldt"},
     {"source": "sr",      "id": "2488", "fallback_name": "Rendezvous med Kristjan Saag"},
@@ -1232,7 +1238,7 @@ async def _rss_feed(sh: dict) -> tuple[dict, list[dict]]:
         return {}, []
     r = await _http.get(feed, timeout=10)
     r.raise_for_status()
-    root = ET.fromstring(r.content)
+    root = ET.fromstring(r.content.decode("utf-8-sig", errors="replace"))
     channel = root.find("channel")
     ns_itunes = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
     meta = {
@@ -1300,7 +1306,11 @@ def _chronological_queue(episodes: list[dict]) -> list[dict]:
 
 async def _rss_meta_and_queue(sh: dict) -> tuple[dict, list[dict]]:
     meta, episodes = await _rss_feed(sh)
-    return meta, _chronological_queue(episodes)
+    queue = list(episodes) if sh.get("order") == "latest" else _chronological_queue(episodes)
+    return meta, [
+        {**ep, "uri": f"rss:{sh['id']}:{idx}"}
+        for idx, ep in enumerate(queue)
+    ]
 
 
 async def _garden_bluealsa_device() -> str:
@@ -1781,7 +1791,8 @@ async def _play_latest_rss(sh: dict) -> tuple[bool, str, dict]:
     _, queue = await _rss_meta_and_queue(sh)
     if not queue:
         return False, "no latest episode", {}
-    return await _play_rss_index(sh, len(queue) - 1)
+    index = 0 if sh.get("order") == "latest" else len(queue) - 1
+    return await _play_rss_index(sh, index)
 
 
 @app.post("/api/podcasts/play-latest")
@@ -1865,7 +1876,7 @@ async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
 
     if src == "rss":
         try:
-            _, episodes = await _rss_feed(sh)
+            _, episodes = await _rss_meta_and_queue(sh)
         except Exception:
             return {"episodes": [], "has_more": False, "offset": offset}
         start = max(0, int(offset))
@@ -1901,22 +1912,27 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
         ok, detail = await spotify.play_episode(uri)
         if ok:
             _active_podcast_engine = "spotify"
+            ep_id = uri.rsplit(":", 1)[-1]
+            ep_meta = await spotify.get_episode(ep_id)
+            title = (ep_meta or {}).get("name") or "Podcast"
+            show_title = ((ep_meta or {}).get("show") or {}).get("name") or "Podcast"
+            duration = int((ep_meta or {}).get("duration_ms") or 0)
             _set_podcast_state(
                 active=True,
                 source="spotify",
                 showId="",
-                showTitle="Podcast",
-                episodeId=uri.rsplit(":", 1)[-1],
+                showTitle=show_title,
+                episodeId=ep_id,
                 episodeUri=uri,
-                episodeTitle="Podcast",
+                episodeTitle=title,
                 episodeIndex=0,
-                queue=[{"id": uri.rsplit(":", 1)[-1], "uri": uri, "name": "Podcast", "duration_ms": 0}],
+                queue=[{"id": ep_id, "uri": uri, "name": title, "duration_ms": duration}],
                 playing=True,
                 positionMs=0,
-                durationMs=0,
+                durationMs=duration,
                 error="",
             )
-        return {"ok": ok, "detail": detail}
+        return {"ok": ok, "detail": detail, "player": _public_podcast_state()}
 
     if uri.startswith("sr:episode:"):
         sr_id = uri.split(":", 2)[2]

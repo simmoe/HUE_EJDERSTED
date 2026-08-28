@@ -64,3 +64,49 @@ class SpotifyClientEpisodeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item["id"] for item in items], ["ep1"])
         self.assertFalse(has_more)
+
+
+class FodboldlistenRoutingTests(unittest.TestCase):
+    def test_fodboldlisten_uses_dr_rss_not_spotify_connect(self):
+        sh = main._find_show("rss:fodboldlisten") or main._find_show("fodboldlisten")
+        self.assertIsNotNone(sh)
+        self.assertEqual(sh["source"], "rss")
+        self.assertEqual(sh.get("order"), "latest")
+        self.assertIn("api.dr.dk/podcasts", sh["feed"])
+
+
+class SpotifyNowPlayingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_null_item_does_not_crash(self):
+        class FakeResp:
+            status_code = 200
+            content = b'{"item":null}'
+
+            def json(self):
+                return {"item": None, "is_playing": True, "progress_ms": 12}
+
+        client = spotify.Spotify.__new__(spotify.Spotify)
+        client._http = AsyncMock()
+        client._http.get = AsyncMock(return_value=FakeResp())
+        with patch.object(client, "_headers", AsyncMock(return_value={"Authorization": "Bearer x"})):
+            data = await client.now_playing()
+        self.assertEqual(data["name"], "")
+        self.assertEqual(data["artist"], "")
+
+
+class SpotifyEpisodeTargetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_home_does_not_pretend_to_play_on_computer(self):
+        client = spotify.Spotify.__new__(spotify.Spotify)
+        client._http = AsyncMock()
+        with (
+            patch.object(client, "_headers", AsyncMock(return_value={"Authorization": "Bearer x"})),
+            patch.object(client, "_find_speaker_device_id", AsyncMock(return_value="abc")),
+            patch.object(
+                client,
+                "devices",
+                AsyncMock(return_value=[{"id": "abc", "name": "Ejdersted", "type": "Computer"}]),
+            ),
+            patch.object(spotify.hub_config, "site", return_value="home"),
+        ):
+            ok, detail = await client.play_episode("spotify:episode:x")
+        self.assertFalse(ok)
+        self.assertIn("B&O", detail)

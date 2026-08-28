@@ -395,6 +395,24 @@ class Spotify:
         items, _ = await self.get_show_episodes(show_id, limit=5, offset=0)
         return items[0] if items else None
 
+    async def get_episode(self, episode_id: str) -> dict | None:
+        """Hent ét afsnit (titel, show, duration) til player-state."""
+        h = await self._headers()
+        if not h or not episode_id:
+            return None
+        try:
+            r = await self._http.get(
+                f"{API}/episodes/{episode_id}",
+                headers=h,
+                params={"market": "DK"},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return data if isinstance(data, dict) else None
+        except Exception as e:
+            print(f"[Spotify] get_episode error: {e}")
+        return None
+
     async def get_show_episodes(
         self, show_id: str, limit: int = 20, offset: int = 0
     ) -> tuple[list[dict], bool]:
@@ -432,26 +450,26 @@ class Spotify:
         speaker = await self._find_speaker_device_id()
         if hub_config.site() == "garden" and not speaker:
             return False, "Spotify Connect på have-Pi'en er offline"
-        candidates: list[str | None] = []
         if speaker:
-            candidates.append(speaker)
-        if hub_config.site() != "garden":
-            candidates.append(None)
+            target = next((d for d in await self.devices() if d.get("id") == speaker), None)
+            if target and str(target.get("type") or "").lower() == "computer" and hub_config.site() != "garden":
+                speaker = None
+        if hub_config.site() != "garden" and not speaker:
+            return False, "Spotify-podcasts spiller ikke på B&O. Brug en podcast med direkte stream."
 
         body = {"uris": [episode_uri], "position_ms": 0}
         last_snip = ""
-        for device_id in candidates:
-            r = await self._http.put(
-                f"{API}/me/player/play",
-                headers=h,
-                params={"device_id": device_id} if device_id else {},
-                json=body,
-            )
-            if r.status_code in (200, 204):
-                await self._beolink_expand()
-                return True, ""
-            last_snip = f"device_id={device_id!r} HTTP {r.status_code}: {r.text[:350]}"
-            print(f"[Spotify] play-episode {last_snip}")
+        r = await self._http.put(
+            f"{API}/me/player/play",
+            headers=h,
+            params={"device_id": speaker} if speaker else {},
+            json=body,
+        )
+        if r.status_code in (200, 204):
+            await self._beolink_expand()
+            return True, ""
+        last_snip = f"device_id={speaker!r} HTTP {r.status_code}: {r.text[:350]}"
+        print(f"[Spotify] play-episode {last_snip}")
         return False, last_snip
 
     async def skip(self) -> bool:
@@ -464,18 +482,31 @@ class Spotify:
         h = await self._headers()
         if not h:
             return None
-        r = await self._http.get(f"{API}/me/player/currently-playing", headers=h)
+        r = await self._http.get(
+            f"{API}/me/player/currently-playing",
+            headers=h,
+            params={"additional_types": "episode"},
+        )
         if r.status_code == 200:
-            data = r.json()
-            item = data.get("item", {})
+            data = r.json() if r.content else {}
+            item = data.get("item") if isinstance(data, dict) else None
+            if not isinstance(item, dict):
+                item = {}
+            artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+            show = item.get("show") if isinstance(item.get("show"), dict) else {}
+            album = item.get("album") if isinstance(item.get("album"), dict) else {}
+            images = album.get("images") or item.get("images") or show.get("images") or []
+            artist = ", ".join(
+                a.get("name", "") for a in artists if isinstance(a, dict) and a.get("name")
+            ) or str(show.get("name") or "")
             result = {
-                "name": item.get("name", ""),
-                "artist": ", ".join(a["name"] for a in item.get("artists", [])),
-                "album": item.get("album", {}).get("name", ""),
-                "image": (item.get("album", {}).get("images", [{}])[0].get("url", "") if item.get("album", {}).get("images") else ""),
-                "is_playing": data.get("is_playing", False),
-                "uri": item.get("uri", ""),
-                "progress_ms": data.get("progress_ms", 0),
+                "name": item.get("name", "") or "",
+                "artist": artist,
+                "album": album.get("name", "") or show.get("name", "") or "",
+                "image": (images[0].get("url", "") if images and isinstance(images[0], dict) else ""),
+                "is_playing": bool(data.get("is_playing")),
+                "uri": item.get("uri", "") or "",
+                "progress_ms": data.get("progress_ms", 0) or 0,
                 "next_name": "",
                 "next_artist": "",
             }
@@ -485,10 +516,12 @@ class Spotify:
                     queue = qr.json().get("queue", [])
                     if queue:
                         nxt = queue[0]
-                        result["next_name"] = nxt.get("name", "")
-                        result["next_artist"] = ", ".join(
-                            a["name"] for a in nxt.get("artists", [])
-                        )
+                        if isinstance(nxt, dict):
+                            result["next_name"] = nxt.get("name", "") or ""
+                            nxt_artists = nxt.get("artists") if isinstance(nxt.get("artists"), list) else []
+                            result["next_artist"] = ", ".join(
+                                a.get("name", "") for a in nxt_artists if isinstance(a, dict) and a.get("name")
+                            )
             except Exception:
                 pass
             return result
