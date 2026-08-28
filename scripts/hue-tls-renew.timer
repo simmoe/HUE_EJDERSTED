@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer — renew HUE hub TLS certificate
+
+[Timer]
+OnCalendar=*-*-* 03,15:17:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

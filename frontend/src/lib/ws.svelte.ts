@@ -75,6 +75,9 @@ export interface HubConfig {
     adbKiosk: boolean;
     solar: boolean;
   };
+  camera: {
+    mode: 'publisher' | 'viewer';
+  };
   audio?: {
     defaultTarget: string;
     targets: AudioTargetSummary[];
@@ -93,6 +96,9 @@ export const defaultHubConfig: HubConfig = {
     playlists: true,
     adbKiosk: true,
     solar: false,
+  },
+  camera: {
+    mode: 'viewer',
   },
   audio: {
     defaultTarget: '',

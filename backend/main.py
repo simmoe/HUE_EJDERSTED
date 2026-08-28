@@ -12,12 +12,14 @@ import asyncio
 import errno
 import email.utils
 import json
+import os
 import signal
 import shutil
 import socket
 import contextlib
 import wave
 import time
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +27,7 @@ import xml.etree.ElementTree as ET
 
 import httpx
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
 
@@ -60,6 +62,11 @@ GARDEN_KEEPALIVE_INTERVAL_SECONDS = 60
 
 # ─── HTTP client ──────────────────────────────────────────────────────────────
 _http = httpx.AsyncClient(timeout=2.5)
+_camera_http = httpx.AsyncClient(
+    timeout=httpx.Timeout(5.0),
+    verify=True,
+    follow_redirects=False,
+)
 
 # ─── Device storage ───────────────────────────────────────────────────────────
 def load_devices() -> dict:
@@ -532,6 +539,7 @@ async def lifespan(app: FastAPI):
         solar_ctrl.close()
     zc.close()
     await _http.aclose()
+    await _camera_http.aclose()
     await _stream_http.aclose()
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────────
@@ -876,6 +884,17 @@ async def app_config():
     return hub_config.public_config()
 
 
+@app.get("/api/health")
+async def health():
+    return {
+        "ok": True,
+        "site": hub_config.site(),
+        "cameraMode": hub_config.camera_mode(),
+        "gardenUpstreamConfigured": bool(hub_config.garden_hub_url()),
+        "release": os.environ.get("HUB_RELEASE", "development"),
+    }
+
+
 def _load_firebase_config() -> dict:
     if not HUB_GLOBALS_FILE.is_file():
         return {}
@@ -979,7 +998,14 @@ async def spotify_resume():
     ok = await spotify.resume()
     if ok:
         _mark_garden_audio_active()
-    return {"ok": ok, **({"detail": "Gå hen og tænd højttaleren"} if not ok and hub_config.site() == "garden" else {})}
+    return {
+        "ok": ok,
+        **(
+            {"detail": "Spotify Connect på have-Pi'en er offline"}
+            if not ok and hub_config.site() == "garden"
+            else {}
+        ),
+    }
 
 @app.post("/api/spotify/play-uris")
 async def spotify_play_uris(data: dict = Body(default_factory=dict)):
@@ -1278,17 +1304,22 @@ async def _rss_meta_and_queue(sh: dict) -> tuple[dict, list[dict]]:
 
 
 async def _garden_bluealsa_device() -> str:
-    """Return the garden speaker PCM, or one stable user-facing error."""
+    """Return the garden speaker PCM with a precise operator-facing error."""
     if hub_config.site() != "garden":
         raise RuntimeError("Garden audio is unavailable on this kiosk")
     targets = _configured_audio_targets()
     target = next((t for t in targets if t.default), targets[0] if targets else None)
     if not target or target.type != "bluealsa" or not target.mac:
-        raise RuntimeError("Gå hen og tænd højttaleren")
+        raise RuntimeError("Havehøjttaleren er ikke konfigureret")
     status = await audio_targets.target_status(target)
     if not status.get("online"):
         status = await audio_targets.connect_target(target)
     if not status.get("online"):
+        detail = str(status.get("error") or "").strip()
+        if detail:
+            raise RuntimeError(detail)
+        if status.get("connected") and not status.get("playback"):
+            raise RuntimeError("Højttaleren er forbundet, men A2DP-lydprofilen mangler")
         raise RuntimeError("Gå hen og tænd højttaleren")
     return f"bluealsa:DEV={target.mac},PROFILE=a2dp"
 
@@ -2152,13 +2183,77 @@ def _request_client_host(request: Request) -> str:
 
 def _camera_publisher_allowed(request: Request) -> bool:
     """Only the configured garden Android kiosk may publish camera snapshots."""
-    if hub_config.site() != "garden":
-        return True
-    allowed = {hub_config.kiosk_phone_ip().strip()}
-    adb_host = hub_config.adb_serial().split(":", 1)[0].strip()
-    if adb_host:
-        allowed.add(adb_host)
-    return _request_client_host(request) in {host for host in allowed if host}
+    if hub_config.camera_mode() != "publisher" or hub_config.site() != "garden":
+        return False
+    return _request_client_host(request) in hub_config.camera_publisher_hosts()
+
+
+async def _garden_camera_get(path: str) -> httpx.Response | JSONResponse:
+    """Fetch a read-only camera resource from the garden over verified HTTPS."""
+    upstream = hub_config.garden_hub_url()
+    if not upstream:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": "Garden camera upstream is not configured",
+                "source": "garden-proxy",
+            },
+            status_code=503,
+        )
+    try:
+        response = await _camera_http.get(f"{upstream}{path}")
+    except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": f"Garden camera unavailable: {type(exc).__name__}",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    if response.status_code != 200:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": f"Garden camera returned HTTP {response.status_code}",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    return response
+
+
+async def _garden_camera_json(path: str) -> dict | JSONResponse:
+    response = await _garden_camera_get(path)
+    if isinstance(response, JSONResponse):
+        return response
+    try:
+        payload = response.json()
+    except ValueError:
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": "Garden camera returned invalid JSON",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    if not isinstance(payload, dict):
+        return JSONResponse(
+            {
+                "ok": False,
+                "available": False,
+                "error": "Garden camera returned an invalid payload",
+                "source": "garden-proxy",
+            },
+            status_code=502,
+        )
+    payload["source"] = "garden-proxy"
+    return payload
 
 
 @app.get("/api/camera/publisher")
@@ -2207,6 +2302,15 @@ async def upload_camera_snapshot(request: Request):
 async def latest_camera_snapshot():
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        response = await _garden_camera_get("/api/camera/latest.jpg")
+        if isinstance(response, JSONResponse):
+            return response
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": "no-store, max-age=0", "X-Camera-Source": "garden-proxy"},
+        )
     if not CAMERA_SNAPSHOT_FILE.is_file():
         return JSONResponse({"ok": False, "error": "No snapshot yet"}, status_code=404)
     return FileResponse(
@@ -2220,6 +2324,8 @@ async def latest_camera_snapshot():
 async def camera_snapshot_status():
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        return await _garden_camera_json("/api/camera/status")
     if not CAMERA_SNAPSHOT_FILE.is_file():
         return {"ok": True, "available": False, "ts": None, "age": None, "bytes": 0, "presence": camera_security.public_state()}
     stat = CAMERA_SNAPSHOT_FILE.stat()
@@ -2237,6 +2343,8 @@ async def camera_snapshot_status():
 async def garden_security_status():
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        return await _garden_camera_json("/api/security/garden")
     return {"ok": True, "security": camera_security.public_state()}
 
 
@@ -2244,6 +2352,11 @@ async def garden_security_status():
 async def set_garden_security_armed(data: dict = Body(default_factory=dict)):
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() != "publisher":
+        return JSONResponse(
+            {"ok": False, "error": "Camera viewers cannot change garden security state"},
+            status_code=403,
+        )
     armed = bool(data.get("armed"))
     security = await camera_security.set_armed(
         armed,
@@ -2258,6 +2371,15 @@ async def set_garden_security_armed(data: dict = Body(default_factory=dict)):
 async def garden_security_evidence(event_id: str):
     if not hub_config.feature_enabled("camera"):
         return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        response = await _garden_camera_get(f"/api/security/evidence/{event_id}.jpg")
+        if isinstance(response, JSONResponse):
+            return response
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": "no-store, max-age=0", "X-Camera-Source": "garden-proxy"},
+        )
     evidence = camera_security.evidence_file(event_id)
     if evidence is None:
         return JSONResponse({"ok": False, "error": "Evidence not found"}, status_code=404)
@@ -2280,17 +2402,45 @@ async def dashboard_page():
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
+def _tls_cert_paths() -> tuple[Path, Path]:
+    """Resolve hub TLS material. Prefer env overrides, then repo certs/."""
+    cert = Path(os.environ.get("HUB_TLS_CERT", BASE_DIR.parent / "certs" / "cert.pem"))
+    key = Path(os.environ.get("HUB_TLS_KEY", BASE_DIR.parent / "certs" / "key.pem"))
+    return cert, key
+
+
+def _describe_tls_cert(cert: Path) -> str:
+    """Best-effort subject/issuer summary so operators can spot self-signed leftovers."""
+    if not shutil.which("openssl") or not cert.is_file():
+        return cert.name
+    try:
+        proc = subprocess.run(
+            ["openssl", "x509", "-in", str(cert), "-noout", "-subject", "-issuer", "-enddate"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        text = (proc.stdout or "").strip().replace("\n", " | ")
+        return text or cert.name
+    except Exception:
+        return cert.name
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    cert = BASE_DIR.parent / "certs" / "cert.pem"
-    key = BASE_DIR.parent / "certs" / "key.pem"
+    cert, key = _tls_cert_paths()
     use_tls = cert.exists() and key.exists()
     port = 8443 if use_tls else 8000
 
     try:
         if use_tls:
-            print(f"{hub_config.CONFIG.get('site', 'home')} Hub → https://localhost:8443")
+            print(f"{hub_config.CONFIG.get('site', 'home')} Hub → https://0.0.0.0:8443")
+            print(f"TLS: {_describe_tls_cert(cert)}")
+            hint = BASE_DIR.parent / "certs" / "public-url.txt"
+            if hint.is_file():
+                print(f"Public URL hint: {hint.read_text(encoding='utf-8').strip()}")
             uvicorn.run(
                 app,
                 host="0.0.0.0",

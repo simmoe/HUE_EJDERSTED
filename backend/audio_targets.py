@@ -66,8 +66,11 @@ def _parse_bool(info: str, field: str) -> bool:
 
 
 async def _bluealsa_playback_available(mac: str) -> bool:
-    code, out, _ = await _run("bluealsa-aplay", "-L", timeout=5)
-    return code == 0 and mac.upper() in out.upper() and "playback" in out.lower()
+    # `bluealsa-aplay -L` output varies by BlueALSA version and frequently does
+    # not contain the literal word "playback". The D-Bus PCM list is the
+    # authoritative signal: an A2DP PCM exists only while the speaker can accept
+    # audio from this Pi.
+    return await _bluealsa_pcm_path(mac) is not None
 
 
 async def _bluealsa_pcm_path(mac: str) -> str | None:

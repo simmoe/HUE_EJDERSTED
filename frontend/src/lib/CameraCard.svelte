@@ -101,6 +101,7 @@
 
   const evidenceUrl = () => latestPresence.lastEvidenceUrl || latestPresence.evidenceUrl || '';
   const presenceState = () => latestPresence.presence || latestPresence.state || 'unknown';
+  const cameraMode = () => store.config.camera?.mode ?? (store.config.site === 'garden' ? 'publisher' : 'viewer');
 
   async function publishSnapshot() {
     if (!videoEl || videoEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || publishing) return;
@@ -270,19 +271,21 @@
   });
 
   $effect(() => {
-    if (store.config.site === 'garden' && store.config.features.camera && !publisherChecked) {
+    if (cameraMode() === 'publisher' && store.config.features.camera && !publisherChecked) {
       void checkPublisher();
     }
   });
 
   $effect(() => {
-    if (store.config.site === 'garden' && store.config.features.camera && publisherChecked && canPublish && !voiceCaptureActive && !cameraOn && !error) {
+    if (cameraMode() === 'publisher' && store.config.features.camera && publisherChecked && canPublish && !voiceCaptureActive && !cameraOn && !error) {
       void openCamera();
     }
   });
 
   $effect(() => {
-    if (store.config.site === 'garden' && store.config.features.camera && publisherChecked && !canPublish) {
+    const viewer = cameraMode() === 'viewer'
+      || (cameraMode() === 'publisher' && publisherChecked && !canPublish);
+    if (viewer && store.config.features.camera) {
       stopCamera();
       startViewer();
     }

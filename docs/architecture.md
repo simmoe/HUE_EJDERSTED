@@ -1,48 +1,75 @@
 # Ejdersted Hub Architecture
 
-`HUE_EJDERSTED` is one kiosk/hub application with runtime profiles.
+`HUE_EJDERSTED` is one application and one release line deployed to two
+independent physical hubs. Device differences are runtime configuration, never
+long-lived Git branches.
 
-- `home`: Vesterbro apartment kiosk with B&O, Philips Hue, Spotify, podcasts and ADB kiosk controls.
-- `garden`: kolonihave kiosk with the Android phone camera as the first feature. Home-only integrations are disabled until the garden gets speakers/lights.
+| Profile | Physical site | Camera role | Network contract |
+|---|---|---|---|
+| `home` | Ejderstedgade/Vesterbro | read-only `viewer` | Private internal HTTPS; no public ingress or port forwarding |
+| `garden` | Kolonihaven | `publisher` and feed owner | Trusted HTTPS through Tailscale MagicDNS |
 
-## Runtime Shape
+Private and HTTPS describe different properties. The home hub uses HTTPS on its
+private network, but that does not make it internet-accessible. The garden hub
+is reachable only by members of the tailnet; it is not publicly port-forwarded.
+
+## Surveillance data flow
 
 ```text
-Android phone browser
-  - renders Svelte kiosk UI
-  - uses getUserMedia() for the phone camera
-  - is the only garden client allowed to publish camera snapshots
-  - talks to Pi over HTTPS/WebSocket
+Garden Android kiosk
+  └─ getUserMedia() → JPEG snapshot every ~2 seconds
+       └─ HTTPS POST /api/camera/snapshot
+            └─ Garden Pi
+                 ├─ latest snapshot
+                 ├─ motion/person detection
+                 └─ security/evidence state
 
-Raspberry Pi
-  - runs FastAPI backend
-  - serves the Svelte static build
-  - optionally controls the Android phone through ADB
-  - runs garden camera motion gate + local ONNX person detector
-  - exposes the hub over HTTPS, normally port 8443
+Ejderstedgade browser
+  └─ same-origin GET /api/camera/*
+       └─ Ejderstedgade backend (read-only proxy)
+            └─ verified Tailscale HTTPS
+                 └─ Garden Pi
 ```
 
-## Configuration
+The garden Pi is the sole owner of snapshots and security state. The
+Ejderstedgade backend proxies only reads (`status`, `latest.jpg`, security state
+and evidence). It never proxies upload, arming, ADB or brightness mutations.
+The home browser therefore never needs a cross-origin camera URL and can never
+turn itself into a publisher.
 
-The app reads runtime config from environment variables supplied by the machine
-or global setup. If no overrides are present, the backend uses home-compatible
-defaults.
+Garden publishing is allowed only when both conditions hold:
 
-Important fields:
+1. runtime role is `publisher` on the `garden` profile; and
+2. the request comes from a configured garden kiosk host.
 
-- `site`: `home` or `garden`
-- `publicUrl`: the URL the kiosk should open
-- `features`: toggles for `camera`, `audio`, `hue`, `spotify`, `podcasts`, `playlists`, `adbKiosk`
-- `kiosk`: Android phone IP / ADB serial
-- `audio.spotifyDevice`: garden's required Spotify Connect endpoint, normally `Ejdersted Garden`
-- `speakers`: fixed B&O speakers to pre-seed when `audio` is enabled
+Tailscale membership alone does not grant write access.
 
-The browser receives safe config via `GET /api/config`.
+## Runtime configuration
 
-Common overrides include `HUB_SITE`, `HUB_PUBLIC_URL`,
-`HUB_FEATURE_CAMERA`, `HUB_FEATURE_AUDIO`, `HUB_FEATURE_HUE`,
-`HUB_FEATURE_SPOTIFY`, `HUB_FEATURE_PODCASTS`, `HUB_FEATURE_PLAYLISTS`,
-`HUB_FEATURE_ADBKIOSK`, `HUB_KIOSK_PHONE_IP`, and `HUB_KIOSK_ADB_SERIAL`.
+Configuration is supplied by machine/global environment and written to
+`/etc/hue/runtime.env` during deploy. `/api/config` exposes only browser-safe
+fields; the upstream garden URL remains backend-only.
+
+Key fields:
+
+- `HUB_SITE=home|garden`
+- `HUB_CAMERA_MODE=viewer|publisher`
+- `HUB_GARDEN_HUB_URL=https://kolonihave-pi.tail7947c4.ts.net:8443`
+- `HUB_CAMERA_PUBLISHER_HOSTS=<comma-separated kiosk source IPs>`
+- `HUB_PUBLIC_URL`, feature flags, kiosk/ADB values and audio target settings
+
+`home` requires `viewer`; `garden` requires `publisher`. Invalid sites, roles
+and booleans fail fast instead of silently selecting a different deployment.
+
+## Operations and releases
+
+- `main` is the canonical code line for both hubs.
+- A deploy records the exact Git commit in `HUB_RELEASE`.
+- `GET /api/health` reports release, profile and camera role.
+- `deploy.sh home` and `deploy.sh garden` validate that target and profile match.
+- Garden TLS uses a Tailscale-issued Let's Encrypt certificate for its MagicDNS
+  hostname. Never configure the upstream with a raw `100.x` address because the
+  certificate name will not match.
 
 ## Firestore Shape
 
