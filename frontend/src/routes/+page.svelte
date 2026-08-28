@@ -690,6 +690,7 @@
   let drilledShow = $state<Podcast | null>(null);
   let drilledEpisodes = $state<Episode[]>([]);
   let drilledLoading = $state(false);
+  let drilledError = $state('');
   let drilledHasMore = $state(false);
   let drilledLoadingMore = $state(false);
   const EPISODE_PAGE_SIZE = 20;
@@ -829,14 +830,26 @@
     drilledShow = show;
     drilledEpisodes = [];
     drilledHasMore = false;
+    drilledError = '';
     drilledLoading = true;
     try {
       const r = await fetch(`/api/podcasts/${show.show_id}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=0`);
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        drilledError = (data as { error?: string; detail?: string }).detail
+          || (data as { error?: string }).error
+          || 'Kunne ikke hente afsnit';
+        showFeedback(drilledError, { kind: 'error' });
+        return;
+      }
       drilledEpisodes = (data.episodes ?? []) as Episode[];
       drilledHasMore = !!data.has_more;
+      if (drilledEpisodes.length === 0) {
+        drilledError = 'Ingen afsnit fundet.';
+      }
     } catch {
-      showFeedback('Kunne ikke hente afsnit', { kind: 'error' });
+      drilledError = 'Kunne ikke hente afsnit';
+      showFeedback(drilledError, { kind: 'error' });
     } finally {
       drilledLoading = false;
     }
@@ -846,6 +859,7 @@
     drilledShow = null;
     drilledEpisodes = [];
     drilledHasMore = false;
+    drilledError = '';
   }
 
   async function loadMoreEpisodes() {
@@ -854,7 +868,11 @@
     try {
       const offset = drilledEpisodes.length;
       const r = await fetch(`/api/podcasts/${drilledShow.show_id}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=${offset}`);
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showFeedback((data as { detail?: string; error?: string }).detail || 'Kunne ikke hente flere afsnit', { kind: 'error' });
+        return;
+      }
       const more = (data.episodes ?? []) as Episode[];
       drilledEpisodes = [...drilledEpisodes, ...more];
       drilledHasMore = !!data.has_more;
@@ -1726,7 +1744,7 @@
           {#if drilledLoading && drilledEpisodes.length === 0}
             <p class="empty">Henter afsnit…</p>
           {:else if drilledEpisodes.length === 0}
-            <p class="empty">Ingen afsnit fundet.</p>
+            <p class="empty">{drilledError || 'Ingen afsnit fundet.'}</p>
           {:else}
             {#each drilledEpisodes as ep (ep.id)}
               <button

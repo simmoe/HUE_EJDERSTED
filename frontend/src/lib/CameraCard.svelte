@@ -36,6 +36,8 @@
   };
   let latestPresence = $state<PresenceStatus>({ presence: 'unknown', label: 'Ukendt' });
   let evidenceOpen = $state(false);
+  let previewOpen = $state(false);
+  let modalVideoEl = $state<HTMLVideoElement | null>(null);
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
   let publishing = false;
@@ -102,6 +104,21 @@
   const evidenceUrl = () => latestPresence.lastEvidenceUrl || latestPresence.evidenceUrl || '';
   const presenceState = () => latestPresence.presence || latestPresence.state || 'unknown';
   const cameraMode = () => store.config.camera?.mode ?? (store.config.site === 'garden' ? 'publisher' : 'viewer');
+
+  function canExpandPreview(): boolean {
+    if (canPublish) return cameraOn && !!stream;
+    return latestAvailable;
+  }
+
+  function togglePreview() {
+    if (!canExpandPreview() && !previewOpen) return;
+    previewOpen = !previewOpen;
+    if (previewOpen) evidenceOpen = false;
+  }
+
+  function closePreview() {
+    previewOpen = false;
+  }
 
   async function publishSnapshot() {
     if (!videoEl || videoEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || publishing) return;
@@ -245,6 +262,7 @@
     }
     if (videoEl) videoEl.srcObject = null;
     cameraOn = false;
+    previewOpen = false;
   }
 
   function toggleCamera() {
@@ -268,6 +286,21 @@
   onMount(() => {
     window.addEventListener('hue:voice-capture', handleVoiceCapture);
     return () => window.removeEventListener('hue:voice-capture', handleVoiceCapture);
+  });
+
+  $effect(() => {
+    if (!previewOpen || !modalVideoEl || !stream) return;
+    modalVideoEl.srcObject = stream;
+    void modalVideoEl.play().catch(() => undefined);
+  });
+
+  $effect(() => {
+    if (!previewOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closePreview();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   });
 
   $effect(() => {
@@ -299,7 +332,13 @@
 
 <Card name="Kamera" status={canPublish ? (cameraOn ? 'live' : error ? 'fejl' : 'slukket') : latestAvailable ? 'kiosk live' : 'venter'} online={cameraOn || latestAvailable}>
   <div class="cam-stack">
-    <div class="camera-viewport">
+    <button
+      type="button"
+      class="camera-viewport"
+      class:expandable={canExpandPreview()}
+      aria-label={previewOpen ? 'Luk kamerabillede' : 'Vis kamerabillede stort'}
+      onclick={togglePreview}
+    >
       {#if canPublish}
         <!-- svelte-ignore a11y_media_has_caption -->
         <video
@@ -313,7 +352,7 @@
       {:else}
         <div class="camera-placeholder">venter på havekiosken</div>
       {/if}
-    </div>
+    </button>
     {#if canPublish}
       <div class="action-row">
         <button class="action-btn" onclick={toggleCamera}>
@@ -346,6 +385,19 @@
   </div>
 </Card>
 
+{#if previewOpen && canExpandPreview()}
+  <div class="modal-backdrop preview-backdrop">
+    <button type="button" class="preview-frame" aria-label="Luk kamerabillede" onclick={closePreview}>
+      {#if canPublish && stream}
+        <!-- svelte-ignore a11y_media_has_caption -->
+        <video bind:this={modalVideoEl} autoplay playsinline muted></video>
+      {:else}
+        <img src={latestImageUrl} alt="Kamerabillede fra havekiosken" />
+      {/if}
+    </button>
+  </div>
+{/if}
+
 {#if evidenceOpen && evidenceUrl()}
   <div class="modal-backdrop">
     <button class="modal-underlay" aria-label="Luk evidence" onclick={() => (evidenceOpen = false)}></button>
@@ -366,6 +418,9 @@
   }
 
   .camera-viewport {
+    appearance: none;
+    border: 0;
+    padding: 0;
     width: 100%;
     max-width: 320px;
     aspect-ratio: 19 / 9;
@@ -375,13 +430,27 @@
     border-radius: 16px;
     overflow: hidden;
     background: rgba(255, 255, 255, 0.03);
+    color: inherit;
+    cursor: default;
   }
 
-  video,
-  img {
+  .camera-viewport.expandable {
+    cursor: zoom-in;
+  }
+
+  .camera-viewport video,
+  .camera-viewport img,
+  .preview-frame video,
+  .preview-frame img {
     width: 100%;
     height: 100%;
     object-fit: cover;
+    pointer-events: none;
+  }
+
+  .preview-frame video,
+  .preview-frame img {
+    object-fit: contain;
   }
 
   .camera-placeholder {
@@ -453,6 +522,26 @@
     place-items: center;
     padding: 24px;
     background: rgba(0, 0, 0, 0.76);
+  }
+
+  .preview-backdrop {
+    z-index: 50;
+    padding: 3vh 2vw;
+    background: rgba(0, 0, 0, 0.92);
+  }
+
+  .preview-frame {
+    appearance: none;
+    border: 0;
+    padding: 0;
+    width: min(96vw, 1600px);
+    height: min(94vh, 96dvh);
+    display: grid;
+    place-items: center;
+    background: #050505;
+    border-radius: 18px;
+    overflow: hidden;
+    cursor: zoom-out;
   }
 
   .modal-underlay {

@@ -1842,6 +1842,7 @@ async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
                     "duration_ms": ep.get("duration_ms"),
                 }
                 for ep in items
+                if isinstance(ep, dict)
             ],
             "has_more": has_more,
             "offset": offset,

@@ -88,6 +88,15 @@ def _spotify_error(r: httpx.Response) -> str:
     return f"{r.status_code}{suffix}"
 
 
+def _usable_spotify_episodes(items: list) -> list[dict]:
+    """Spotify often pads /shows/{id}/episodes with null entries for unavailable markets."""
+    usable: list[dict] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("id") and item.get("uri"):
+            usable.append(item)
+    return usable
+
+
 class Spotify:
     def __init__(self):
         self._cfg = _load()
@@ -383,21 +392,8 @@ class Spotify:
 
     async def get_show_latest_episode(self, show_id: str) -> dict | None:
         """Hent seneste afsnit af et show. Spotify returnerer episodes sorteret nyeste først."""
-        h = await self._headers()
-        if not h:
-            return None
-        try:
-            r = await self._http.get(
-                f"{API}/shows/{show_id}/episodes",
-                headers=h,
-                params={"market": "DK", "limit": 1},
-            )
-            if r.status_code == 200:
-                items = r.json().get("items") or []
-                return items[0] if items else None
-        except Exception as e:
-            print(f"[Spotify] get_show_latest_episode error: {e}")
-        return None
+        items, _ = await self.get_show_episodes(show_id, limit=5, offset=0)
+        return items[0] if items else None
 
     async def get_show_episodes(
         self, show_id: str, limit: int = 20, offset: int = 0
@@ -418,9 +414,10 @@ class Spotify:
             )
             if r.status_code == 200:
                 data = r.json()
-                items = data.get("items") or []
+                items = _usable_spotify_episodes(data.get("items") or [])
                 has_more = bool(data.get("next"))
                 return items, has_more
+            print(f"[Spotify] get_show_episodes HTTP {r.status_code} for {show_id}")
         except Exception as e:
             print(f"[Spotify] get_show_episodes error: {e}")
         return [], False

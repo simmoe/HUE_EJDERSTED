@@ -83,15 +83,19 @@ if [[ "$HUB_SITE" == "home" && ! "$HUB_PUBLIC_URL" =~ ^https:// ]]; then
   exit 2
 fi
 
+# Password deploys must not offer a passphrase-protected local SSH key, or ssh
+# hangs waiting for a key unlock instead of using PI_PASS.
+SSH_PASS_OPTS=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new)
+
 ssh_run() {
   local remote_cmd="$1"
   if [[ -n "${PI_PASS:-}" && "$(command -v sshpass || true)" ]]; then
-    sshpass -p "$PI_PASS" ssh "$PI_HOST" "$remote_cmd"
+    sshpass -p "$PI_PASS" ssh "${SSH_PASS_OPTS[@]}" "$PI_HOST" "$remote_cmd"
   elif [[ -n "${PI_PASS:-}" && "$(command -v expect || true)" ]]; then
     expect <<EXPECT
 set timeout 120
 set password {$PI_PASS}
-spawn ssh -o StrictHostKeyChecking=accept-new $PI_HOST "$remote_cmd"
+spawn ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new $PI_HOST "$remote_cmd"
 expect {
   -re "(?i)password.*:" { send "\$password\r"; exp_continue }
   eof
@@ -108,12 +112,12 @@ scp_copy() {
   local source="$1"
   local dest="$2"
   if [[ -n "${PI_PASS:-}" && "$(command -v sshpass || true)" ]]; then
-    sshpass -p "$PI_PASS" scp -r "$source" "$dest"
+    sshpass -p "$PI_PASS" scp "${SSH_PASS_OPTS[@]}" -r "$source" "$dest"
   elif [[ -n "${PI_PASS:-}" && "$(command -v expect || true)" ]]; then
     expect <<EXPECT
 set timeout 120
 set password {$PI_PASS}
-spawn scp -r -o StrictHostKeyChecking=accept-new "$source" "$dest"
+spawn scp -r -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new "$source" "$dest"
 expect {
   -re "(?i)password:" { send "\$password\r"; exp_continue }
   eof
@@ -211,11 +215,11 @@ RUNTIME_ENV=$(mktemp)
 scp_copy "$RUNTIME_ENV" "$PI_HOST:/tmp/hue.runtime.env"
 rm -f "$RUNTIME_ENV"
 ssh_run "$SUDO mkdir -p /etc/hue && $SUDO mv /tmp/hue.runtime.env /etc/hue/runtime.env && $SUDO chmod 600 /etc/hue/runtime.env"
-ssh_run "grep -q '^EnvironmentFile=-/etc/hue/runtime.env$' /etc/systemd/system/hue.service || $SUDO sed -i '/^Environment=PYTHONUNBUFFERED=1$/a EnvironmentFile=-/etc/hue/runtime.env' /etc/systemd/system/hue.service; $SUDO systemctl daemon-reload"
+ssh_run "$SUDO grep -q '^EnvironmentFile=-/etc/hue/runtime.env$' /etc/systemd/system/hue.service || $SUDO sed -i '/^\\[Service\\]/a EnvironmentFile=-/etc/hue/runtime.env' /etc/systemd/system/hue.service; $SUDO systemctl daemon-reload"
 
 echo "→ Restarting $SERVICE_NAME..."
 ssh_run "$SUDO systemctl restart '$SERVICE_NAME'"
-sleep 2
+sleep 5
 
 STATUS=$(ssh_run "$SUDO systemctl is-active '$SERVICE_NAME' 2>/dev/null")
 if [[ "$STATUS" == *"active"* ]]; then
