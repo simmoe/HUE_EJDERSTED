@@ -21,6 +21,7 @@ gemini_api_key.txt
 hub_globals.json
 hub_config.json
 hub_config.*.json
+garden_lights.json
 deploy.*.env
 
 # TLS certs

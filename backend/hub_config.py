@@ -27,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "playlists": True,
         "adbKiosk": True,
         "solar": False,
+        "lights": False,
     },
     "kiosk": {
         "phoneIp": "192.168.86.15",
@@ -103,7 +104,7 @@ def _apply_env_overrides() -> None:
         CONFIG["publicUrl"] = public_url
 
     features = CONFIG.setdefault("features", {})
-    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk", "solar"):
+    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk", "solar", "lights"):
         value = _bool_env(f"HUB_FEATURE_{feature.upper()}")
         if value is not None:
             features[feature] = value

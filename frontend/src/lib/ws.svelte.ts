@@ -10,6 +10,11 @@ export interface VolumeState {
   online: boolean;
 }
 
+export interface HueStatus {
+  ip: string | null;
+  paired: boolean;
+}
+
 export interface HueRoom {
   id: string;
   name: string;
@@ -19,15 +24,27 @@ export interface HueRoom {
   lights: number;
 }
 
-export interface HueStatus {
-  ip: string | null;
-  paired: boolean;
+export interface GardenLight {
+  id: string;
+  name: string;
+  brightness: number;
+  on: boolean;
+  any_on: boolean;
+  online: boolean;
+  lights: number;
+  error?: string;
+  has_color?: boolean;
+  mode?: string;
+  hue?: number;
+  sat?: number;
+  hex?: string;
 }
 
 export interface NowPlaying {
   name: string;
   artist: string;
   album: string;
+  playing?: boolean;
 }
 
 export interface AudioTargetSummary {
@@ -58,6 +75,7 @@ export interface SolarStatus {
   sunrise?: string | null;
   sunset?: string | null;
   withinWindow?: boolean;
+  clockTrusted?: boolean;
   simulated?: boolean;
   now?: string;
 }
@@ -74,6 +92,7 @@ export interface HubConfig {
     playlists: boolean;
     adbKiosk: boolean;
     solar: boolean;
+    lights?: boolean;
   };
   camera: {
     mode: 'publisher' | 'viewer';
@@ -96,6 +115,7 @@ export const defaultHubConfig: HubConfig = {
     playlists: true,
     adbKiosk: true,
     solar: false,
+    lights: false,
   },
   camera: {
     mode: 'viewer',
@@ -107,21 +127,46 @@ export const defaultHubConfig: HubConfig = {
 };
 
 type ServerMsg =
-  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus }
+  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus }
   | ({ type: 'solar_status' } & SolarStatus)
   | { type: 'device_added'; device: Device }
   | { type: 'device_removed'; device_id: string }
   | { type: 'volume_update'; device_id: string; level: number; online: boolean }
   | { type: 'hue_status'; ip: string | null; paired: boolean }
   | { type: 'hue_rooms'; rooms: HueRoom[] }
-  | { type: 'now_playing'; device_id: string; name: string; artist: string; album: string }
+  | { type: 'lights'; lights: GardenLight[] }
+  | { type: 'now_playing'; device_id: string; name: string; artist: string; album: string; playing?: boolean }
   | { type: 'error'; device_id: string; message: string };
+
+export function hsvToHex(hue: number, sat: number, value = 100): string {
+  const h = ((hue % 360) + 360) % 360 / 360;
+  const s = Math.max(0, Math.min(100, sat)) / 100;
+  const v = Math.max(0, Math.min(100, value)) / 100;
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  const [r, g, b] = (
+    [
+      [v, t, p],
+      [q, v, p],
+      [p, v, t],
+      [p, q, v],
+      [t, p, v],
+      [v, p, q],
+    ][i % 6]
+  );
+  const hex = (n: number) => Math.round(n * 255).toString(16).padStart(2, '0');
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
 
 class WSStore {
   devices = $state<Device[]>([]);
   volumes = $state<Record<string, VolumeState>>({});
   hueStatus = $state<HueStatus>({ ip: null, paired: false });
   hueRooms = $state<HueRoom[]>([]);
+  lights = $state<GardenLight[]>([]);
   nowPlaying = $state<Record<string, NowPlaying>>({});
   config = $state<HubConfig>(defaultHubConfig);
   solar = $state<SolarStatus>({ enabled: false });
@@ -259,6 +304,7 @@ class WSStore {
         this.volumes = msg.volumes;
         this.hueStatus = msg.hue_status;
         this.hueRooms = msg.hue_rooms;
+        this.lights = msg.lights ?? [];
         this.nowPlaying = msg.now_playing ?? {};
         this.config = msg.config ?? defaultHubConfig;
         if (msg.solar) this.solar = msg.solar;
@@ -293,15 +339,26 @@ class WSStore {
       case 'hue_rooms':
         this.hueRooms = msg.rooms;
         break;
+      case 'lights':
+        this.lights = msg.lights ?? [];
+        break;
       case 'now_playing': {
-        const np = { name: msg.name, artist: msg.artist, album: msg.album };
-        if (np.name) {
-          this.nowPlaying = { ...this.nowPlaying, [msg.device_id]: np };
-        } else {
+        if (!msg.name) {
           const copy = { ...this.nowPlaying };
           delete copy[msg.device_id];
           this.nowPlaying = copy;
+          break;
         }
+        const prev = this.nowPlaying[msg.device_id];
+        this.nowPlaying = {
+          ...this.nowPlaying,
+          [msg.device_id]: {
+            name: msg.name,
+            artist: msg.artist,
+            album: msg.album,
+            playing: typeof msg.playing === 'boolean' ? msg.playing : prev?.playing,
+          },
+        };
         break;
       }
     }
@@ -346,6 +403,59 @@ class WSStore {
         this.pending.delete(key);
       }, 80)
     );
+  }
+
+  setLightBrightness(lightId: string, brightness: number) {
+    this.lights = this.lights.map((l) =>
+      l.id === lightId ? { ...l, brightness, on: brightness > 0, any_on: brightness > 0 } : l
+    );
+    const key = `light_${lightId}`;
+    const existing = this.pending.get(key);
+    if (existing) clearTimeout(existing);
+    this.pending.set(
+      key,
+      setTimeout(() => {
+        this.ws?.send(JSON.stringify({ type: 'set_light_brightness', light_id: lightId, brightness }));
+        this.pending.delete(key);
+      }, 80)
+    );
+  }
+
+  setLightColor(lightId: string, hue: number, sat: number) {
+    const hex = hsvToHex(hue, sat);
+    this.lights = this.lights.map((l) =>
+      l.id === lightId ? { ...l, hue, sat, hex, mode: 'colour', on: true, any_on: true } : l
+    );
+    const key = `light_color_${lightId}`;
+    const existing = this.pending.get(key);
+    if (existing) clearTimeout(existing);
+    this.pending.set(
+      key,
+      setTimeout(() => {
+        this.ws?.send(JSON.stringify({ type: 'set_light_color', light_id: lightId, hue, sat }));
+        this.pending.delete(key);
+      }, 80)
+    );
+  }
+
+  setLightWhite(lightId: string) {
+    this.lights = this.lights.map((l) =>
+      l.id === lightId ? { ...l, mode: 'white', on: true, any_on: true } : l
+    );
+    this.ws?.send(JSON.stringify({ type: 'set_light_white', light_id: lightId }));
+  }
+
+  async connectLight(lightId: string): Promise<GardenLight | null> {
+    const r = await fetch('/api/lights/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ light_id: lightId }),
+    });
+    const data = await r.json();
+    if (data.ok && Array.isArray(data.lights)) {
+      this.lights = data.lights;
+    }
+    return data.light ?? null;
   }
 
   async pairHue(ip?: string): Promise<string | null> {

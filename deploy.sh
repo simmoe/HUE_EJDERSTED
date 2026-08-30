@@ -69,6 +69,7 @@ if [[ "$HUB_SITE" == "garden" ]]; then
   HUB_FEATURE_PODCASTS="${HUB_FEATURE_PODCASTS:-true}"
   HUB_FEATURE_PLAYLISTS="${HUB_FEATURE_PLAYLISTS:-true}"
   HUB_FEATURE_ADBKIOSK="${HUB_FEATURE_ADBKIOSK:-true}"
+  HUB_FEATURE_LIGHTS="${HUB_FEATURE_LIGHTS:-true}"
 elif [[ "${HUB_FEATURE_CAMERA:-true}" == "true" && -z "${HUB_GARDEN_HUB_URL:-}" ]]; then
   echo "Refusing home deploy: HUB_GARDEN_HUB_URL is required for the camera viewer" >&2
   exit 2
@@ -161,7 +162,7 @@ if [[ -d backend/static ]]; then
   scp_copy backend/static "$PI_HOST:$PI_REPO_DIR/backend/"
 fi
 
-for local_file in gemini_api_key.txt hub_globals.json spotify_config.json hue_config.json devices.json; do
+for local_file in gemini_api_key.txt hub_globals.json spotify_config.json hue_config.json devices.json garden_lights.json; do
   if [[ -f "$local_file" ]]; then
     echo "→ Syncing $local_file..."
     scp_copy "$local_file" "$PI_HOST:$PI_REPO_DIR/"
@@ -171,6 +172,8 @@ done
 if [[ "$HUB_SITE" == "garden" ]]; then
   echo "→ Ensuring garden AAC/M4A playback support..."
   ssh_run "if ! command -v ffmpeg >/dev/null; then $SUDO apt-get update && $SUDO apt-get install -y ffmpeg; fi"
+  echo "→ Installing garden light control (tinytuya)..."
+  ssh_run "if [[ -x '$PI_REPO_DIR/.venv/bin/pip' ]]; then '$PI_REPO_DIR/.venv/bin/pip' install -q 'tinytuya>=1.13'; else python3 -m pip install -q --user 'tinytuya>=1.13'; fi"
   echo "→ Refreshing Tailscale/Let's Encrypt TLS certificate..."
   ssh_run "command -v tailscale >/dev/null && [[ -x '$PI_REPO_DIR/scripts/provision-tls-cert.sh' ]] && '$PI_REPO_DIR/scripts/provision-tls-cert.sh'"
   if [[ -z "${HUB_PUBLIC_URL:-}" ]]; then
@@ -203,6 +206,7 @@ RUNTIME_ENV=$(mktemp)
   [[ -n "${HUB_FEATURE_PODCASTS:-}" ]] && echo "HUB_FEATURE_PODCASTS=$HUB_FEATURE_PODCASTS"
   [[ -n "${HUB_FEATURE_PLAYLISTS:-}" ]] && echo "HUB_FEATURE_PLAYLISTS=$HUB_FEATURE_PLAYLISTS"
   [[ -n "${HUB_FEATURE_ADBKIOSK:-}" ]] && echo "HUB_FEATURE_ADBKIOSK=$HUB_FEATURE_ADBKIOSK"
+  [[ -n "${HUB_FEATURE_LIGHTS:-}" ]] && echo "HUB_FEATURE_LIGHTS=$HUB_FEATURE_LIGHTS"
   [[ -n "${HUB_KIOSK_PHONE_IP:-}" ]] && echo "HUB_KIOSK_PHONE_IP=$HUB_KIOSK_PHONE_IP"
   [[ -n "${HUB_KIOSK_ADB_SERIAL:-${KIOSK_ADB_SERIAL:-}}" ]] && echo "HUB_KIOSK_ADB_SERIAL=${HUB_KIOSK_ADB_SERIAL:-$KIOSK_ADB_SERIAL}"
   [[ -n "${HUB_KIOSK_MULTIAPP_PACKAGE:-}" ]] && echo "HUB_KIOSK_MULTIAPP_PACKAGE=$HUB_KIOSK_MULTIAPP_PACKAGE"

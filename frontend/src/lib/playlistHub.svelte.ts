@@ -514,6 +514,7 @@ async function playTrackUri(uri: string): Promise<boolean> {
   if (!uri?.startsWith('spotify:track:')) return false;
   clearAdvanceTimer();
   pausedRemainingMs = 0;
+  await releasePodcastForMusic();
   try {
     const r = await fetch('/api/spotify/play-uris', {
       method: 'POST',
@@ -527,16 +528,16 @@ async function playTrackUri(uri: string): Promise<boolean> {
       error?: string;
     };
     if (data.ok) {
-      clearPodcastTransport(false);
       playlist.activeTransport = 'spotify';
       playlist.spotifyPlaying = true;
       scheduleAdvance(data.duration_ms && data.duration_ms > 0 ? data.duration_ms : FALLBACK_TRACK_DURATION_MS);
       pushImmediately();
       return true;
     }
-    showFeedback(data.detail || data.error || 'Afspilning fejlede', { kind: 'error' });
-  } catch {
-    showFeedback('Ingen forbindelse til hub', { kind: 'error' });
+    const detail = String(data.detail || data.error || '').trim();
+    if (detail) showFeedback(detail, { kind: 'error' });
+  } catch (e) {
+    showFeedback((e as Error).message || 'POST /api/spotify/play-uris fejlede', { kind: 'error' });
   }
   return false;
 }
@@ -569,18 +570,40 @@ export async function togglePlayPause() {
   await playTrackUri(playlist.spotifyTrackUri);
 }
 
-/**
- * Kald denne FØR du starter ekstern afspilning (fx en podcast) som overtager B&O M5'eren.
- * Stopper auto-advance timeren så musik-køen ikke spammer over podcasten,
- * og opdaterer UI-state så afspilleren ikke står og lyver.
- */
-export function stopMusicForExternalPlayback() {
+let onPodcastReleased: (() => void) | null = null;
+
+export function registerPodcastReleaseHandler(fn: () => void) {
+  onPodcastReleased = fn;
+}
+
+/** Stop podcast-motoren, så Spotify kan overtage højttaleren uden at NP-kortet hopper tilbage. */
+export async function releasePodcastForMusic() {
+  try {
+    await fetch('/api/podcasts/player/clear', { method: 'POST' });
+  } catch {
+    /* hub kan allerede spille musik */
+  }
+  clearPodcastTransport(false);
+  onPodcastReleased?.();
+}
+
+/** Stop Spotify Connect + auto-advance, så en direkte stream kan overtage M5. */
+export async function releaseSpotifyForPodcast() {
   clearAdvanceTimer();
   pausedRemainingMs = 0;
   playlist.spotifyPlaying = false;
   playlist.spotifyEndsAt = 0;
-  playlist.activeTransport = 'podcast';
+  try {
+    await fetch('/api/spotify/pause', { method: 'POST' });
+  } catch {
+    /* */
+  }
   schedulePush();
+}
+
+/** @deprecated use releaseSpotifyForPodcast */
+export function stopMusicForExternalPlayback() {
+  void releaseSpotifyForPodcast();
 }
 
 export function setPodcastTransportFromPlayer(player: Record<string, unknown>, push = true) {
@@ -818,6 +841,7 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
     playlist.micIndex = playlist.micQueue.length - 1;
     clearAdvanceTimer();
     pausedRemainingMs = 0;
+    void releasePodcastForMusic();
     paintNpFromQueues();
     pushImmediately();
     scrollToNowPlaying();
@@ -835,6 +859,7 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
     playlist.micIndex = start;
     clearAdvanceTimer();
     pausedRemainingMs = 0;
+    void releasePodcastForMusic();
     paintNpFromQueues();
     pushImmediately();
     scrollToNowPlaying();

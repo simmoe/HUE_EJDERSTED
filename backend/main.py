@@ -36,6 +36,7 @@ import bo_link
 import sr
 import audio_targets
 import camera_presence
+import garden_lights
 import hub_config
 import solar
 from hue import HueBridge, start_hue_mdns
@@ -84,6 +85,58 @@ devices: dict = load_devices()
 devices_lock = asyncio.Lock()
 
 
+def _speaker_key(name: str) -> str:
+    return " ".join((name or "").casefold().split())
+
+
+def _known_speaker_ips() -> set[str]:
+    configured = hub_config.known_speakers()
+    if configured:
+        return {s["ip"] for s in configured if s.get("ip")}
+    return {BEO_A9_IP, BEO_M5_IP}
+
+
+def _prune_duplicate_speakers(prefer_id: str | None = None) -> list[str]:
+    """Keep one device per speaker name. Prefer the configured home IPs.
+
+    DHCP can give A9/M5 a new address; mDNS would otherwise accumulate ghosts.
+    """
+    known_ips = _known_speaker_ips()
+    groups: dict[str, list[str]] = {}
+    for dev_id, dev in devices.items():
+        key = _speaker_key(str(dev.get("name") or ""))
+        if not key:
+            continue
+        groups.setdefault(key, []).append(dev_id)
+    removed: list[str] = []
+    for ids in groups.values():
+        if len(ids) < 2:
+            continue
+        keep = sorted(
+            ids,
+            key=lambda did: (
+                (devices[did].get("ip") or "") in known_ips,
+                did == (prefer_id or ""),
+                devices[did].get("ip") or "",
+            ),
+            reverse=True,
+        )[0]
+        for did in ids:
+            if did == keep:
+                continue
+            devices.pop(did, None)
+            removed.append(did)
+    return removed
+
+
+def _forget_runtime_state(dev_id: str) -> None:
+    volume_cache.pop(dev_id, None)
+    now_playing_cache.pop(dev_id, None)
+    task = _notify_tasks.pop(dev_id, None)
+    if task:
+        task.cancel()
+
+
 def _ensure_known_speakers() -> None:
     """Pre-seed devices for the fixed B&O speakers, so UI is never empty even
     if mDNS is silent at boot. mDNS may overwrite name/IP later when it sees them.
@@ -109,7 +162,8 @@ def _ensure_known_speakers() -> None:
                 "auto_discovered": True,
             }
             changed = True
-    if changed:
+    removed = _prune_duplicate_speakers()
+    if changed or removed:
         save_devices(devices)
 
 
@@ -135,6 +189,28 @@ def _solar_status() -> dict:
 hue_bridge: HueBridge                    # initialised in lifespan
 hue_rooms_cache: list[dict] = []
 hue_status_cache: dict = {}
+lights_cache: list[dict] = []
+
+
+def _garden_light_dev(light_id: str) -> dict | None:
+    return next(
+        (
+            d
+            for d in garden_lights.configured_devices()
+            if d.get("id") == light_id or (not d.get("id") and light_id == "flare")
+        ),
+        None,
+    )
+
+
+def _store_light_state(state: dict) -> None:
+    global lights_cache
+    if any(r.get("id") == state.get("id") for r in lights_cache):
+        lights_cache = [state if r.get("id") == state.get("id") else r for r in lights_cache]
+    else:
+        lights_cache = [*lights_cache, state]
+
+
 # ─── Spotify ───────────────────────────────────────────────────────────────
 spotify = Spotify()
 
@@ -220,11 +296,46 @@ async def beo_set_volume(ip: str, level: int) -> None:
     )
     r.raise_for_status()
 
+def _beo_text(value) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or "").strip()
+    return str(value or "").strip()
+
+
+def _merge_beo_now_playing(dev_id: str, notification: dict) -> dict | None:
+    """Map a BeoNotify event to speaker now-playing state.
+
+    Returns the new cache dict, ``{}`` to clear, or ``None`` if nothing changed.
+    """
+    ntype = str(notification.get("type") or "")
+    nd = notification.get("data") if isinstance(notification.get("data"), dict) else {}
+    current = dict(now_playing_cache.get(dev_id) or {})
+    if ntype == "NOW_PLAYING_ENDED":
+        return {} if current else None
+    if ntype.startswith("NOW_PLAYING_"):
+        state = {
+            "name": _beo_text(nd.get("name") or nd.get("title")),
+            "artist": _beo_text(nd.get("artist") or nd.get("station") or nd.get("liveDescription")),
+            "album": _beo_text(nd.get("album")),
+            "playing": True,
+        }
+        if not state["name"]:
+            return None
+        return None if state == current else state
+    if ntype == "PROGRESS_INFORMATION" and current.get("name"):
+        st = str(nd.get("state") or "").lower()
+        playing = st in ("play", "playing")
+        if current.get("playing") == playing:
+            return None
+        return {**current, "playing": playing}
+    return None
+
+
 # ─── BeoNotify stream ─────────────────────────────────────────────────────────
 _stream_http = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))
 
 async def beo_notify_listener(dev_id: str, ip: str):
-    """Stream BeoNotify/Notifications og broadcast NOW_PLAYING_STORED_MUSIC."""
+    """Stream BeoNotify and keep speaker now-playing in sync for the NP card."""
     url = f"http://{ip}:8080/BeoNotify/Notifications"
     while True:
         try:
@@ -237,29 +348,28 @@ async def beo_notify_listener(dev_id: str, ip: str):
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    n = data.get("notification", {})
-                    if n.get("type") == "NOW_PLAYING_STORED_MUSIC":
-                        nd = n.get("data", {})
-                        state = {
-                            "name": nd.get("name", ""),
-                            "artist": nd.get("artist", ""),
-                            "album": nd.get("album", ""),
-                        }
-                        if now_playing_cache.get(dev_id) != state:
-                            now_playing_cache[dev_id] = state
-                            await manager.broadcast({
-                                "type": "now_playing",
-                                "device_id": dev_id,
-                                **state,
-                            })
-                    elif n.get("type") == "NOW_PLAYING_ENDED":
+                    n = data.get("notification") if isinstance(data.get("notification"), dict) else {}
+                    state = _merge_beo_now_playing(dev_id, n)
+                    if state is None:
+                        continue
+                    if not state.get("name"):
                         if dev_id in now_playing_cache:
                             del now_playing_cache[dev_id]
                             await manager.broadcast({
                                 "type": "now_playing",
                                 "device_id": dev_id,
-                                "name": "", "artist": "", "album": "",
+                                "name": "",
+                                "artist": "",
+                                "album": "",
+                                "playing": False,
                             })
+                        continue
+                    now_playing_cache[dev_id] = state
+                    await manager.broadcast({
+                        "type": "now_playing",
+                        "device_id": dev_id,
+                        **state,
+                    })
         except asyncio.CancelledError:
             return
         except Exception:
@@ -435,6 +545,13 @@ async def poll_loop():
             await _garden_audio_keepalive_tick()
             await _podcast_player_tick()
 
+        # ── Garden WiFi lights (LEDVANCE / Tuya) ─────────────────────────────
+        global lights_cache
+        if hub_config.feature_enabled("lights"):
+            lights = await asyncio.to_thread(garden_lights.poll_snapshot)
+            if lights is not None and lights != lights_cache:
+                lights_cache = lights
+                await manager.broadcast({"type": "lights", "lights": lights_cache})
         # ── Hue ──────────────────────────────────────────────────────────────
         global hue_rooms_cache, hue_status_cache
         if hub_config.feature_enabled("hue"):
@@ -461,16 +578,25 @@ class BeoListener:
 
         async def _add():
             async with devices_lock:
-                if dev_id not in devices:
-                    device = {
+                existed = dev_id in devices
+                if not existed:
+                    devices[dev_id] = {
                         "id": dev_id,
                         "name": name,
                         "ip": ip,
                         "auto_discovered": True,
                     }
-                    devices[dev_id] = device
-                    save_devices(devices)
-                    await manager.broadcast({"type": "device_added", "device": device})
+                stale = _prune_duplicate_speakers(prefer_id=dev_id)
+                kept = dev_id in devices
+                if existed and not stale:
+                    return
+                save_devices(devices)
+                added = devices.get(dev_id) if kept and not existed else None
+            for did in stale:
+                _forget_runtime_state(did)
+                await manager.broadcast({"type": "device_removed", "device_id": did})
+            if added:
+                await manager.broadcast({"type": "device_added", "device": added})
 
         asyncio.run_coroutine_threadsafe(_add(), self._loop)
 
@@ -517,6 +643,16 @@ async def lifespan(app: FastAPI):
             solar_ctrl = None
 
     hue_bridge = HueBridge()
+    global lights_cache
+    if hub_config.feature_enabled("lights"):
+        def _boot_lights():
+            garden_lights.adopt_scan(garden_lights.scan_lan())
+            return garden_lights.snapshot()
+        try:
+            lights_cache = await asyncio.to_thread(_boot_lights)
+            print(f"[lights] {len(lights_cache)} configured")
+        except Exception as exc:
+            print(f"[lights] boot scan failed: {exc}")
     poll_task = asyncio.create_task(poll_loop())
 
     zc = Zeroconf()
@@ -548,7 +684,7 @@ app = FastAPI(lifespan=lifespan)
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    global hue_rooms_cache
+    global hue_rooms_cache, lights_cache
     await manager.connect(ws)
     print(f"[WS] Client connected ({len(manager._connections)} total)")
     try:
@@ -561,6 +697,7 @@ async def websocket_endpoint(ws: WebSocket):
             "volumes": volume_cache,
             "hue_status": hue_bridge.status(),
             "hue_rooms": hue_rooms_cache,
+            "lights": lights_cache,
             "now_playing": now_playing_cache,
             "config": hub_config.public_config(),
             "solar": _solar_status(),
@@ -637,6 +774,56 @@ async def websocket_endpoint(ws: WebSocket):
                         "type": "hue_rooms",
                         "rooms": hue_rooms_cache,
                     })
+            elif msg.get("type") == "set_light_brightness":
+                if not hub_config.feature_enabled("lights"):
+                    continue
+                light_id = str(msg.get("light_id", ""))
+                try:
+                    brightness = max(0, min(100, int(msg["brightness"])))
+                except (KeyError, ValueError, TypeError):
+                    continue
+                dev = _garden_light_dev(light_id)
+                if not dev:
+                    continue
+                state = await asyncio.to_thread(garden_lights.set_brightness, dev, brightness)
+                _store_light_state(state)
+                await manager.broadcast({"type": "lights", "lights": lights_cache})
+            elif msg.get("type") == "set_light_color":
+                if not hub_config.feature_enabled("lights"):
+                    continue
+                light_id = str(msg.get("light_id", ""))
+                try:
+                    hue = max(0, min(360, int(msg["hue"])))
+                    sat = max(0, min(100, int(msg.get("sat", 80))))
+                except (KeyError, ValueError, TypeError):
+                    continue
+                dev = _garden_light_dev(light_id)
+                if not dev:
+                    continue
+                current = next((r for r in lights_cache if r.get("id") == light_id), None)
+                brightness = max(1, int((current or {}).get("brightness") or 80))
+                state = await asyncio.to_thread(garden_lights.set_color, dev, hue, sat, brightness)
+                _store_light_state(state)
+                await manager.broadcast({"type": "lights", "lights": lights_cache})
+            elif msg.get("type") == "set_light_white":
+                if not hub_config.feature_enabled("lights"):
+                    continue
+                light_id = str(msg.get("light_id", ""))
+                dev = _garden_light_dev(light_id)
+                if not dev:
+                    continue
+                current = next((r for r in lights_cache if r.get("id") == light_id), None)
+                brightness = max(1, int((current or {}).get("brightness") or 80))
+                state = await asyncio.to_thread(garden_lights.set_white, dev, brightness)
+                _store_light_state(state)
+                await manager.broadcast({"type": "lights", "lights": lights_cache})
+            elif msg.get("type") == "connect_light":
+                if not hub_config.feature_enabled("lights"):
+                    continue
+                light_id = str(msg.get("light_id", ""))
+                state = await asyncio.to_thread(garden_lights.reconnect, light_id)
+                _store_light_state(state)
+                await manager.broadcast({"type": "lights", "lights": lights_cache})
     except WebSocketDisconnect:
         print(f"[WS] Client disconnected ({len(manager._connections)-1} remain)")
         manager.disconnect(ws)
@@ -752,7 +939,7 @@ async def delete_device(device_id: str):
             return JSONResponse({"error": "Enhed ikke fundet"}, status_code=404)
         del devices[device_id]
         save_devices(devices)
-    volume_cache.pop(device_id, None)
+    _forget_runtime_state(device_id)
     await manager.broadcast({"type": "device_removed", "device_id": device_id})
     return {"success": True}
 
@@ -778,6 +965,41 @@ async def hue_pair(data: dict = {}):
         await manager.broadcast({"type": "hue_status", **hue_bridge.status()})
         await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
     return result
+
+
+@app.get("/api/lights")
+async def get_lights():
+    if not hub_config.feature_enabled("lights"):
+        return JSONResponse({"error": "Lys er deaktiveret for denne profil"}, status_code=404)
+    return {"ok": True, "lights": lights_cache}
+
+
+@app.post("/api/lights/scan")
+async def scan_lights():
+    if not hub_config.feature_enabled("lights"):
+        return JSONResponse({"error": "Lys er deaktiveret for denne profil"}, status_code=404)
+    global lights_cache
+    found = await asyncio.to_thread(garden_lights.scan_lan)
+    garden_lights.adopt_scan(found)
+    lights_cache = await asyncio.to_thread(garden_lights.snapshot)
+    await manager.broadcast({"type": "lights", "lights": lights_cache})
+    return {"ok": True, "found": found, "lights": lights_cache}
+
+
+@app.post("/api/lights/connect")
+async def connect_lights(request: Request):
+    if not hub_config.feature_enabled("lights"):
+        return JSONResponse({"error": "Lys er deaktiveret for denne profil"}, status_code=404)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    light_id = str((body or {}).get("light_id") or "")
+    state = await asyncio.to_thread(garden_lights.reconnect, light_id)
+    _store_light_state(state)
+    await manager.broadcast({"type": "lights", "lights": lights_cache})
+    return {"ok": True, "light": state, "lights": lights_cache}
 
 # ─── ADB constants (kiosk: Samsung Galaxy A12, se KIOSK.md) ───────────────────
 KIOSK_PHONE_IP = hub_config.kiosk_phone_ip()
@@ -1150,27 +1372,40 @@ async def spotify_playlist_build(data: dict = Body(default_factory=dict)):
     return await spotify.build_playlist_queue((data.get("playlist_uri") or "").strip())
 
 # ─── REST: Podcasts ───────────────────────────────────────────────────────────
-# Hardkodet liste. Hver podcast har en `source` der bestemmer afspilningsvej:
-#   - "spotify": Spotify Web API + Spotify Connect på M5 (samme rute som musik)
-#   - "sr":      Sveriges Radio API → direkte M4A-stream → DLNA AVTransport på M5
-#   - "rss":     Standard RSS/Omny MP3 → mpg123 → Pi/BlueALSA (garden)
-# show_id ud mod frontend prefixes med source for ikke-Spotify shows så det er entydigt.
+# Kiosk-katalog: hver show har en direkte media-URL (RSS enclosure eller SR-stream).
+# Home spiller den via DLNA på B&O; garden via lokal decoder. Spotify Connect bruges
+# ikke til podcasts — M5 er ikke et Connect-target, og Connect-Computer giver falsk play.
+# Valgfri `spotify_id` er kun alias for gamle kiosk-klienter, ikke en afspilningsvej.
 PODCAST_SHOWS: list[dict] = [
     {
         "source": "rss",
         "id": "fodboldlisten",
         "fallback_name": "Fodboldlisten",
         "order": "latest",
+        "spotify_id": "6FVyoDMn4GKxveMegJ2Yih",
         "feed": "https://api.dr.dk/podcasts/v1/feeds/fodboldlisten.xml?format=podcast",
     },
-    {"source": "spotify", "id": "5d4yba4KbcBTtwZ8glscZZ", "fallback_name": "Det næste kapitel"},
-    {"source": "sr",      "id": "4914", "fallback_name": "Text och musik med Eric Schüldt"},
-    {"source": "sr",      "id": "2488", "fallback_name": "Rendezvous med Kristjan Saag"},
+    {
+        "source": "rss",
+        "id": "det-naeste-kapitel",
+        "fallback_name": "Det næste kapitel",
+        "spotify_id": "5d4yba4KbcBTtwZ8glscZZ",
+        "feed": "https://www.omnycontent.com/d/playlist/1283f5f4-2508-4981-a99f-acb500e64dcf/3a33d3f9-b4e2-4e62-96cf-ad0800b1138a/cb87422a-2300-40a2-8fc0-ad0800b11393/podcast.rss",
+    },
+    {"source": "sr", "id": "4914", "fallback_name": "Text och musik med Eric Schüldt"},
+    {"source": "sr", "id": "2488", "fallback_name": "Rendezvous med Kristjan Saag"},
     {
         "source": "rss",
         "id": "magtfuld",
         "fallback_name": "Magtfuld",
         "feed": "https://www.omnycontent.com/d/playlist/414edbb4-4b91-4960-8650-ad4000dbc027/da2c3abe-ae37-4c83-bae0-b29500896504/bf710267-fe14-48e8-82f5-b29500896988/podcast.rss",
+    },
+    {
+        "source": "rss",
+        "id": "prompt",
+        "fallback_name": "Prompt",
+        "order": "latest",
+        "feed": "https://api.dr.dk/podcasts/v1/feeds/prompt.xml?format=podcast",
     },
 ]
 PODCAST_CACHE_TTL = 30 * 60  # 30 min — afsnit udkommer typisk én gang om ugen
@@ -1194,9 +1429,9 @@ def _find_show(show_id: str) -> dict | None:
     for sh in PODCAST_SHOWS:
         if _show_key(sh) == show_id:
             return sh
-    # Tolerant fallback: rå ID uden prefix
+    # Tolerant fallback: rå ID uden prefix, or a retired Spotify show id.
     for sh in PODCAST_SHOWS:
-        if sh["id"] == show_id:
+        if sh["id"] == show_id or sh.get("spotify_id") == show_id or sh.get("legacy_spotify_id") == show_id:
             return sh
     return None
 
@@ -1236,7 +1471,7 @@ async def _rss_feed(sh: dict) -> tuple[dict, list[dict]]:
     feed = sh.get("feed") or ""
     if not feed:
         return {}, []
-    r = await _http.get(feed, timeout=10)
+    r = await _http.get(feed, timeout=20)
     r.raise_for_status()
     root = ET.fromstring(r.content.decode("utf-8-sig", errors="replace"))
     channel = root.find("channel")
@@ -1675,10 +1910,21 @@ async def _build_podcast_list() -> list[dict]:
             try:
                 meta, episodes = await _rss_feed(sh)
             except Exception as exc:
-                print(f"[Podcast] skip rss {sh['id']} — {exc}")
-                continue
+                print(f"[Podcast] rss {sh['id']} feed error — {exc}")
+                meta, episodes = {"title": sh["fallback_name"], "image": ""}, []
             if not episodes:
-                print(f"[Podcast] skip rss {sh['id']} — no episodes")
+                print(f"[Podcast] rss {sh['id']} has no episodes yet")
+                out.append({
+                    "show_id": _show_key(sh),
+                    "source": "rss",
+                    "show_name": meta.get("title") or sh["fallback_name"],
+                    "show_image": meta.get("image") or "",
+                    "episode_id": "",
+                    "episode_uri": "",
+                    "episode_name": "",
+                    "episode_release_date": "",
+                    "episode_duration_ms": 0,
+                })
                 continue
             ep = episodes[0]
             out.append({
@@ -1837,9 +2083,10 @@ async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
     if not hub_config.feature_enabled("podcasts"):
         return {"episodes": [], "has_more": False, "offset": offset}
     sh = _find_show(show_id)
-    # Default til Spotify hvis show_id er ukendt (bagudkompatibilitet)
-    src = sh["source"] if sh else "spotify"
-    real_id = sh["id"] if sh else show_id
+    if not sh:
+        return {"episodes": [], "has_more": False, "offset": offset}
+    src = sh["source"]
+    real_id = sh["id"]
 
     if src == "spotify":
         items, has_more = await spotify.get_show_episodes(real_id, limit=limit, offset=offset)
@@ -1894,6 +2141,65 @@ async def list_show_episodes(show_id: str, limit: int = 20, offset: int = 0):
     return {"episodes": [], "has_more": False, "offset": offset}
 
 
+def _rss_show_keys(sh: dict) -> set[str]:
+    return {
+        str(sh.get("fallback_name") or "").strip().lower(),
+        str(_show_key(sh)).lower(),
+        str(sh.get("id") or "").strip().lower(),
+        str(sh.get("spotify_id") or sh.get("legacy_spotify_id") or "").strip().lower(),
+    }
+
+
+async def _play_rss_matching_title(title: str, show_hint: str = "") -> tuple[bool, str, dict] | None:
+    """Play an RSS episode whose title matches, optionally scoped to one show."""
+    title_key = (title or "").strip().lower()
+    hint_key = (show_hint or "").strip().lower()
+    if not title_key:
+        return None
+    for sh in PODCAST_SHOWS:
+        if sh.get("source") != "rss":
+            continue
+        keys = _rss_show_keys(sh)
+        if hint_key and hint_key not in keys and not any(hint_key in k for k in keys if k):
+            continue
+        try:
+            _, queue = await _rss_meta_and_queue(sh)
+        except Exception:
+            continue
+        idx = next((i for i, ep in enumerate(queue) if str(ep.get("name") or "").strip().lower() == title_key), None)
+        if idx is None:
+            continue
+        return await _play_rss_index(sh, idx)
+    return None
+
+
+async def _play_spotify_episode_as_rss(uri: str, title_hint: str = "", show_hint: str = "") -> tuple[bool, str, dict] | None:
+    """Map a leftover Spotify episode URI onto a catalog RSS stream."""
+    title = (title_hint or "").strip()
+    sh = _find_show(show_hint) if show_hint else None
+    if sh and sh.get("source") == "rss" and title:
+        matched = await _play_rss_matching_title(title, show_hint)
+        if matched is not None:
+            return matched
+    ep_id = uri.rsplit(":", 1)[-1]
+    ep_meta = await spotify.get_episode(ep_id)
+    show_sid = ""
+    show_title = ""
+    if isinstance(ep_meta, dict):
+        title = title or str(ep_meta.get("name") or "").strip()
+        show = ep_meta.get("show") if isinstance(ep_meta.get("show"), dict) else {}
+        show_sid = str(show.get("id") or "").strip()
+        show_title = str(show.get("name") or "").strip()
+    sh = _find_show(show_sid) if show_sid else sh
+    if sh and sh.get("source") == "rss" and title:
+        matched = await _play_rss_matching_title(title, _show_key(sh))
+        if matched is not None:
+            return matched
+    if title:
+        return await _play_rss_matching_title(title, show_title or show_hint)
+    return None
+
+
 @app.post("/api/podcasts/play")
 async def play_specific_episode(data: dict = Body(default_factory=dict)):
     """Spil et specifikt afsnit. Dispatcher per URI-prefix."""
@@ -1905,34 +2211,17 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
         return JSONResponse({"ok": False, "error": "no episode_uri"}, status_code=400)
 
     if uri.startswith("spotify:episode:"):
-        if hub_config.site() == "garden":
-            detail = await _prepare_garden_spotify_audio()
-            if detail:
-                return {"ok": False, "detail": detail}
-        ok, detail = await spotify.play_episode(uri)
-        if ok:
-            _active_podcast_engine = "spotify"
-            ep_id = uri.rsplit(":", 1)[-1]
-            ep_meta = await spotify.get_episode(ep_id)
-            title = (ep_meta or {}).get("name") or "Podcast"
-            show_title = ((ep_meta or {}).get("show") or {}).get("name") or "Podcast"
-            duration = int((ep_meta or {}).get("duration_ms") or 0)
-            _set_podcast_state(
-                active=True,
-                source="spotify",
-                showId="",
-                showTitle=show_title,
-                episodeId=ep_id,
-                episodeUri=uri,
-                episodeTitle=title,
-                episodeIndex=0,
-                queue=[{"id": ep_id, "uri": uri, "name": title, "duration_ms": duration}],
-                playing=True,
-                positionMs=0,
-                durationMs=duration,
-                error="",
-            )
-        return {"ok": ok, "detail": detail, "player": _public_podcast_state()}
+        remapped = await _play_spotify_episode_as_rss(
+            uri,
+            title_hint=str(data.get("episode_title") or ""),
+            show_hint=str(data.get("show_id") or ""),
+        )
+        if remapped is not None:
+            ok, detail, ep = remapped
+            if ok:
+                _active_podcast_engine = "rss"
+            return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
+        return {"ok": False, "detail": "ingen RSS-match for spotify:episode URI", "player": _public_podcast_state()}
 
     if uri.startswith("sr:episode:"):
         sr_id = uri.split(":", 2)[2]
@@ -2104,14 +2393,23 @@ async def podcast_player_seek(data: dict = Body(default_factory=dict)):
     if state.get("source") == "rss":
         if hub_config.site() == "garden":
             await _send_rss_command(f"JUMP {target_ms // 1000}s")
-    elif state.get("source") == "sr" and hub_config.site() == "garden":
-        if not garden_sr_stream_url:
-            return {"ok": False, "error": "SR-stream mangler", "player": state}
-        ok, detail = await _play_garden_sr_url(
-            garden_sr_stream_url, garden_sr_stream_title or state.get("episodeTitle") or "Sveriges Radio", target_ms
-        )
-        if not ok:
-            return {"ok": False, "error": detail, "player": state}
+        else:
+            ok, detail = await bo_dlna.seek(target_ms)
+            if not ok:
+                return {"ok": False, "error": detail or "spoling fejlede", "player": state}
+    elif state.get("source") == "sr":
+        if hub_config.site() == "garden":
+            if not garden_sr_stream_url:
+                return {"ok": False, "error": "SR-stream mangler", "player": state}
+            ok, detail = await _play_garden_sr_url(
+                garden_sr_stream_url, garden_sr_stream_title or state.get("episodeTitle") or "Sveriges Radio", target_ms
+            )
+            if not ok:
+                return {"ok": False, "error": detail, "player": state}
+        else:
+            ok, detail = await bo_dlna.seek(target_ms)
+            if not ok:
+                return {"ok": False, "error": detail or "spoling fejlede", "player": state}
     updated = _set_podcast_state(positionMs=target_ms)
     _mark_garden_audio_active()
     return {"ok": True, "player": updated}

@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { store } from '$lib/ws.svelte';
+  import { fade } from 'svelte/transition';
+  import { hsvToHex, store, type AudioTargetStatus } from '$lib/ws.svelte';
   import Card from '$lib/Card.svelte';
   import VolumeKnob from '$lib/VolumeKnob.svelte';
   import SpotifyVoice from '$lib/SpotifyVoice.svelte';
   import FeedbackOverlay from '$lib/FeedbackOverlay.svelte';
   import CameraCard from '$lib/CameraCard.svelte';
   import { showFeedback } from '$lib/feedback.svelte';
-  import type { AudioTargetStatus } from '$lib/ws.svelte';
   import {
     radioLibrary,
     initRadioLibrary,
@@ -30,7 +30,9 @@
     isPlaylistContextActive,
     playAlbum,
     handleVoicePayload,
-    stopMusicForExternalPlayback,
+    releaseSpotifyForPodcast,
+    releasePodcastForMusic,
+    registerPodcastReleaseHandler,
     paintNpFromQueues,
     playFromCurrentIndex,
     setPodcastTransportFromPlayer,
@@ -38,7 +40,7 @@
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 
-  const enabled = (feature: keyof typeof store.config.features) => store.config.features[feature];
+  const enabled = (feature: keyof typeof store.config.features) => !!store.config.features[feature];
 
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
@@ -78,11 +80,12 @@
     if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
   }
 
-  function resetDim(wakeKiosk = false) {
+  function resetDim(_wakeKiosk = false) {
     if (showSplash) return;
     lastActivityAt = Date.now();
-    if (wakeKiosk && dimmed) requestFullscreenAndKiosk();
-    if (dimmed) setBrightness(255);
+    if (!dimmed) return;
+    requestFullscreenAndKiosk();
+    setBrightness(255);
     dimmed = false;
   }
 
@@ -194,11 +197,14 @@
           void loadPodcasts();
           void refreshPodcastPlayer(false);
           podcastPlayerInterval = setInterval(() => {
-            if (playlist.activeTransport === 'podcast' || activePodcastPlayer.active) {
-              void refreshPodcastPlayer();
-            }
+            void refreshPodcastPlayer();
           }, 1500);
         }
+        registerPodcastReleaseHandler(() => {
+          activePodcastPlayer = { ...emptyPodcastPlayer };
+          activePodcastId = '';
+          activeEpisodeId = '';
+        });
       })
       .catch(() => {
         if (enabled('spotify')) void initSpotifyWebPlayer();
@@ -424,6 +430,38 @@
     }
   }
 
+  function lightStatus(light: { id: string; on: boolean; online: boolean; error?: string }): string {
+    if (connectingLight === light.id) return 'forbinder';
+    if (light.error === 'ikke parret') return 'ikke parret';
+    if (light.error === 'mangler nøgle') return 'mangler nøgle';
+    if (!light.online) return 'offline';
+    return light.on ? 'tændt' : 'slukket';
+  }
+
+  async function reconnectLight(lightId: string) {
+    if (connectingLight) return;
+    connectingLight = lightId;
+    try {
+      const result = await store.connectLight(lightId);
+      showFeedback(result?.online ? 'forbundet' : (result?.error ?? 'kunne ikke forbinde'), {
+        kind: result?.online ? 'success' : 'error',
+        duration: 5000,
+      });
+    } catch {
+      showFeedback('kunne ikke forbinde', { kind: 'error', duration: 5000 });
+    } finally {
+      connectingLight = '';
+    }
+  }
+
+  let connectingLight = $state('');
+
+  const lightColorPresets = [
+    { id: 'warm', hue: 32, sat: 48, label: 'varm' },
+    { id: 'amber', hue: 38, sat: 80, label: 'amber' },
+    { id: 'red', hue: 0, sat: 85, label: 'rød' },
+  ];
+
   let spotifySaved = $state(false);
   let saveLoading = $state(false);
   let radioSaveDone = $state(false);
@@ -628,6 +666,7 @@
   let podcastsError = $state('');
   let activePodcastPlayer = $state<PodcastPlayerState>({ ...emptyPodcastPlayer });
   let seekingPodcast = $state(false);
+  let podcastSeekOpen = $state(false);
   let activePodcastId = $state('');
   let activeEpisodeId = $state('');
   let loadingPodcastId = $state('');
@@ -665,10 +704,27 @@
     setTimeout(updatePodcastScrollLabels, 350);
   }
 
-  function scrollToPodcastNow() {
-    if (!podcastInner) return;
-    const row = podcastInner.querySelector<HTMLElement>('[data-podcast-current="true"]');
-    row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  function openPodcastSeek() {
+    if (!isPodcastTransport()) return;
+    podcastSeekOpen = true;
+  }
+
+  function closePodcastSeek() {
+    podcastSeekOpen = false;
+    seekingPodcast = false;
+  }
+
+  function goToPodcastNow() {
+    closePodcastSeek();
+    openPodcastQueue();
+    if (!pagesEl) return;
+    for (let i = 0; i < pagesEl.children.length; i++) {
+      const first = pagesEl.firstElementChild as HTMLElement | null;
+      if (first?.dataset.page === 'podcast') break;
+      if (first) pagesEl.appendChild(first);
+    }
+    pagesEl.scrollTo({ left: 0, behavior: 'instant' });
+    readNextPageName();
   }
 
   function openPodcastQueue() {
@@ -719,14 +775,18 @@
 
   function adoptPodcastPlayer(player: Partial<PodcastPlayerState> | undefined, push = true) {
     const next = normalizePodcastPlayer(player);
-    activePodcastPlayer = next;
-    activePodcastId = next.active ? next.showId : '';
-    activeEpisodeId = next.active ? next.episodeId : '';
     if (next.active) {
+      activePodcastPlayer = next;
+      activePodcastId = next.showId;
+      activeEpisodeId = next.episodeId;
       setPodcastTransportFromPlayer(next as unknown as Record<string, unknown>, push);
-    } else {
-      clearPodcastTransport(push);
+      return;
     }
+    const wasPodcast = activePodcastPlayer.active || playlist.activeTransport === 'podcast';
+    activePodcastPlayer = next;
+    activePodcastId = '';
+    activeEpisodeId = '';
+    if (wasPodcast) clearPodcastTransport(push);
   }
 
   async function refreshPodcastPlayer(push = true) {
@@ -749,7 +809,10 @@
     });
     const data = await r.json();
     if (data?.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
-    if (!data?.ok) showFeedback((data?.error as string) || 'Podcast-kontrol fejlede', { kind: 'error' });
+    if (!data?.ok) {
+      const detail = String(data?.error || data?.detail || '').trim();
+      if (detail) showFeedback(detail, { kind: 'error' });
+    }
     return !!data?.ok;
   }
 
@@ -801,13 +864,16 @@
       return;
     }
     loadingPodcastId = showId;
-    stopMusicForExternalPlayback();
     try {
+      await releaseSpotifyForPodcast();
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 25_000);
       const r = await fetch('/api/podcasts/play-latest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ show_id: showId }),
-      });
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timeout));
       const data = await r.json();
       if (data.ok) {
         if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
@@ -817,10 +883,11 @@
         }
         openPodcastQueue();
       } else {
-        showFeedback((data.detail as string) || 'Afspilning fejlede', { kind: 'error' });
+        const detail = String(data.detail || data.error || '').trim();
+        if (detail) showFeedback(detail, { kind: 'error' });
       }
     } catch (e) {
-      showFeedback((e as Error).message || 'Afspilning fejlede', { kind: 'error' });
+      showFeedback((e as Error).message || 'POST /api/podcasts/play-latest fejlede', { kind: 'error' });
     } finally {
       loadingPodcastId = '';
     }
@@ -833,13 +900,12 @@
     drilledError = '';
     drilledLoading = true;
     try {
-      const r = await fetch(`/api/podcasts/${show.show_id}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=0`);
+      const r = await fetch(`/api/podcasts/${encodeURIComponent(show.show_id)}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=0`);
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         drilledError = (data as { error?: string; detail?: string }).detail
           || (data as { error?: string }).error
-          || 'Kunne ikke hente afsnit';
-        showFeedback(drilledError, { kind: 'error' });
+          || `GET /api/podcasts/${show.show_id}/episodes HTTP ${r.status}`;
         return;
       }
       drilledEpisodes = (data.episodes ?? []) as Episode[];
@@ -847,9 +913,8 @@
       if (drilledEpisodes.length === 0) {
         drilledError = 'Ingen afsnit fundet.';
       }
-    } catch {
-      drilledError = 'Kunne ikke hente afsnit';
-      showFeedback(drilledError, { kind: 'error' });
+    } catch (e) {
+      drilledError = (e as Error).message || 'GET /api/podcasts/.../episodes fejlede';
     } finally {
       drilledLoading = false;
     }
@@ -867,10 +932,11 @@
     drilledLoadingMore = true;
     try {
       const offset = drilledEpisodes.length;
-      const r = await fetch(`/api/podcasts/${drilledShow.show_id}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=${offset}`);
+      const r = await fetch(`/api/podcasts/${encodeURIComponent(drilledShow.show_id)}/episodes?limit=${EPISODE_PAGE_SIZE}&offset=${offset}`);
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
-        showFeedback((data as { detail?: string; error?: string }).detail || 'Kunne ikke hente flere afsnit', { kind: 'error' });
+        const detail = String((data as { detail?: string; error?: string }).detail || (data as { error?: string }).error || '').trim();
+        if (detail) showFeedback(detail, { kind: 'error' });
         return;
       }
       const more = (data.episodes ?? []) as Episode[];
@@ -890,13 +956,20 @@
       return;
     }
     loadingEpisodeId = ep.id;
-    stopMusicForExternalPlayback();
     try {
+      await releaseSpotifyForPodcast();
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 25_000);
       const r = await fetch('/api/podcasts/play', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ episode_uri: ep.uri }),
-      });
+        body: JSON.stringify({
+          episode_uri: ep.uri,
+          episode_title: ep.name,
+          show_id: drilledShow?.show_id ?? '',
+        }),
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timeout));
       const data = await r.json();
       if (data.ok) {
         if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
@@ -906,10 +979,11 @@
         }
         openPodcastQueue();
       } else {
-        showFeedback((data.detail as string) || 'Afspilning fejlede', { kind: 'error' });
+        const detail = String(data.detail || data.error || '').trim();
+        if (detail) showFeedback(detail, { kind: 'error' });
       }
     } catch (e) {
-      showFeedback((e as Error).message || 'Afspilning fejlede', { kind: 'error' });
+      showFeedback((e as Error).message || 'POST /api/podcasts/play fejlede', { kind: 'error' });
     } finally {
       loadingEpisodeId = '';
     }
@@ -950,6 +1024,75 @@
     // a no-op after the backend has marked that podcast inactive.
     return activePodcastPlayer.active;
   }
+
+  function speakerNowPlaying() {
+    const m5 = store.devices.find((d) => /m5/i.test(d.name || ''));
+    if (m5 && store.nowPlaying[m5.id]?.name) return store.nowPlaying[m5.id];
+    for (const np of Object.values(store.nowPlaying)) {
+      if (np.name) return np;
+    }
+    return null;
+  }
+
+  function liveNowPlaying() {
+    const speaker = speakerNowPlaying();
+    if (speaker?.name) {
+      const podcastArtist = isPodcastTransport()
+        ? (activePodcastPlayer.showTitle || playlist.podcastShowTitle || '')
+        : '';
+      return {
+        title: speaker.name,
+        artist: speaker.artist || podcastArtist,
+        fromSpeaker: true,
+      };
+    }
+    if (isPodcastTransport()) {
+      return {
+        title: activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast',
+        artist: activePodcastPlayer.showTitle || playlist.podcastShowTitle || '',
+        fromSpeaker: false,
+      };
+    }
+    if (playlist.spotifyTitle) {
+      return { title: playlist.spotifyTitle, artist: playlist.spotifyArtist || '', fromSpeaker: false };
+    }
+    return { title: '', artist: '', fromSpeaker: false };
+  }
+
+  function liveIsPlaying() {
+    if (isPodcastTransport()) return activePodcastPlayer.playing;
+    const speaker = speakerNowPlaying();
+    if (typeof speaker?.playing === 'boolean') return speaker.playing;
+    return playlist.spotifyPlaying;
+  }
+
+  async function toggleNpPlayback() {
+    if (isPodcastTransport()) {
+      await togglePodcastPlayPause();
+      return;
+    }
+    const speaker = speakerNowPlaying();
+    if (speaker?.name && speaker.playing) {
+      try {
+        await fetch('/api/spotify/pause', { method: 'POST' });
+      } catch {
+        /* */
+      }
+      return;
+    }
+    if (speaker?.name && speaker.playing === false) {
+      try {
+        await fetch('/api/spotify/resume', { method: 'POST' });
+      } catch {
+        /* */
+      }
+      return;
+    }
+    await togglePlayPause();
+  }
+
+  const liveNp = $derived.by(() => liveNowPlaying());
+  const npPlaying = $derived.by(() => liveIsPlaying());
 
   // ── Cached radio playlists ───────────────────────────────────────────────
   let loadingPlaylistId = $state('');
@@ -1011,7 +1154,7 @@
     if (loadingPlaylistId) return;
     loadingPlaylistId = p.id;
     try {
-      stopMusicForExternalPlayback();
+      await releasePodcastForMusic();
       startCachedPlaylist(p);
       activePlaylistId = p.id;
       await playFromCurrentIndex();
@@ -1080,7 +1223,6 @@
         playlist.savedPlaylistIndex = index;
         paintNpFromQueues();
       } else {
-        stopMusicForExternalPlayback();
         startCachedPlaylist(drilledPlaylist);
         activePlaylistId = drilledPlaylist.id;
         playlist.savedPlaylistIndex = index;
@@ -1100,6 +1242,8 @@
   <meta name="apple-mobile-web-app-title" content={isGarden() ? 'Haven' : 'Ejdersted'} />
 </svelte:head>
 
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape') closePodcastSeek(); }} />
+
 <main>
   <FeedbackOverlay />
 
@@ -1111,7 +1255,15 @@
   {/if}
 
   <!-- Dim overlay -->
-  <div class="dim-overlay" class:dimmed></div>
+  <div
+    class="dim-overlay"
+    class:dimmed
+    role="button"
+    tabindex="-1"
+    aria-label="Væk kiosk"
+    onclick={() => noteActivity(true)}
+    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') noteActivity(true); }}
+  ></div>
 
   <!-- Clock (above dim) -->
   {#if dimmed}
@@ -1208,36 +1360,31 @@
         <div class="np-card" data-name="Afspiller">
           <div class="np-info">
             {#if isPodcastTransport()}
-              <span class="np-card-title">{activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast'}</span>
-              <span class="np-card-artist">{activePodcastPlayer.showTitle || playlist.podcastShowTitle || 'Podcast'}</span>
-              <div class="np-track-nav" class:np-track-nav--single={activePodcastPlayer.queue.length <= 1} role="group" aria-label="Podcast">
-                {#if activePodcastPlayer.queue.length > 1}
-                  <button type="button" class="np-track-nav-btn" onclick={podcastPrevious} aria-label="Forrige episode">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <polyline points="15 18 9 12 15 6" />
-                    </svg>
-                  </button>
-                {/if}
-                <button type="button" class="np-save-btn" onclick={() => scrollToPodcastNow()} aria-label="Åbn aktiv podcast">
-                  episode
+              <span class="np-card-title">{liveNp.title}</span>
+              <span class="np-card-artist">{liveNp.artist}</span>
+              {#if activePodcastPlayer.queue.length > 1}
+              <div class="np-track-nav" role="group" aria-label="Podcast">
+                <button type="button" class="np-track-nav-btn" onclick={podcastPrevious} aria-label="Forrige episode">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
                 </button>
-                {#if activePodcastPlayer.queue.length > 1}
-                  <button type="button" class="np-track-nav-btn" onclick={podcastNext} aria-label="Næste episode">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <polyline points="9 18 15 12 9 6" />
-                    </svg>
-                  </button>
-                {/if}
+                <button type="button" class="np-track-nav-btn" onclick={podcastNext} aria-label="Næste episode">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </button>
               </div>
-              <div class="np-podcast-progress">
+              {/if}
+              <button type="button" class="np-podcast-progress" onclick={openPodcastSeek} aria-label="Spol i podcast">
                 {formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}
                 {#if activePodcastPlayer.durationMs || playlist.podcastDurationMs}
                   / {formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
                 {/if}
-              </div>
-            {:else if playlist.spotifyTitle}
-              <span class="np-card-title">{playlist.spotifyTitle}</span>
-              {#if playlist.spotifyArtist}<span class="np-card-artist">{playlist.spotifyArtist}</span>{/if}
+              </button>
+            {:else if liveNp.title}
+              <span class="np-card-title">{liveNp.title}</span>
+              {#if liveNp.artist}<span class="np-card-artist">{liveNp.artist}</span>{/if}
               <div class="np-track-nav" class:np-track-nav--single={activeQueue().length <= 1} role="group" aria-label="Sang">
                 {#if activeQueue().length > 1}
                   <button type="button" class="np-track-nav-btn" onclick={spotifyPreviousTrack} aria-label="Forrige i køen">
@@ -1294,12 +1441,12 @@
             <span class="unified-vol-value">{unifiedVolume}</span>
           </div>
           <div class="action-row np-actions">
-            <button type="button" class="action-btn" onclick={isPodcastTransport() ? togglePodcastPlayPause : togglePlayPause}>
-              {isPodcastTransport() ? (activePodcastPlayer.playing ? 'pause' : 'play') : (playlist.spotifyPlaying ? 'pause' : 'play')}
+            <button type="button" class="action-btn" onclick={toggleNpPlayback}>
+              {npPlaying ? 'pause' : 'play'}
             </button>
             {#if isPodcastTransport()}
-              <button type="button" class="action-btn" onclick={() => seekPodcast(-30)}>-30s</button>
-              <button type="button" class="action-btn" onclick={() => seekPodcast(30)}>+30s</button>
+              <button type="button" class="action-btn" onclick={openPodcastSeek}>spol</button>
+              <button type="button" class="action-btn" onclick={goToPodcastNow}>afsnit</button>
             {:else}
               <button type="button" class="action-btn" class:active={isPlaylistContextActive()} class:loading={playlist.spotifyRadioLoading} onclick={togglePlaylistContext} disabled={playlist.spotifyRadioLoading}>
                 {playlist.spotifyRadioLoading ? '· · ·' : 'playliste'}
@@ -1459,10 +1606,11 @@
     {/if}
 
     <!-- PAGE 1 · LYS ─────────────────────────────────────────────────────── -->
-    {#if enabled('hue')}
+    {#if enabled('hue') || enabled('lights')}
     <section class="page">
       <div class="col-header">LYS</div>
       <div class="scroll-inner" bind:this={lysInner}>
+        {#if enabled('hue')}
         {#if !store.connected}
           <div class="pair-wrap">
             <p class="pair-label">Hub ikke forbundet</p>
@@ -1521,6 +1669,85 @@
               </button>
             </form>
           </div>
+        {/if}
+        {:else if enabled('lights')}
+          {#if store.lights.length === 0}
+            <Card name="gårdlys" status="ikke parret" online={false}>
+              <div class="pair-wrap">
+                <p class="pair-label">gårdlys</p>
+                <p class="pair-hint">
+                  Par lampen til have-WiFi i LEDVANCE SMART+ appen.<br />
+                  Hubben finder den bagefter på LAN.
+                </p>
+              </div>
+            </Card>
+          {:else}
+            {#each store.lights as light (light.id)}
+              <Card name="gårdlys" status={lightStatus(light)} online={light.online && light.any_on}>
+                <div class="garden-light">
+                  <div class="unified-vol unified-vol--horizontal garden-light-row">
+                    <span class="unified-vol-label">lys</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      class="unified-vol-slider"
+                      value={light.brightness}
+                      disabled={!light.online}
+                      oninput={(e) => store.setLightBrightness(light.id, +(e.currentTarget as HTMLInputElement).value)}
+                      aria-label="Lysstyrke"
+                    />
+                    <span class="unified-vol-value">{light.brightness}</span>
+                  </div>
+                  {#if light.has_color}
+                    <div class="garden-light-row garden-light-color">
+                      <span class="unified-vol-label">farve</span>
+                      <input
+                        class="hue-slider"
+                        type="range"
+                        min="0"
+                        max="360"
+                        step="1"
+                        value={light.hue ?? 30}
+                        disabled={!light.online}
+                        oninput={(e) => store.setLightColor(light.id, +(e.currentTarget as HTMLInputElement).value, light.sat ?? 80)}
+                        aria-label="Farve"
+                      />
+                      <span class="garden-light-swatch" style="background: {light.hex || hsvToHex(light.hue ?? 30, light.sat ?? 80)}"></span>
+                    </div>
+                    <div class="garden-light-presets">
+                      <button
+                        type="button"
+                        class="action-btn"
+                        class:active={light.mode !== 'colour'}
+                        disabled={!light.online}
+                        onclick={() => store.setLightWhite(light.id)}
+                      >hvid</button>
+                      {#each lightColorPresets as preset (preset.id)}
+                        <button
+                          type="button"
+                          class="action-btn"
+                          class:active={light.mode === 'colour' && (light.hue ?? 30) === preset.hue}
+                          disabled={!light.online}
+                          onclick={() => store.setLightColor(light.id, preset.hue, preset.sat)}
+                        >{preset.label}</button>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if !light.online}
+                    <button
+                      type="button"
+                      class="action-btn"
+                      class:loading={connectingLight === light.id}
+                      disabled={!!connectingLight}
+                      onclick={() => reconnectLight(light.id)}
+                    >{connectingLight === light.id ? 'forbinder' : 'forbind'}</button>
+                  {/if}
+                </div>
+              </Card>
+            {/each}
+          {/if}
         {/if}
 
       </div>
@@ -1671,7 +1898,7 @@
 
     <!-- PAGE 3 · PODCAST ──────────────────────────────────────────────────── -->
     {#if enabled('podcasts')}
-    <section class="page">
+    <section class="page" data-page="podcast">
       {#if showPodcastQueue}
         <div class="col-header drill-header">
           <button type="button" class="drill-back" onclick={closePodcastQueue} aria-label="Tilbage til podcast-liste">
@@ -1887,6 +2114,46 @@
     {/if}
 
   </div>
+
+  {#if podcastSeekOpen && isPodcastTransport()}
+    <div class="seek-backdrop" transition:fade={{ duration: 140 }}>
+      <button type="button" class="seek-underlay" aria-label="Luk spoling" onclick={closePodcastSeek}></button>
+      <div
+        class="seek-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Spol i podcast"
+      >
+        <span class="seek-title">{activePodcastPlayer.episodeTitle || liveNp.title || 'Podcast'}</span>
+        {#if activePodcastPlayer.showTitle || liveNp.artist}
+          <span class="seek-show">{activePodcastPlayer.showTitle || liveNp.artist}</span>
+        {/if}
+        <div class="podcast-progress-row seek-slider">
+          <span>{formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}</span>
+          <input
+            type="range"
+            min="0"
+            max={Math.max(1, activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
+            step="1000"
+            value={activePodcastPlayer.positionMs || playlist.podcastPositionMs}
+            oninput={(e) => {
+              seekingPodcast = true;
+              activePodcastPlayer.positionMs = +(e.currentTarget as HTMLInputElement).value;
+            }}
+            onchange={(e) => seekPodcastTo(+(e.currentTarget as HTMLInputElement).value)}
+            aria-label="Spol i podcast-afsnit"
+          />
+          <span>{formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}</span>
+        </div>
+        <div class="seek-skips">
+          <button type="button" class="action-btn" onclick={() => seekPodcast(-30)}>-30s</button>
+          <button type="button" class="action-btn" onclick={() => seekPodcast(30)}>+30s</button>
+        </div>
+        <button type="button" class="action-btn seek-close" onclick={closePodcastSeek}>luk</button>
+      </div>
+    </div>
+  {/if}
+
 </main>
 
 <style>
@@ -2149,6 +2416,60 @@
     max-width: 200px;
     margin: 0 auto;
     align-self: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .garden-light {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    height: 100%;
+    width: 100%;
+    gap: 22px;
+    padding: 12px 8px;
+  }
+
+  .garden-light-row {
+    width: min(420px, 100%);
+  }
+
+  .garden-light-color {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .garden-light-color .hue-slider {
+    flex: 1;
+    min-width: 0;
+    height: 34px;
+    border-radius: 17px;
+  }
+
+  .garden-light-color .hue-slider::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+
+  .garden-light-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  }
+
+  .garden-light-presets {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
   }
 
   .speaker-mixer {
@@ -2533,6 +2854,14 @@
     font-size: 0.68rem;
     letter-spacing: 0.08em;
     font-variant-numeric: tabular-nums;
+    background: none;
+    border: none;
+    padding: 4px 8px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .np-podcast-progress:active {
+    color: #c2c2c2;
   }
 
   .np-actions .action-btn {
@@ -3140,6 +3469,111 @@
   .podcast-queue-actions .action-btn {
     padding: 7px 10px;
     font-size: 0.6rem;
+  }
+
+  .seek-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .seek-underlay {
+    position: absolute;
+    inset: 0;
+    border: none;
+    background: rgba(0, 0, 0, 0.48);
+    cursor: pointer;
+  }
+
+  .seek-modal {
+    position: relative;
+    width: min(340px, 42vw);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 22px 20px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 24px;
+    background: rgba(18, 18, 18, 0.88);
+    box-shadow: 0 22px 70px rgba(0, 0, 0, 0.45);
+    -webkit-backdrop-filter: blur(28px) saturate(1.4);
+    backdrop-filter: blur(28px) saturate(1.4);
+  }
+
+  .seek-title {
+    max-width: 100%;
+    color: #f2f2f2;
+    font-size: 0.92rem;
+    font-weight: 300;
+    letter-spacing: 0.02em;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .seek-show {
+    margin-top: -6px;
+    max-width: 100%;
+    color: #9b9b9b;
+    font-size: 0.58rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .seek-slider {
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  .seek-slider input {
+    height: 34px;
+    accent-color: #0080c8;
+  }
+
+  .seek-skips {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .seek-skips .action-btn,
+  .seek-close {
+    padding: 8px 12px;
+    font-size: 0.62rem;
+  }
+
+  .hue-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    height: 34px;
+    border-radius: 17px;
+    outline: none;
+    background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+  }
+
+  .hue-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #f2f2f2;
+    border: 2px solid #111;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   }
 
   /* ── Drill-in (per show) ──────────────────────────────────────────────── */

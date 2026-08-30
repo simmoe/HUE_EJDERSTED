@@ -174,11 +174,23 @@ def _xml_escape(s: str) -> str:
     )
 
 
+def _protocol_info(url: str) -> str:
+    path = (url or "").split("?", 1)[0].lower()
+    if path.endswith(".mp3"):
+        mime = "audio/mpeg"
+    elif path.endswith((".m4a", ".aac", ".mp4")):
+        mime = "audio/mp4"
+    else:
+        mime = "*"
+    return f"http-get:*:{mime}:*"
+
+
 def _didl_for(url: str, title: str) -> str:
     """Byg DIDL-Lite metadata til CurrentURIMetaData. Hele blokken bliver
     XML-escaped når den lægges ind i SOAP-body'et."""
     title_esc = _xml_escape(title or "")
     url_esc = _xml_escape(url)
+    proto = _protocol_info(url)
     didl = (
         '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
         'xmlns:dc="http://purl.org/dc/elements/1.1/" '
@@ -186,7 +198,7 @@ def _didl_for(url: str, title: str) -> str:
         '<item id="1" parentID="0" restricted="1">'
         f'<dc:title>{title_esc}</dc:title>'
         '<upnp:class>object.item.audioItem.musicTrack</upnp:class>'
-        f'<res protocolInfo="http-get:*:audio/mp4:*">{url_esc}</res>'
+        f'<res protocolInfo="{proto}">{url_esc}</res>'
         "</item>"
         "</DIDL-Lite>"
     )
@@ -197,6 +209,9 @@ async def play_url(url: str, title: str = "") -> tuple[bool, str]:
     """Afspil arbitrary audio-URL på M5 via DLNA AVTransport."""
     if not url:
         return False, "no url"
+    # Stop først: M5 afviser ofte Play hvis den allerede streamer en anden URI.
+    await stop()
+    await asyncio.sleep(0.4)
     didl = _didl_for(url, title)
     url_esc = _xml_escape(url)
     ok, detail = await _soap(
@@ -224,3 +239,22 @@ async def pause() -> tuple[bool, str]:
 
 async def resume() -> tuple[bool, str]:
     return await _soap("Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
+
+
+def rel_time(position_ms: int) -> str:
+    """UPnP REL_TIME / ABS_TIME target, e.g. ``0:12:34``."""
+    total = max(0, int(position_ms) // 1000)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
+
+async def seek(position_ms: int) -> tuple[bool, str]:
+    """Hop i det aktuelle DLNA-stream. Prøver REL_TIME, derefter ABS_TIME."""
+    target = rel_time(position_ms)
+    body = f"<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>{target}</Target>"
+    ok, detail = await _soap("Seek", body)
+    if ok:
+        return True, ""
+    body = f"<InstanceID>0</InstanceID><Unit>ABS_TIME</Unit><Target>{target}</Target>"
+    return await _soap("Seek", body)

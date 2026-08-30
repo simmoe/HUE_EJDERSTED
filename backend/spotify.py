@@ -455,7 +455,7 @@ class Spotify:
             if target and str(target.get("type") or "").lower() == "computer" and hub_config.site() != "garden":
                 speaker = None
         if hub_config.site() != "garden" and not speaker:
-            return False, "Spotify-podcasts spiller ikke på B&O. Brug en podcast med direkte stream."
+            return False, "Afspilning fejlede"
 
         body = {"uris": [episode_uri], "position_ms": 0}
         last_snip = ""

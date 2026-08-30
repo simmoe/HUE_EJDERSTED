@@ -14,13 +14,18 @@ Modes:
 The relay line is held by this process via lgpio for as long as the backend
 runs. On a machine without lgpio/GPIO (e.g. local dev) it degrades to a
 simulated controller so the rest of the app keeps working.
+
+If NTP is not synchronized (Pi reboot with no Wi-Fi, no RTC), auto mode
+fail-opens: the panel stays connected so a dead Fossibot can still wake.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import subprocess
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +41,43 @@ except Exception:  # pragma: no cover - dev machines
 
 
 VALID_MODES = ("auto", "on", "off")
+_CLOCK_CHECK_S = 30.0
+_clock_trusted_at = 0.0
+_clock_trusted = True
+
+
+def reset_clock_cache() -> None:
+    """Test helper."""
+    global _clock_trusted_at, _clock_trusted
+    _clock_trusted_at = 0.0
+    _clock_trusted = True
+
+
+def clock_is_trusted() -> bool:
+    """True when systemd-timesyncd has NTP, or the wall clock is not epoch-era."""
+    global _clock_trusted_at, _clock_trusted
+    now = time.monotonic()
+    if _clock_trusted_at and now - _clock_trusted_at < _CLOCK_CHECK_S:
+        return _clock_trusted
+    _clock_trusted = _read_ntp_synchronized()
+    _clock_trusted_at = now
+    return _clock_trusted
+
+
+def _read_ntp_synchronized() -> bool:
+    try:
+        result = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().lower() in {"yes", "1", "true"}
+    except Exception:
+        pass
+    return datetime.now(timezone.utc).year >= 2026
 
 
 def _norm360(x: float) -> float:
@@ -163,11 +205,14 @@ class SolarController:
         off_dt = sunset - timedelta(minutes=self.sunset_offset) if sunset else None
         return on_dt, off_dt
 
-    def desired_on(self, now: datetime) -> bool:
+    def desired_on(self, now: datetime, *, clock_trusted: bool | None = None) -> bool:
         if self.mode == "on":
             return True
         if self.mode == "off":
             return False
+        trusted = clock_is_trusted() if clock_trusted is None else clock_trusted
+        if not trusted:
+            return True
         on_dt, off_dt = self.window(now.date())
         if on_dt is None or off_dt is None:
             return False
@@ -213,6 +258,7 @@ class SolarController:
             "sunrise": hm(sunrise),
             "sunset": hm(sunset),
             "withinWindow": within,
+            "clockTrusted": clock_is_trusted(),
             "simulated": self.simulated,
             "now": now.strftime("%H:%M"),
         }
