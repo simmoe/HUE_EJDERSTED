@@ -1413,7 +1413,7 @@ _podcast_cache: list[dict] = []
 _podcast_cache_at: float = 0.0
 
 # Track senest startet podcast-engine så vi kan dispatche pause/resume korrekt.
-_active_podcast_engine: str = ""  # "spotify" | "dlna" | ""
+_active_podcast_engine: str = ""  # "rss" | "dlna" | "garden_sr" | "spotify" | ""
 
 
 def _show_key(sh: dict) -> str:
@@ -1569,16 +1569,46 @@ async def _garden_bluealsa_device() -> str:
     return f"bluealsa:DEV={target.mac},PROFILE=a2dp"
 
 
-async def _prepare_garden_spotify_audio() -> str:
-    if hub_config.site() != "garden":
-        return ""
+async def _release_podcast_engine() -> None:
+    """Stop the current podcast decoder so another engine can own the speaker.
+
+    Same contract on home (DLNA) and garden (mpg123/ffmpeg). Metadata stays in
+    ``podcast_player_state`` until the caller pauses or clears the session.
+    """
+    global _active_podcast_engine
     await _stop_rss_player()
     await _stop_garden_sr_player()
-    try:
-        await _garden_bluealsa_device()
-    except RuntimeError as exc:
-        return str(exc)
+    if hub_config.bo_speakers_enabled():
+        with contextlib.suppress(Exception):
+            await bo_dlna.stop()
+    _active_podcast_engine = ""
+
+
+def _pause_podcast_session() -> dict:
+    """Keep queue and position, but stop ticks from auto-advancing."""
+    return _set_podcast_state(active=False, playing=False)
+
+
+async def _claim_spotify_audio() -> str:
+    """Take exclusive speaker ownership for Spotify on both sites."""
+    await _release_podcast_engine()
+    _pause_podcast_session()
+    if hub_config.site() == "garden":
+        try:
+            await _garden_bluealsa_device()
+        except RuntimeError as exc:
+            return str(exc)
     return ""
+
+
+async def _claim_podcast_audio() -> None:
+    """Pause Spotify so the podcast engine owns the speaker exclusively."""
+    with contextlib.suppress(Exception):
+        await spotify.pause()
+
+
+async def _prepare_garden_spotify_audio() -> str:
+    return await _claim_spotify_audio()
 
 
 async def _stop_rss_player() -> None:
@@ -2047,6 +2077,7 @@ async def play_latest_podcast(data: dict = Body(default_factory=dict)):
     if not hub_config.feature_enabled("podcasts"):
         return JSONResponse({"ok": False, "error": "Podcasts disabled"}, status_code=404)
     global _active_podcast_engine
+    await _claim_podcast_audio()
     show_id = (data.get("show_id") or "").strip()
     if not show_id:
         return JSONResponse({"ok": False, "error": "no show_id"}, status_code=400)
@@ -2206,6 +2237,7 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
     if not hub_config.feature_enabled("podcasts"):
         return JSONResponse({"ok": False, "error": "Podcasts disabled"}, status_code=404)
     global _active_podcast_engine
+    await _claim_podcast_audio()
     uri = (data.get("episode_uri") or "").strip()
     if not uri:
         return JSONResponse({"ok": False, "error": "no episode_uri"}, status_code=400)
@@ -2442,15 +2474,17 @@ async def podcast_player_previous():
     return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
 
+@app.post("/api/podcasts/player/release")
+async def podcast_player_release():
+    """Stop the podcast engine but keep queue/position for the kiosk session."""
+    await _release_podcast_engine()
+    _allow_garden_idle_keepalive_pulses()
+    return {"ok": True, "player": _pause_podcast_session()}
+
+
 @app.post("/api/podcasts/player/clear")
 async def podcast_player_clear():
-    state = _public_podcast_state()
-    await _stop_rss_player()
-    await _stop_garden_sr_player()
-    if hub_config.site() != "garden" and state.get("source") in ("rss", "sr"):
-        await bo_dlna.stop()
-    elif state.get("source") == "spotify":
-        await spotify.pause()
+    await _release_podcast_engine()
     _allow_garden_idle_keepalive_pulses()
     _set_podcast_state(
         active=False,

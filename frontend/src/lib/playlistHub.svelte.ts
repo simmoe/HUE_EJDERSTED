@@ -20,6 +20,7 @@ import {
 } from 'firebase/firestore';
 import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 import { showFeedback } from '$lib/feedback.svelte';
+import type { ActiveTransport } from '$lib/playbackSession';
 
 export type QTrack = { uri: string; name: string; artist: string };
 export type PodcastEpisode = {
@@ -31,7 +32,6 @@ export type PodcastEpisode = {
 };
 export type VoiceHandleResult = { handled: boolean; message?: string; error?: string };
 type PlaylistMode = 'mic' | 'radio' | 'album' | 'playlist';
-type ActiveTransport = 'spotify' | 'podcast' | '';
 type SyncPayload = {
   micQueue: QTrack[];
   radioQueue: QTrack[];
@@ -510,10 +510,27 @@ function seedUriForAlbumBuild(): string {
   return q[idx]?.uri ?? '';
 }
 
+export function claimMusicSession() {
+  playlist.activeTransport = 'spotify';
+  playlist.podcastPlaying = false;
+  playlist.podcastUpdatedAt = Date.now();
+  pushImmediately();
+}
+
+export function claimPodcastSession() {
+  clearAdvanceTimer();
+  pausedRemainingMs = 0;
+  playlist.activeTransport = 'podcast';
+  playlist.spotifyPlaying = false;
+  playlist.spotifyEndsAt = 0;
+  pushImmediately();
+}
+
 async function playTrackUri(uri: string): Promise<boolean> {
   if (!uri?.startsWith('spotify:track:')) return false;
   clearAdvanceTimer();
   pausedRemainingMs = 0;
+  claimMusicSession();
   await releasePodcastForMusic();
   try {
     const r = await fetch('/api/spotify/play-uris', {
@@ -576,14 +593,15 @@ export function registerPodcastReleaseHandler(fn: () => void) {
   onPodcastReleased = fn;
 }
 
-/** Stop podcast-motoren, så Spotify kan overtage højttaleren uden at NP-kortet hopper tilbage. */
+/** Stop podcast-motoren, så Spotify kan overtage højttaleren. Behold kø/position. */
 export async function releasePodcastForMusic() {
   try {
-    await fetch('/api/podcasts/player/clear', { method: 'POST' });
+    await fetch('/api/podcasts/player/release', { method: 'POST' });
   } catch {
-    /* hub kan allerede spille musik */
+    /* hub kan allerede spille musik — play-uris claimer stadig motoren */
   }
-  clearPodcastTransport(false);
+  playlist.podcastPlaying = false;
+  playlist.podcastUpdatedAt = Date.now();
   onPodcastReleased?.();
 }
 
@@ -609,29 +627,24 @@ export function stopMusicForExternalPlayback() {
 export function setPodcastTransportFromPlayer(player: Record<string, unknown>, push = true) {
   const queue = parsePodcastQueue(player.queue);
   const idx = typeof player.episodeIndex === 'number' ? player.episodeIndex : 0;
-  playlist.activeTransport = player.active ? 'podcast' : '';
-  playlist.podcastQueue = queue;
-  playlist.podcastIndex = Math.max(0, Math.min(Math.max(0, queue.length - 1), idx));
-  playlist.podcastShowTitle = String(player.showTitle ?? '');
-  playlist.podcastEpisodeTitle = String(player.episodeTitle ?? '');
-  playlist.podcastPlaying = !!player.playing;
-  playlist.podcastPositionMs = typeof player.positionMs === 'number' ? player.positionMs : 0;
-  playlist.podcastDurationMs = typeof player.durationMs === 'number' ? player.durationMs : 0;
-  playlist.podcastUpdatedAt = Date.now();
-  if (!player.active) {
-    playlist.podcastQueue = [];
-    playlist.podcastIndex = 0;
-    playlist.podcastShowTitle = '';
-    playlist.podcastEpisodeTitle = '';
-    playlist.podcastPlaying = false;
-    playlist.podcastPositionMs = 0;
-    playlist.podcastDurationMs = 0;
+  const active = !!player.active;
+  if (active) playlist.activeTransport = 'podcast';
+  else if (playlist.activeTransport === 'podcast') playlist.activeTransport = '';
+  if (queue.length > 0 || active) {
+    playlist.podcastQueue = queue;
+    playlist.podcastIndex = Math.max(0, Math.min(Math.max(0, queue.length - 1), idx));
+    playlist.podcastShowTitle = String(player.showTitle ?? playlist.podcastShowTitle);
+    playlist.podcastEpisodeTitle = String(player.episodeTitle ?? playlist.podcastEpisodeTitle);
+    playlist.podcastPositionMs = typeof player.positionMs === 'number' ? player.positionMs : playlist.podcastPositionMs;
+    playlist.podcastDurationMs = typeof player.durationMs === 'number' ? player.durationMs : playlist.podcastDurationMs;
   }
+  playlist.podcastPlaying = active && !!player.playing;
+  playlist.podcastUpdatedAt = Date.now();
   if (push) schedulePush();
 }
 
 export function clearPodcastTransport(push = true) {
-  playlist.activeTransport = '';
+  if (playlist.activeTransport === 'podcast') playlist.activeTransport = '';
   playlist.podcastQueue = [];
   playlist.podcastIndex = 0;
   playlist.podcastShowTitle = '';
@@ -841,6 +854,7 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
     playlist.micIndex = playlist.micQueue.length - 1;
     clearAdvanceTimer();
     pausedRemainingMs = 0;
+    claimMusicSession();
     void releasePodcastForMusic();
     paintNpFromQueues();
     pushImmediately();
@@ -859,6 +873,7 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
     playlist.micIndex = start;
     clearAdvanceTimer();
     pausedRemainingMs = 0;
+    claimMusicSession();
     void releasePodcastForMusic();
     paintNpFromQueues();
     pushImmediately();

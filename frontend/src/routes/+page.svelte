@@ -37,8 +37,11 @@
     playFromCurrentIndex,
     setPodcastTransportFromPlayer,
     clearPodcastTransport,
+    claimMusicSession,
+    claimPodcastSession,
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
+  import { nowPlayingFromSession, podcastPollAction } from '$lib/playbackSession';
 
   const enabled = (feature: keyof typeof store.config.features) => !!store.config.features[feature];
 
@@ -201,9 +204,7 @@
           }, 1500);
         }
         registerPodcastReleaseHandler(() => {
-          activePodcastPlayer = { ...emptyPodcastPlayer };
-          activePodcastId = '';
-          activeEpisodeId = '';
+          activePodcastPlayer = { ...activePodcastPlayer, active: false, playing: false };
         });
       })
       .catch(() => {
@@ -773,8 +774,18 @@
     };
   }
 
-  function adoptPodcastPlayer(player: Partial<PodcastPlayerState> | undefined, push = true) {
+  function adoptPodcastPlayer(
+    player: Partial<PodcastPlayerState> | undefined,
+    push = true,
+    userInitiated = false,
+  ) {
     const next = normalizePodcastPlayer(player);
+    const action = podcastPollAction(playlist.activeTransport, next.active, userInitiated);
+    if (action === 'ignore') return;
+    if (action === 'keep-paused') {
+      activePodcastPlayer = { ...activePodcastPlayer, active: false, playing: false };
+      return;
+    }
     if (next.active) {
       activePodcastPlayer = next;
       activePodcastId = next.showId;
@@ -784,9 +795,11 @@
     }
     const wasPodcast = activePodcastPlayer.active || playlist.activeTransport === 'podcast';
     activePodcastPlayer = next;
-    activePodcastId = '';
-    activeEpisodeId = '';
-    if (wasPodcast) clearPodcastTransport(push);
+    if (wasPodcast && playlist.activeTransport === 'podcast') {
+      activePodcastId = '';
+      activeEpisodeId = '';
+      clearPodcastTransport(push);
+    }
   }
 
   async function refreshPodcastPlayer(push = true) {
@@ -808,7 +821,7 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await r.json();
-    if (data?.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
+    if (data?.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>, true, true);
     if (!data?.ok) {
       const detail = String(data?.error || data?.detail || '').trim();
       if (detail) showFeedback(detail, { kind: 'error' });
@@ -859,12 +872,13 @@
 
   async function playPodcast(showId: string) {
     if (loadingPodcastId) return;
-    if (activePodcastId === showId) {
+    if (activePodcastId === showId && playlist.activeTransport === 'podcast') {
       await togglePodcastPlayPause();
       return;
     }
     loadingPodcastId = showId;
     try {
+      claimPodcastSession();
       await releaseSpotifyForPodcast();
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 25_000);
@@ -876,7 +890,7 @@
       }).finally(() => clearTimeout(timeout));
       const data = await r.json();
       if (data.ok) {
-        if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
+        if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>, true, true);
         else {
           activePodcastId = showId;
           activeEpisodeId = (data.episode?.id as string) || '';
@@ -951,12 +965,13 @@
 
   async function playEpisode(ep: Episode) {
     if (loadingEpisodeId) return;
-    if (activeEpisodeId === ep.id) {
+    if (activeEpisodeId === ep.id && playlist.activeTransport === 'podcast') {
       await togglePodcastPlayPause();
       return;
     }
     loadingEpisodeId = ep.id;
     try {
+      claimPodcastSession();
       await releaseSpotifyForPodcast();
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 25_000);
@@ -972,7 +987,7 @@
       }).finally(() => clearTimeout(timeout));
       const data = await r.json();
       if (data.ok) {
-        if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>);
+        if (data.player) adoptPodcastPlayer(data.player as Partial<PodcastPlayerState>, true, true);
         else {
           activeEpisodeId = ep.id;
           activePodcastId = drilledShow?.show_id ?? '';
@@ -1019,10 +1034,7 @@
   }
 
   function isPodcastTransport(): boolean {
-    // The physical backend is authoritative. Firestore can briefly retain a
-    // completed podcast transport and must not turn the music Play button into
-    // a no-op after the backend has marked that podcast inactive.
-    return activePodcastPlayer.active;
+    return playlist.activeTransport === 'podcast';
   }
 
   function speakerNowPlaying() {
@@ -1036,39 +1048,32 @@
 
   function liveNowPlaying() {
     const speaker = speakerNowPlaying();
-    if (speaker?.name) {
-      const podcastArtist = isPodcastTransport()
-        ? (activePodcastPlayer.showTitle || playlist.podcastShowTitle || '')
-        : '';
-      return {
-        title: speaker.name,
-        artist: speaker.artist || podcastArtist,
-        fromSpeaker: true,
-      };
-    }
-    if (isPodcastTransport()) {
-      return {
-        title: activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast',
-        artist: activePodcastPlayer.showTitle || playlist.podcastShowTitle || '',
-        fromSpeaker: false,
-      };
-    }
-    if (playlist.spotifyTitle) {
-      return { title: playlist.spotifyTitle, artist: playlist.spotifyArtist || '', fromSpeaker: false };
-    }
-    return { title: '', artist: '', fromSpeaker: false };
+    return nowPlayingFromSession({
+      transport: playlist.activeTransport,
+      podcastTitle: activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle,
+      podcastArtist: activePodcastPlayer.showTitle || playlist.podcastShowTitle,
+      musicTitle: playlist.spotifyTitle,
+      musicArtist: playlist.spotifyArtist,
+      speakerTitle: speaker?.name,
+      speakerArtist: speaker?.artist,
+    });
   }
 
   function liveIsPlaying() {
-    if (isPodcastTransport()) return activePodcastPlayer.playing;
+    if (playlist.activeTransport === 'podcast') return activePodcastPlayer.playing || playlist.podcastPlaying;
+    if (playlist.activeTransport === 'spotify') return playlist.spotifyPlaying;
     const speaker = speakerNowPlaying();
     if (typeof speaker?.playing === 'boolean') return speaker.playing;
-    return playlist.spotifyPlaying;
+    return false;
   }
 
   async function toggleNpPlayback() {
-    if (isPodcastTransport()) {
+    if (playlist.activeTransport === 'podcast') {
       await togglePodcastPlayPause();
+      return;
+    }
+    if (playlist.activeTransport === 'spotify') {
+      await togglePlayPause();
       return;
     }
     const speaker = speakerNowPlaying();
@@ -1154,6 +1159,7 @@
     if (loadingPlaylistId) return;
     loadingPlaylistId = p.id;
     try {
+      claimMusicSession();
       await releasePodcastForMusic();
       startCachedPlaylist(p);
       activePlaylistId = p.id;
@@ -1219,6 +1225,8 @@
     if (!drilledPlaylist || loadingTrackIndex >= 0 || deletingTrackIndex >= 0) return;
     loadingTrackIndex = index;
     try {
+      claimMusicSession();
+      await releasePodcastForMusic();
       if (activePlaylistId === drilledPlaylist.id && playlist.savedPlaylistQueue.length > 0) {
         playlist.savedPlaylistIndex = index;
         paintNpFromQueues();

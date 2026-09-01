@@ -71,6 +71,18 @@ and booleans fail fast instead of silently selecting a different deployment.
   hostname. Never configure the upstream with a raw `100.x` address because the
   certificate name will not match.
 
+## Playback session
+
+Music and podcasts share one session on both hubs. `activeTransport` is
+`spotify` or `podcast`; the kiosk now-playing card follows that session, not
+speaker Mozart events. Engines are interchangeable backends:
+
+- home: Spotify Connect + B&O DLNA
+- garden: librespot + mpg123/ffmpeg over BlueALSA
+
+Claiming one engine stops the other without wiping the paused queue/position.
+Podcast polls must not steal a claimed music session.
+
 ## Firestore Shape
 
 Home and garden share playlist library data, but not physical player state.

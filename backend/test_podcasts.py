@@ -308,3 +308,102 @@ class SpeakerDedupeTests(unittest.TestCase):
         ips = {d["ip"] for d in main.devices.values()}
         self.assertEqual(ips, {"192.168.86.20", "192.168.86.21"})
         self.assertEqual(set(removed), {"192_168_86_153", "192_168_86_188"})
+
+
+class PlaybackSessionClaimTests(unittest.IsolatedAsyncioTestCase):
+    """Home and garden share one session: claiming music must stop the podcast
+    engine without wiping queue/position the kiosk still displays."""
+
+    def setUp(self):
+        self._prev = dict(main.podcast_player_state)
+        self._engine = main._active_podcast_engine
+        main.podcast_player_state.update({
+            "active": True,
+            "source": "rss",
+            "showId": "rss:fodboldlisten",
+            "showTitle": "Fodboldlisten",
+            "episodeId": "ep-1",
+            "episodeUri": "rss:fodboldlisten:0",
+            "episodeTitle": "VM er slut!",
+            "episodeIndex": 0,
+            "queue": [{"uri": "rss:fodboldlisten:0", "name": "VM er slut!"}],
+            "playing": True,
+            "positionMs": 12_000,
+            "durationMs": 3_600_000,
+            "updatedAt": 0,
+            "error": "",
+        })
+        main._active_podcast_engine = "dlna"
+
+    def tearDown(self):
+        main.podcast_player_state.clear()
+        main.podcast_player_state.update(self._prev)
+        main._active_podcast_engine = self._engine
+
+    async def test_home_spotify_claim_stops_dlna_and_keeps_queue(self):
+        with (
+            patch.object(main.hub_config, "site", return_value="home"),
+            patch.object(main.hub_config, "bo_speakers_enabled", return_value=True),
+            patch.object(main.bo_dlna, "stop", AsyncMock(return_value=(True, ""))) as stop,
+        ):
+            detail = await main._claim_spotify_audio()
+        self.assertEqual(detail, "")
+        stop.assert_awaited()
+        self.assertEqual(main._active_podcast_engine, "")
+        self.assertFalse(main.podcast_player_state["active"])
+        self.assertFalse(main.podcast_player_state["playing"])
+        self.assertEqual(main.podcast_player_state["episodeTitle"], "VM er slut!")
+        self.assertEqual(main.podcast_player_state["positionMs"], 12_000)
+        self.assertEqual(main.podcast_player_state["queue"][0]["uri"], "rss:fodboldlisten:0")
+
+    async def test_garden_spotify_claim_still_requires_the_speaker(self):
+        with (
+            patch.object(main.hub_config, "site", return_value="garden"),
+            patch.object(main.hub_config, "bo_speakers_enabled", return_value=False),
+            patch.object(
+                main,
+                "_garden_bluealsa_device",
+                AsyncMock(side_effect=RuntimeError("Gå hen og tænd højttaleren")),
+            ),
+        ):
+            detail = await main._claim_spotify_audio()
+        self.assertEqual(detail, "Gå hen og tænd højttaleren")
+
+    async def test_release_keeps_queue_clear_wipes(self):
+        with (
+            patch.object(main.hub_config, "bo_speakers_enabled", return_value=True),
+            patch.object(main.bo_dlna, "stop", AsyncMock(return_value=(True, ""))),
+        ):
+            released = await main.podcast_player_release()
+            self.assertTrue(released["ok"])
+            self.assertEqual(released["player"]["episodeTitle"], "VM er slut!")
+            self.assertFalse(released["player"]["active"])
+            self.assertEqual(main._active_podcast_engine, "")
+            cleared = await main.podcast_player_clear()
+        self.assertEqual(cleared["player"]["episodeTitle"], "")
+        self.assertEqual(cleared["player"]["queue"], [])
+
+    async def test_play_uris_claims_spotify_on_home(self):
+        with (
+            patch.object(main.hub_config, "feature_enabled", return_value=True),
+            patch.object(main.hub_config, "site", return_value="home"),
+            patch.object(main.hub_config, "bo_speakers_enabled", return_value=True),
+            patch.object(main.bo_dlna, "stop", AsyncMock(return_value=(True, ""))) as stop,
+            patch.object(main.spotify, "play_uris_queue", AsyncMock(return_value=(True, "", 180_000))),
+        ):
+            result = await main.spotify_play_uris({"uris": ["spotify:track:abc"], "offset": 0})
+        stop.assert_awaited()
+        self.assertTrue(result["ok"])
+        self.assertFalse(main.podcast_player_state["active"])
+        self.assertEqual(main.podcast_player_state["episodeTitle"], "VM er slut!")
+
+    async def test_play_latest_podcast_pauses_spotify(self):
+        ep = {"id": "rss:fodboldlisten:0", "uri": "rss:fodboldlisten:0", "name": "VM er slut!"}
+        with (
+            patch.object(main.hub_config, "feature_enabled", return_value=True),
+            patch.object(main.spotify, "pause", AsyncMock(return_value=True)) as pause,
+            patch.object(main, "_play_latest_rss", AsyncMock(return_value=(True, "ok", ep))),
+        ):
+            result = await main.play_latest_podcast({"show_id": "rss:fodboldlisten"})
+        pause.assert_awaited()
+        self.assertTrue(result["ok"])
