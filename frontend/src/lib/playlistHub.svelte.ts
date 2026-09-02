@@ -559,6 +559,12 @@ async function playTrackUri(uri: string): Promise<boolean> {
   return false;
 }
 
+export async function playExactTrack(uri: string): Promise<boolean> {
+  const ok = await playTrackUri(uri);
+  if (ok) scrollToNowPlaying();
+  return ok;
+}
+
 export async function playFromCurrentIndex(): Promise<boolean> {
   const q = activeQueue();
   const idx = activeIndex();

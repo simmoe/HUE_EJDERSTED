@@ -45,6 +45,30 @@ export function nowPlayingFromSession(input: {
  * Poll snapshots from the podcast engine must not steal a claimed music session.
  * User-initiated podcast plays always adopt.
  */
+export type PlaylistTrackRef = { uri: string; name?: string; artist?: string };
+
+/**
+ * The drill list comes from the shared library. Runtime player state can be an
+ * older snapshot. Never play by index into that stale queue.
+ */
+export function resolvePlaylistTap(
+  tapped: PlaylistTrackRef,
+  visibleTracks: PlaylistTrackRef[],
+  runtimeQueue: PlaylistTrackRef[],
+  tappedIndex: number,
+): { uri: string; queue: PlaylistTrackRef[]; index: number } | null {
+  const uri = (tapped.uri || '').trim();
+  if (!uri.startsWith('spotify:track:')) return null;
+  const queue = visibleTracks.filter((t) => (t.uri || '').startsWith('spotify:track:'));
+  if (queue.length === 0) return null;
+  const byUri = queue.findIndex((t) => t.uri === uri);
+  const index = byUri >= 0 ? byUri : Math.max(0, Math.min(queue.length - 1, tappedIndex));
+  const chosen = byUri >= 0 ? queue[byUri] : queue[index];
+  if (!chosen?.uri.startsWith('spotify:track:')) return null;
+  void runtimeQueue;
+  return { uri: chosen.uri, queue, index };
+}
+
 export function podcastPollAction(
   transport: ActiveTransport,
   playerActive: boolean,

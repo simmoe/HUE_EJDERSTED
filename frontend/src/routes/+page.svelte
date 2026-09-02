@@ -35,13 +35,14 @@
     registerPodcastReleaseHandler,
     paintNpFromQueues,
     playFromCurrentIndex,
+    playExactTrack,
     setPodcastTransportFromPlayer,
     clearPodcastTransport,
     claimMusicSession,
     claimPodcastSession,
   } from '$lib/playlistHub.svelte';
   import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
-  import { nowPlayingFromSession, podcastPollAction } from '$lib/playbackSession';
+  import { nowPlayingFromSession, podcastPollAction, resolvePlaylistTap } from '$lib/playbackSession';
 
   const enabled = (feature: keyof typeof store.config.features) => !!store.config.features[feature];
 
@@ -297,6 +298,14 @@
     void playlist.radioQueue;
     void playlist.playListMode;
     radioSaveDone = false;
+  });
+
+  $effect(() => {
+    if (!drilledPlaylist) return;
+    const live = radioLibrary.playlists.find((p) => p.id === drilledPlaylist?.id);
+    if (!live) return;
+    drilledPlaylist = live;
+    drilledTracks = live.tracks.map((track, i) => ({ ...track, position: i }));
   });
 
   $effect(() => {
@@ -1112,15 +1121,21 @@
   let drilledPlaylist = $state<RadioPlaylist | null>(null);
   let drilledTracks = $state<PlaylistTrack[]>([]);
 
-  function startCachedPlaylist(p: RadioPlaylist) {
+  function liveLibraryPlaylist(id: string, fallback: RadioPlaylist): RadioPlaylist {
+    return radioLibrary.playlists.find((p) => p.id === id) ?? fallback;
+  }
+
+  function startCachedPlaylist(p: RadioPlaylist, index = 0) {
+    const live = liveLibraryPlaylist(p.id, p);
     playlist.spotifyRadio = false;
     playlist.spotifyAlbumActive = false;
     playlist.savedPlaylistActive = true;
-    playlist.savedPlaylistTitle = p.name;
-    playlist.savedPlaylistQueue = p.tracks;
-    playlist.savedPlaylistIndex = 0;
+    playlist.savedPlaylistTitle = live.name;
+    playlist.savedPlaylistQueue = live.tracks;
+    playlist.savedPlaylistIndex = Math.max(0, Math.min(Math.max(0, live.tracks.length - 1), index));
     playlist.playListMode = 'playlist';
     paintNpFromQueues();
+    return live;
   }
 
   function updatePlaylistScrollLabels() {
@@ -1161,17 +1176,18 @@
     try {
       claimMusicSession();
       await releasePodcastForMusic();
-      startCachedPlaylist(p);
-      activePlaylistId = p.id;
-      await playFromCurrentIndex();
+      const live = startCachedPlaylist(p, 0);
+      activePlaylistId = live.id;
+      await playExactTrack(live.tracks[0]?.uri || '');
     } finally {
       loadingPlaylistId = '';
     }
   }
 
   function openPlaylistDrill(p: RadioPlaylist) {
-    drilledPlaylist = p;
-    drilledTracks = p.tracks.map((track, i) => ({ ...track, position: i }));
+    const live = liveLibraryPlaylist(p.id, p);
+    drilledPlaylist = live;
+    drilledTracks = live.tracks.map((track, i) => ({ ...track, position: i }));
   }
 
   function closePlaylistDrill() {
@@ -1225,18 +1241,17 @@
     if (!drilledPlaylist || loadingTrackIndex >= 0 || deletingTrackIndex >= 0) return;
     loadingTrackIndex = index;
     try {
+      const live = liveLibraryPlaylist(drilledPlaylist.id, drilledPlaylist);
+      const resolved = resolvePlaylistTap(track, live.tracks, playlist.savedPlaylistQueue, index);
+      if (!resolved) {
+        showFeedback('Sangens Spotify-sti mangler', { kind: 'error' });
+        return;
+      }
       claimMusicSession();
       await releasePodcastForMusic();
-      if (activePlaylistId === drilledPlaylist.id && playlist.savedPlaylistQueue.length > 0) {
-        playlist.savedPlaylistIndex = index;
-        paintNpFromQueues();
-      } else {
-        startCachedPlaylist(drilledPlaylist);
-        activePlaylistId = drilledPlaylist.id;
-        playlist.savedPlaylistIndex = index;
-        paintNpFromQueues();
-      }
-      await playFromCurrentIndex();
+      startCachedPlaylist(live, resolved.index);
+      activePlaylistId = live.id;
+      await playExactTrack(resolved.uri);
     } finally {
       loadingTrackIndex = -1;
     }
