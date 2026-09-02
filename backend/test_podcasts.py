@@ -157,17 +157,17 @@ class SpotifyEpisodeTargetTests(unittest.IsolatedAsyncioTestCase):
         client._http = AsyncMock()
         with (
             patch.object(client, "_headers", AsyncMock(return_value={"Authorization": "Bearer x"})),
-            patch.object(client, "_find_speaker_device_id", AsyncMock(return_value="abc")),
             patch.object(
                 client,
                 "devices",
                 AsyncMock(return_value=[{"id": "abc", "name": "Ejdersted", "type": "Computer"}]),
             ),
             patch.object(spotify.hub_config, "site", return_value="home"),
+            patch.object(spotify.hub_config, "spotify_connect_device", return_value=""),
         ):
             ok, detail = await client.play_episode("spotify:episode:x")
         self.assertFalse(ok)
-        self.assertEqual(detail, "Afspilning fejlede")
+        self.assertEqual(detail, "Beoplay M5 er ikke på Spotify Connect")
 
 
 class DlnaDidlTests(unittest.TestCase):

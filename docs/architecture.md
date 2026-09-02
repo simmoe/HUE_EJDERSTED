@@ -77,7 +77,9 @@ Music and podcasts share one session on both hubs. `activeTransport` is
 `spotify` or `podcast`; the kiosk now-playing card follows that session, not
 speaker Mozart events. Engines are interchangeable backends:
 
-- home: Spotify Connect + B&O DLNA
+- home: Spotify Connect **on Beoplay M5 only** + B&O DLNA. The kiosk Web
+  Playback SDK, phones and `Ejdersted Garden` are never play/pause targets,
+  and BeoLink is expanded only after M5 is actually playing the requested track.
 - garden: librespot + mpg123/ffmpeg over BlueALSA
 
 Claiming one engine stops the other without wiping the paused queue/position.

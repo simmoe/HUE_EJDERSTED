@@ -11,6 +11,19 @@ BEO_M5_JID = "2714.1200298.33798625@products.bang-olufsen.com"
 _http = httpx.AsyncClient(timeout=4.0)
 
 
+async def stop_speakers() -> None:
+    """Best-effort stop so a leftover M5 Spotify source cannot keep the A9 going.
+
+    Pause through Spotify Connect is not enough if BeoLink was joined to an old
+    M5 context that is no longer the active Connect player.
+    """
+    for ip in (BEO_M5_IP, BEO_A9_IP):
+        try:
+            await _http.put(f"http://{ip}:8080/BeoZone/Zone/Stream/Stop")
+        except Exception as exc:
+            print(f"[BeoLink] stop {ip} failed: {exc}")
+
+
 async def expand_to_a9(source_prefix: str) -> None:
     """A9 skal joine M5'en på en specifik kilde (fx 'spotify' eller 'dlna').
 

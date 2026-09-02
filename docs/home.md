@@ -9,7 +9,8 @@ Enabled features:
 
 - B&O Mozart volume and now-playing
 - Philips Hue room brightness
-- Spotify voice/search/playback
+- Spotify voice/search/playback on **Beoplay M5 only** (never the kiosk
+  Web Playback SDK, a phone, or `Ejdersted Garden`)
 - Podcast and playlist views
 - Android kiosk controls through ADB
 - Read-only garden surveillance card as an additional kiosk page
