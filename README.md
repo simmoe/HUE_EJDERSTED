@@ -7,6 +7,8 @@ The app supports runtime profiles:
 - `home`: Vesterbro kiosk with B&O, Philips Hue, Spotify, podcasts, playlists and ADB kiosk controls.
 - `garden`: kolonihave kiosk with the Android phone camera first, while home-only integrations are disabled.
 
+**Work only on `main`.** No feature branches, no `cursor/*` agent branches, no routine pull requests. Home and garden deploy the same commit. See `AGENTS.md` and `.cursor/rules/main-only.mdc`.
+
 The two devices use the same `main` code line with separate runtime profiles:
 
 | Target | Camera role | Access |

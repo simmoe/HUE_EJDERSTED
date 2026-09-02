@@ -27,5 +27,7 @@ deploy.*.env
 # TLS certs
 certs/
 
-# Cursor (local editor)
-.cursor/
+# Cursor (local editor state). Track shared rules so every agent sees them.
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**

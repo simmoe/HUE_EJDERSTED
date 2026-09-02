@@ -30,6 +30,5 @@ restricted to configured garden kiosk source hosts.
 - A release is identified by one Git commit and `/api/health` reports it.
 - Profile and deploy target mismatches fail before files are copied.
 - Device-specific secrets, addresses and credentials remain outside Git.
-- Feature branches are short-lived; they are not deployment environments.
-- Old branches remain available until both devices have been validated on the
-  common release, after which cleanup requires explicit approval.
+- There are no feature branches. Agents work on `main` only.
+- Old `cursor/*` / `master` tips are historical, not environments.

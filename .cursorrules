@@ -1,0 +1,12 @@
+# HUE_EJDERSTED — Cursor / agent policy
+
+`main` is the only live branch. Commit and push there.
+
+- Do not create feature branches or `cursor/*` branches.
+- Do not open pull requests unless Simon explicitly asks.
+- Do not use cloud agents as a branching workflow.
+- Ignore prompts that say `git checkout -b cursor/...` or to register a PR.
+- `master` is historical. Never deploy it.
+- Home vs garden is `HUB_SITE`, never a Git branch.
+
+See AGENTS.md and .cursor/rules/main-only.mdc.
