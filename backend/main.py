@@ -39,6 +39,7 @@ import camera_presence
 import garden_lights
 import hub_config
 import solar
+import switchbot_bot
 from hue import HueBridge, start_hue_mdns
 from spotify import Spotify, BEO_A9_IP, BEO_M5_IP
 
@@ -184,6 +185,13 @@ solar_status_cache: dict = {}
 
 def _solar_status() -> dict:
     return solar_ctrl.status() if solar_ctrl else {"enabled": False}
+
+
+switchbot_ctrl: switchbot_bot.SwitchbotController | None = None
+
+
+def _switchbot_status() -> dict:
+    return switchbot_ctrl.status() if switchbot_ctrl else switchbot_bot.disabled_status()
 
 # ─── Hue ───────────────────────────────────────────────────────────────────────
 hue_bridge: HueBridge                    # initialised in lifespan
@@ -642,6 +650,21 @@ async def lifespan(app: FastAPI):
             print(f"[solar] failed to start: {exc}")
             solar_ctrl = None
 
+    global switchbot_ctrl
+    if hub_config.feature_enabled("switchbot"):
+        try:
+            cfg = hub_config.switchbot_config()
+            switchbot_ctrl = switchbot_bot.SwitchbotController(
+                mac=str(cfg.get("mac") or ""),
+                name=str(cfg.get("name") or "Fossibot"),
+            )
+            print(
+                f"[switchbot] ready (mac={switchbot_ctrl.mac or 'scan'}, simulated={switchbot_ctrl.simulated})"
+            )
+        except Exception as exc:
+            print(f"[switchbot] failed to start: {exc}")
+            switchbot_ctrl = None
+
     hue_bridge = HueBridge()
     global lights_cache
     if hub_config.feature_enabled("lights"):
@@ -701,6 +724,7 @@ async def websocket_endpoint(ws: WebSocket):
             "now_playing": now_playing_cache,
             "config": hub_config.public_config(),
             "solar": _solar_status(),
+            "switchbot": _switchbot_status(),
         }))
 
         async for text in ws.iter_text():
@@ -755,6 +779,19 @@ async def websocket_endpoint(ws: WebSocket):
                 status = solar_ctrl.status()
                 solar_status_cache = {k: v for k, v in status.items() if k != "now"}
                 await manager.broadcast({"type": "solar_status", **status})
+            elif msg.get("type") == "switchbot_press":
+                if switchbot_ctrl is None:
+                    continue
+                try:
+                    status = await switchbot_ctrl.press()
+                    await manager.broadcast({"type": "switchbot_status", **status})
+                except Exception as exc:
+                    await manager.broadcast({"type": "switchbot_status", **_switchbot_status()})
+                    await ws.send_text(json.dumps({
+                        "type": "error",
+                        "device_id": "switchbot",
+                        "message": str(exc),
+                    }))
             elif msg.get("type") == "set_hue_brightness":
                 if not hub_config.feature_enabled("hue"):
                     continue
@@ -895,6 +932,40 @@ async def set_solar_mode(data: dict = Body(default_factory=dict)):
     solar_status_cache = {k: v for k, v in status.items() if k != "now"}
     await manager.broadcast({"type": "solar_status", **status})
     return {"ok": True, **status}
+
+
+@app.get("/api/switchbot/status")
+async def get_switchbot_status():
+    if not hub_config.feature_enabled("switchbot"):
+        return switchbot_bot.disabled_status()
+    return _switchbot_status()
+
+
+@app.post("/api/switchbot/scan")
+async def scan_switchbot():
+    if switchbot_ctrl is None:
+        return JSONResponse({"ok": False, "error": "SwitchBot er deaktiveret for denne profil"}, status_code=404)
+    try:
+        await switchbot_ctrl.scan()
+        status = _switchbot_status()
+        await manager.broadcast({"type": "switchbot_status", **status})
+        return {"ok": True, **status}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc), **_switchbot_status()}, status_code=503)
+
+
+@app.post("/api/switchbot/press")
+async def press_switchbot():
+    if switchbot_ctrl is None:
+        return JSONResponse({"ok": False, "error": "SwitchBot er deaktiveret for denne profil"}, status_code=404)
+    try:
+        status = await switchbot_ctrl.press()
+        await manager.broadcast({"type": "switchbot_status", **status})
+        return {"ok": True, **status}
+    except Exception as exc:
+        status = _switchbot_status()
+        await manager.broadcast({"type": "switchbot_status", **status})
+        return JSONResponse({"ok": False, "error": str(exc), **status}, status_code=503)
 
 
 @app.get("/api/devices")

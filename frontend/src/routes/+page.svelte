@@ -46,6 +46,28 @@
 
   const enabled = (feature: keyof typeof store.config.features) => !!store.config.features[feature];
 
+  async function pressFossibot() {
+    if (store.switchbot.pressing) return;
+    try {
+      const err = await store.pressSwitchbot();
+      showFeedback(err ?? 'Fossibot trykket', {
+        kind: err ? 'error' : 'success',
+        duration: err ? 7000 : 2500,
+      });
+    } catch (e) {
+      showFeedback((e as Error).message || 'kunne ikke trykke', { kind: 'error', duration: 7000 });
+    }
+  }
+
+  function switchbotStatusLabel() {
+    if (store.switchbot.pressing) return 'Trykker…';
+    if (store.switchbot.lastError) return store.switchbot.lastError;
+    if (store.switchbot.ready) {
+      return store.switchbot.macShort ? `Klar · ${store.switchbot.macShort}` : 'Klar';
+    }
+    return 'Søger efter Bot';
+  }
+
   // ── Wake lock (hold skærm tændt) ───────────────────────────────────────────
   let wakeLock: WakeLockSentinel | null = null;
 
@@ -1365,6 +1387,47 @@
               <button type="button" class="action-btn" class:active={store.solar.mode === 'on'} onclick={() => store.setSolarMode('on')}>tænd</button>
               <button type="button" class="action-btn" class:active={store.solar.mode === 'auto'} onclick={() => store.setSolarMode('auto')}>auto</button>
               <button type="button" class="action-btn" class:active={store.solar.mode === 'off'} onclick={() => store.setSolarMode('off')}>sluk</button>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </section>
+    {/if}
+
+    {#if enabled('switchbot')}
+    <section class="page">
+      <div class="col-header">FOSSIBOT</div>
+      <div class="scroll-inner">
+        <Card
+          name={store.switchbot.name || 'Fossibot'}
+          status={switchbotStatusLabel()}
+          online={!!store.switchbot.ready && !store.switchbot.lastError}
+          pulse={!!store.switchbot.pressing}
+        >
+          <div class="solar">
+            <div class="solar-state" class:on={!!store.switchbot.ready && !store.switchbot.lastError}>
+              <span class="solar-state-dot"></span>
+              <span class="solar-state-label">
+                {store.switchbot.pressing ? 'Armen kører' : store.switchbot.ready ? 'SwitchBot klar' : 'Ingen Bot fundet'}
+              </span>
+            </div>
+            <div class="solar-sun">
+              {#if store.switchbot.lastError}
+                {store.switchbot.lastError}
+              {:else if store.switchbot.simulated}
+                simuleret — deploy til have-Pi'en for rigtigt tryk
+              {:else}
+                ét tryk på Fossibot-knappen i krogen
+              {/if}
+            </div>
+            <div class="solar-modes" role="group" aria-label="Fossibot">
+              <button
+                type="button"
+                class="action-btn"
+                class:active={!!store.switchbot.pressing}
+                disabled={!!store.switchbot.pressing}
+                onclick={() => pressFossibot()}
+              >tryk</button>
             </div>
           </div>
         </Card>

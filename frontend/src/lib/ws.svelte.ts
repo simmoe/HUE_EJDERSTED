@@ -80,6 +80,18 @@ export interface SolarStatus {
   now?: string;
 }
 
+export interface SwitchbotStatus {
+  enabled: boolean;
+  simulated?: boolean;
+  name?: string;
+  mac?: string | null;
+  macShort?: string | null;
+  ready?: boolean;
+  pressing?: boolean;
+  lastPressAt?: string | null;
+  lastError?: string | null;
+}
+
 export interface HubConfig {
   site: 'home' | 'garden' | string;
   publicUrl: string;
@@ -93,6 +105,7 @@ export interface HubConfig {
     adbKiosk: boolean;
     solar: boolean;
     lights?: boolean;
+    switchbot?: boolean;
   };
   camera: {
     mode: 'publisher' | 'viewer';
@@ -116,6 +129,7 @@ export const defaultHubConfig: HubConfig = {
     adbKiosk: true,
     solar: false,
     lights: false,
+    switchbot: false,
   },
   camera: {
     mode: 'viewer',
@@ -127,8 +141,9 @@ export const defaultHubConfig: HubConfig = {
 };
 
 type ServerMsg =
-  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus }
+  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus; switchbot?: SwitchbotStatus }
   | ({ type: 'solar_status' } & SolarStatus)
+  | ({ type: 'switchbot_status' } & SwitchbotStatus)
   | { type: 'device_added'; device: Device }
   | { type: 'device_removed'; device_id: string }
   | { type: 'volume_update'; device_id: string; level: number; online: boolean }
@@ -170,6 +185,7 @@ class WSStore {
   nowPlaying = $state<Record<string, NowPlaying>>({});
   config = $state<HubConfig>(defaultHubConfig);
   solar = $state<SolarStatus>({ enabled: false });
+  switchbot = $state<SwitchbotStatus>({ enabled: false });
   connected = $state(false);
 
   private ws: WebSocket | null = null;
@@ -308,10 +324,16 @@ class WSStore {
         this.nowPlaying = msg.now_playing ?? {};
         this.config = msg.config ?? defaultHubConfig;
         if (msg.solar) this.solar = msg.solar;
+        if (msg.switchbot) this.switchbot = msg.switchbot;
         break;
       case 'solar_status': {
         const { type, ...rest } = msg;
         this.solar = rest as SolarStatus;
+        break;
+      }
+      case 'switchbot_status': {
+        const { type, ...rest } = msg;
+        this.switchbot = rest as SwitchbotStatus;
         break;
       }
       case 'device_added':
@@ -386,6 +408,18 @@ class WSStore {
     // Optimistic: reflect the chosen mode immediately; backend confirms via solar_status.
     this.solar = { ...this.solar, mode };
     this.ws?.send(JSON.stringify({ type: 'set_solar_mode', mode }));
+  }
+
+  async pressSwitchbot(): Promise<string | null> {
+    this.switchbot = { ...this.switchbot, pressing: true, lastError: null };
+    const r = await fetch('/api/switchbot/press', { method: 'POST' });
+    const data = await r.json();
+    this.switchbot = {
+      enabled: true,
+      ...data,
+      pressing: false,
+    };
+    return data.ok ? null : (data.error ?? 'kunne ikke trykke');
   }
 
   setHueBrightness(roomId: string, brightness: number) {

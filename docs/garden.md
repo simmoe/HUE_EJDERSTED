@@ -49,8 +49,25 @@ HUB_FEATURE_SPOTIFY=true
 HUB_FEATURE_PODCASTS=true
 HUB_FEATURE_PLAYLISTS=true
 HUB_FEATURE_ADBKIOSK=true
+HUB_FEATURE_SWITCHBOT=true
 HUB_AUDIO_SPOTIFY_DEVICE="Ejdersted Garden"
+# optional after first scan:
+# HUB_SWITCHBOT_BOT_MAC=AA:BB:CC:DD:EE:FF
 ```
+
+## SwitchBot Bot (Fossibot)
+
+The garden Pi presses the Bot over Bluetooth. No SwitchBot Hub.
+
+1. Confirm the arm moves in the SwitchBot phone app.
+2. Close the app (or turn phone Bluetooth off). The phone holds the BLE
+   connection otherwise, and the Pi cannot connect.
+3. Hold the Bot near the Pi and tap **tryk** on the FOSSIBOT kiosk page,
+   or run `.venv/bin/python scripts/switchbot_press.py` on the Pi.
+4. Mount it on the Fossibot button in the corner once that works.
+
+The first successful scan writes `switchbot.json` (MAC). You can also pin
+`HUB_SWITCHBOT_BOT_MAC`. Battery is CR2.
 
 ## Firestore
 

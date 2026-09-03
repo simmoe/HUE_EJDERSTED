@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "adbKiosk": True,
         "solar": False,
         "lights": False,
+        "switchbot": False,
     },
     "kiosk": {
         "phoneIp": "192.168.86.15",
@@ -55,6 +56,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "sunriseOffsetMin": 30,
         "sunsetOffsetMin": 90,
         "tz": "Europe/Copenhagen",
+    },
+    "switchbot": {
+        "mac": "",
+        "name": "Fossibot",
     },
 }
 
@@ -104,7 +109,7 @@ def _apply_env_overrides() -> None:
         CONFIG["publicUrl"] = public_url
 
     features = CONFIG.setdefault("features", {})
-    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk", "solar", "lights"):
+    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk", "solar", "lights", "switchbot"):
         value = _bool_env(f"HUB_FEATURE_{feature.upper()}")
         if value is not None:
             features[feature] = value
@@ -134,6 +139,13 @@ def _apply_env_overrides() -> None:
         camera["publisherHosts"] = [
             host.strip() for host in publisher_hosts.split(",") if host.strip()
         ]
+
+    switchbot = CONFIG.setdefault("switchbot", {})
+    if isinstance(switchbot, dict):
+        if mac := os.environ.get("HUB_SWITCHBOT_BOT_MAC"):
+            switchbot["mac"] = mac.strip()
+        if name := os.environ.get("HUB_SWITCHBOT_BOT_NAME"):
+            switchbot["name"] = name.strip()
 
 
 _apply_env_overrides()
@@ -283,6 +295,12 @@ def solar_config() -> dict[str, Any]:
     """Solar charge-relay settings (GPIO pin, polarity, location, sun offsets)."""
     solar = CONFIG.get("solar", {})
     return solar if isinstance(solar, dict) else {}
+
+
+def switchbot_config() -> dict[str, Any]:
+    """Garden SwitchBot Bot (Fossibot button). MAC is optional until first scan."""
+    switchbot = CONFIG.get("switchbot", {})
+    return switchbot if isinstance(switchbot, dict) else {}
 
 
 def public_config() -> dict[str, Any]:

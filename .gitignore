@@ -22,6 +22,7 @@ hub_globals.json
 hub_config.json
 hub_config.*.json
 garden_lights.json
+switchbot.json
 deploy.*.env
 
 # TLS certs

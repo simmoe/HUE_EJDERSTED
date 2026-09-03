@@ -57,6 +57,8 @@ Key fields:
 - `HUB_GARDEN_HUB_URL=https://kolonihave-pi.tail7947c4.ts.net:8443`
 - `HUB_CAMERA_PUBLISHER_HOSTS=<comma-separated kiosk source IPs>`
 - `HUB_PUBLIC_URL`, feature flags, kiosk/ADB values and audio target settings
+- Garden `HUB_FEATURE_SWITCHBOT` talks to the Fossibot SwitchBot Bot over BLE
+  (`HUB_SWITCHBOT_BOT_MAC` optional after the first scan)
 
 `home` requires `viewer`; `garden` requires `publisher`. Invalid sites, roles
 and booleans fail fast instead of silently selecting a different deployment.

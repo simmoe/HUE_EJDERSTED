@@ -7,3 +7,4 @@ numpy>=2.0
 onnxruntime>=1.27
 google-auth>=2.40
 tinytuya>=1.13
+bleak>=0.22
