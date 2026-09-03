@@ -1,0 +1,25 @@
+---
+description: Kiosk CSS/UI changes must ship to both home and garden Pis in the same turn
+alwaysApply: true
+---
+
+# Both hubs for kiosk chrome
+
+Home and garden serve the same frontend. A layout, CSS, clock, fullscreen, or
+kiosk-page change that only lands on one Pi leaves the other on old chrome.
+
+When you change `frontend/` (or anything the kiosk renders):
+
+1. Build once.
+2. Deploy that static build to **both** hubs in the same turn — home
+   `192.168.86.16` and garden `192.168.8.133` (Tailscale `100.111.167.54`
+   / `kolonihave-pi.tail7947c4.ts.net` when off-LAN).
+3. Reload **both** kiosk Chrome tabs via DevTools `Page.reload`. Home ADB
+   `192.168.86.15:5555`, garden `192.168.8.135:5555`. Splash/fullscreen
+   needs a real ADB tap; a CDP click is not a user gesture.
+4. If one site is unreachable, say which one failed. A single-site deploy
+   is not done.
+
+Detect the Mac LAN first (`site-location`). Use that LAN for ADB; Tailscale
+for the other Pi. Do not leave kiosk CSS only in the working tree or only
+on the Pi you happen to be next to.

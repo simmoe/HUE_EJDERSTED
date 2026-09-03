@@ -9,6 +9,7 @@ node_modules/
 
 # Build output (regenerated from frontend/)
 backend/static/
+backend/var/
 
 # OS
 .DS_Store
@@ -27,5 +28,9 @@ deploy.*.env
 # TLS certs
 certs/
 
-# Cursor (local editor)
-.cursor/
+# Cursor (local editor) — keep shared rules/skills in git
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
