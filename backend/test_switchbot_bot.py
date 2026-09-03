@@ -52,6 +52,7 @@ class SwitchbotControllerTests(unittest.IsolatedAsyncioTestCase):
             status = await ctrl.press()
         self.assertEqual(backend.pressed, ["11:22:33:44:55:66"])
         self.assertTrue(status["ready"])
+        self.assertFalse(status["pressing"])
         self.assertIsNotNone(status["lastPressAt"])
         self.assertIsNone(status["lastError"])
 

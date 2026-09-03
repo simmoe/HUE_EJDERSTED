@@ -247,11 +247,13 @@ class SwitchbotController:
                 self.mac = mac
                 self.last_press_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.last_error = None
+                self.pressing = False
                 self._save()
             return self.status()
         except Exception as exc:
             async with self._lock:
                 self.last_error = str(exc)
+                self.pressing = False
             raise
         finally:
             async with self._lock:
