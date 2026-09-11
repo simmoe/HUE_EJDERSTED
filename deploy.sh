@@ -165,10 +165,25 @@ if [[ -d backend/static ]]; then
   scp_copy backend/static "$PI_HOST:$PI_REPO_DIR/backend/"
 fi
 
-for local_file in gemini_api_key.txt hub_globals.json spotify_config.json hue_config.json devices.json garden_lights.json; do
+# Secrets are seeded from this Mac on every deploy.
+for local_file in gemini_api_key.txt hub_globals.json spotify_config.json; do
   if [[ -f "$local_file" ]]; then
     echo "→ Syncing $local_file..."
     scp_copy "$local_file" "$PI_HOST:$PI_REPO_DIR/"
+  fi
+done
+
+# Device state (Hue pairing, speakers, lamps incl. Zigbee rows) is written by
+# the hub itself and owned by the Pi. Seed it only when the Pi has none —
+# copying the Mac's copy over it has erased lamps before.
+for state_file in hue_config.json devices.json garden_lights.json; do
+  if [[ -f "$state_file" ]]; then
+    if ssh_run "test -s '$PI_REPO_DIR/$state_file'"; then
+      echo "→ Keeping Pi's $state_file (not overwriting)"
+    else
+      echo "→ Seeding $state_file..."
+      scp_copy "$state_file" "$PI_HOST:$PI_REPO_DIR/"
+    fi
   fi
 done
 

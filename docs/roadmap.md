@@ -18,8 +18,12 @@ or a rewrite of `main.py`.
 
 ## 0. Open bugs (do first, small)
 
-- **Bed lamp (IKEA) card disappeared from LYS.** Likely hidden when the lamp is
-  offline instead of showing `offline`. `LightsCard.svelte`.
+- ~~Bed lamp (IKEA) card disappeared from LYS.~~ Root cause: `deploy.sh`
+  copied the Mac's `garden_lights.json` (Flare only) over the Pi's, erasing the
+  `seng` row; Toilet is re-adopted on boot, `seng` is not (`KNOWN_SENG` is
+  skipped in `_on_ready`). Fixed 2026-09-11: row restored on the Pi, deploy now
+  seeds device-state files only when the Pi has none. The general lesson is
+  step 4: Pi-owned state and Mac-owned secrets must not share one copy loop.
 - `.np-next-artist` loses its leading space → use `&nbsp;` in `+page.svelte`.
 - `Card.svelte` reserves padding-bottom twice.
 - librespot on garden is crash-looping (restart counter 69, login denied).
