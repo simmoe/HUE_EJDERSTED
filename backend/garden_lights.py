@@ -65,6 +65,10 @@ def configured_devices() -> list[dict[str, str]]:
             "ip": str(item.get("ip") or "").strip(),
             "localKey": str(item.get("localKey") or item.get("local_key") or "").strip(),
             "version": str(item.get("version") or "3.3").strip() or "3.3",
+            "protocol": str(item.get("protocol") or "tuya").strip() or "tuya",
+            "ieee": str(item.get("ieee") or "").strip(),
+            "nwk": str(item.get("nwk") or "").strip(),
+            "sensorIeee": str(item.get("sensorIeee") or item.get("sensor_ieee") or "").strip(),
         })
     return out
 
@@ -157,6 +161,11 @@ def dps_to_color(dps: dict[str, Any]) -> dict[str, Any]:
 
 
 def public_light(dev: dict[str, str], *, dps: dict[str, Any] | None = None, online: bool = False, error: str = "") -> dict[str, Any]:
+    protocol = str(dev.get("protocol") or "tuya")
+    if protocol in ("zigbee", "ikea"):
+        import zigbee_lights
+
+        return zigbee_lights.public(dev)
     on, bri = dps_to_light(dps or {})
     has_key = bool(dev.get("localKey"))
     has_id = bool(dev.get("id"))
@@ -170,6 +179,7 @@ def public_light(dev: dict[str, str], *, dps: dict[str, Any] | None = None, onli
     return {
         "id": dev.get("id") or "flare",
         "name": dev.get("name") or "Flare",
+        "protocol": protocol,
         "brightness": bri if on else 0,
         "on": on and online,
         "any_on": on and online,
@@ -265,6 +275,11 @@ def _or_last_good(dev: dict[str, str], failed: dict[str, Any]) -> dict[str, Any]
 
 
 def read_device(dev: dict[str, str], *, use_grace: bool = True) -> dict[str, Any]:
+    protocol = str(dev.get("protocol") or "tuya").strip().lower()
+    if protocol in ("zigbee", "ikea"):
+        import zigbee_lights
+
+        return zigbee_lights.public(dev)
     if not dev.get("id") or not dev.get("localKey"):
         return public_light(dev, online=False)
     try:
@@ -388,5 +403,6 @@ def poll_snapshot() -> list[dict[str, Any]] | None:
         return None
     _last_poll_at = now
     lights = snapshot()
-    _last_poll_ok = bool(lights) and all(item.get("online") for item in lights)
+    tuya = [item for item in lights if item.get("protocol") not in ("zigbee", "ikea")]
+    _last_poll_ok = (not tuya) or all(item.get("online") for item in tuya)
     return lights

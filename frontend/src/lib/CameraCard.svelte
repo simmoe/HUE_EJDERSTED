@@ -101,6 +101,17 @@
     return `${Math.round(seconds / 86400)} dage siden`;
   }
 
+  // The kiosk posts every 2 s. Two minutes without a frame means it has left
+  // Wi-Fi or died; the card then says so instead of ageing a stale frame.
+  const KIOSK_STALE_S = 120;
+  const kioskOffline = $derived(!canPublish && latestAvailable && (latestAge == null || latestAge > KIOSK_STALE_S));
+
+  const headerStatus = () => {
+    if (canPublish) return cameraOn ? 'live' : error ? 'fejl' : 'slukket';
+    if (!latestAvailable) return 'venter';
+    return kioskOffline ? 'kiosk offline' : 'kiosk live';
+  };
+
   const evidenceUrl = () => latestPresence.lastEvidenceUrl || latestPresence.evidenceUrl || '';
   const presenceState = () => latestPresence.presence || latestPresence.state || 'unknown';
   const cameraMode = () => store.config.camera?.mode ?? (store.config.site === 'garden' ? 'publisher' : 'viewer');
@@ -330,12 +341,13 @@
   });
 </script>
 
-<Card name="Kamera" status={canPublish ? (cameraOn ? 'live' : error ? 'fejl' : 'slukket') : latestAvailable ? 'kiosk live' : 'venter'} online={cameraOn || latestAvailable}>
+<Card name="Kamera" status={headerStatus()} online={cameraOn || (latestAvailable && !kioskOffline)}>
   <div class="cam-stack">
     <button
       type="button"
       class="camera-viewport"
       class:expandable={canExpandPreview()}
+      class:stale={kioskOffline}
       aria-label={previewOpen ? 'Luk kamerabillede' : 'Vis kamerabillede stort'}
       onclick={togglePreview}
     >
@@ -362,17 +374,22 @@
           {facingMode === 'environment' ? 'front' : 'bag'}
         </button>
       </div>
+    {:else if kioskOffline}
+      <div class="publish-status">sidst set {formatAge(latestAge)}</div>
     {:else if latestAge != null}
-      <div class="publish-status">havekiosk · {Math.round(latestAge)}s siden</div>
+      <div class="publish-status">havekiosk · {Math.round(latestAge)} s siden</div>
     {/if}
-    <div
-      class="presence-status"
-      class:home={!!latestPresence.home}
-      class:alert={!!latestPresence.alert}
-      class:blind={presenceState() === 'camera_blind' || presenceState() === 'unknown'}
-    >
-      {latestPresence.label ?? 'Ukendt'}
-    </div>
+    {#if !kioskOffline}
+      <!-- Presence is read off the live frames; with the kiosk gone it only says "ingen snapshots". -->
+      <div
+        class="presence-status"
+        class:home={!!latestPresence.home}
+        class:alert={!!latestPresence.alert}
+        class:blind={presenceState() === 'camera_blind' || presenceState() === 'unknown'}
+      >
+        {latestPresence.label ?? 'Ukendt'}
+      </div>
+    {/if}
     <div class="presence-detail">
       Sidst hjemme: {formatAge(latestPresence.lastPersonAge)}
     </div>
@@ -438,6 +455,11 @@
     cursor: zoom-in;
   }
 
+  .camera-viewport.stale img {
+    opacity: 0.4;
+    filter: grayscale(1);
+  }
+
   .camera-viewport video,
   .camera-viewport img,
   .preview-frame video,
@@ -492,7 +514,7 @@
   }
 
   .presence-detail {
-    margin-top: -8px;
+    margin-top: -4px;
     color: rgba(255, 255, 255, 0.54);
     font-size: 0.7rem;
     letter-spacing: 0.08em;

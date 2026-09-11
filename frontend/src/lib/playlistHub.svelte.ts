@@ -1,11 +1,11 @@
 /**
- * Delte playlister på tværs af browsere via Firestore.
- * Konfiguration hentes fra hub: GET /api/config/firebase (hub_globals.json).
+ * Player-runtime i Firestore (`ejdersted/player_home` / `player_garden`).
+ * Det lokale `playlist`-objekt er et view af dokumentet: skriv dokumentet,
+ * onSnapshot maler now playing.
  *
- * Firestore: fælles bibliotek i `ejdersted/radioPlaylists`, mens player-runtime
- * er site-specifik i `ejdersted/player_home` eller `ejdersted/player_garden`.
- *
- * Tilstand ligger i ét `playlist`-objekt (Svelte 5: eksporteret $state må ikke reassignedes som enkeltfelter).
+ * Spotify's Connect-kø ejer tidslinjen. Kiosken starter kun ved play /
+ * under-titel / radio; den følger GET /api/spotify/now-playing og starter
+ * aldrig næste sang fordi et lokalt ur udløb.
  */
 import { initializeApp, getApp, getApps, type FirebaseOptions } from 'firebase/app';
 import {
@@ -18,8 +18,8 @@ import {
   type Unsubscribe,
   type DocumentReference,
 } from 'firebase/firestore';
-import { init as initSpotifyWebPlayer } from '$lib/spotifyPlayer.svelte';
 import { showFeedback } from '$lib/feedback.svelte';
+import { observeSpeaker, remainingUris, startHasLanded, type SpeakerSnapshot } from '$lib/playback';
 
 export type QTrack = { uri: string; name: string; artist: string };
 export type PodcastEpisode = {
@@ -47,7 +47,6 @@ type SyncPayload = {
   savedPlaylistActive: boolean;
   savedPlaylistTitle: string;
   spotifyPlaying: boolean;
-  spotifyEndsAt: number;
   activeTransport: ActiveTransport;
   podcastQueue: PodcastEpisode[];
   podcastIndex: number;
@@ -66,7 +65,6 @@ export const playlist = $state({
   spotifyNextArtist: '',
   spotifyTrackUri: '',
   spotifyPlaying: false,
-  spotifyEndsAt: 0,
   micQueue: [] as QTrack[],
   radioQueue: [] as QTrack[],
   albumQueue: [] as QTrack[],
@@ -108,12 +106,12 @@ let docRef: DocumentReference | null = null;
 let unsub: Unsubscribe | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let applyingRemote = false;
-let playbackReconcileTimer: ReturnType<typeof setInterval> | null = null;
-
-const ADVANCE_BUFFER_MS = 1300;
-const FALLBACK_TRACK_DURATION_MS = 6 * 60_000;
-let advanceTimer: ReturnType<typeof setTimeout> | null = null;
-let pausedRemainingMs = 0;
+let committing = false;
+let hydratedFromDoc = false;
+let playInFlight = false;
+let startingUri = '';
+let speakerPollTimer: ReturnType<typeof setInterval> | null = null;
+let browseIndex = -1;
 
 function playerDocId(site: unknown): string {
   return site === 'garden' ? 'player_garden' : 'player_home';
@@ -153,13 +151,6 @@ async function apiJson<T>(input: RequestInfo | URL, init: RequestInit = {}, time
   }
 }
 
-function clearAdvanceTimer() {
-  if (advanceTimer) {
-    clearTimeout(advanceTimer);
-    advanceTimer = null;
-  }
-}
-
 async function pauseSpotifyRemote() {
   try {
     await fetch('/api/spotify/pause', { method: 'POST' });
@@ -168,72 +159,119 @@ async function pauseSpotifyRemote() {
   }
 }
 
-function finishActiveQueuePlayback() {
-  clearAdvanceTimer();
-  pausedRemainingMs = 0;
-  playlist.spotifyPlaying = false;
-  playlist.spotifyEndsAt = 0;
-  playlist.activeTransport = '';
-  playlist.spotifyRadio = false;
-  playlist.spotifyAlbumActive = false;
-  playlist.savedPlaylistActive = false;
-  playlist.spotifyNextTitle = '';
-  playlist.spotifyNextArtist = '';
-  schedulePush();
+function parseSpeakerSnapshot(data: unknown): SpeakerSnapshot | null {
+  if (!data || typeof data !== 'object') return null;
+  const row = data as { uri?: unknown; is_playing?: unknown };
+  const uri = typeof row.uri === 'string' ? row.uri : '';
+  if (!uri.startsWith('spotify:track:')) return null;
+  return { uri, isPlaying: !!row.is_playing };
 }
 
-async function finishActiveQueuePlaybackAndPause() {
-  await pauseSpotifyRemote();
-  finishActiveQueuePlayback();
-}
-
-function reconcilePlaybackClock() {
-  if (!playlist.spotifyPlaying || playlist.spotifyEndsAt <= 0) return;
-  if (Date.now() < playlist.spotifyEndsAt) return;
-  void finishActiveQueuePlaybackAndPause();
-}
-
-function scheduleAdvanceUntil(endsAt: number) {
-  clearAdvanceTimer();
-  pausedRemainingMs = 0;
-  playlist.spotifyEndsAt = endsAt;
-  const delay = Math.max(0, endsAt - Date.now());
-  const startedAt = Date.now();
-  advanceTimer = setTimeout(() => {
-    advanceTimer = null;
-    if (playlist.spotifyEndsAt > Date.now()) {
-      scheduleAdvanceUntil(playlist.spotifyEndsAt);
-      return;
-    }
-    const q = activeQueue();
-    const idx = activeIndex();
-    if (idx + 1 < q.length) {
-      setActiveIndex(idx + 1);
+function applySpeakerObservation(result: ReturnType<typeof observeSpeaker>) {
+  if (result.type === 'ignore') return;
+  if (result.type === 'follow') {
+    setActiveIndex(result.index);
+    browseIndex = -1;
+    playlist.spotifyPlaying = true;
+    playlist.activeTransport = 'spotify';
+    paintNpFromQueues();
+    void commitPlayerState({
+      spotifyPlaying: true,
+      activeTransport: 'spotify',
+    });
+    return;
+  }
+  if (result.type === 'paused') {
+    if (typeof result.index === 'number') {
+      setActiveIndex(result.index);
+      browseIndex = -1;
       paintNpFromQueues();
-      scrollToNowPlaying();
-      playlist.spotifyEndsAt = 0;
-      void playFromCurrentIndex().then((ok) => {
-        if (!ok) void finishActiveQueuePlaybackAndPause();
-      });
-    } else {
-      void finishActiveQueuePlaybackAndPause();
     }
-  }, delay);
-  (scheduleAdvance as any)._startedAt = startedAt;
-  (scheduleAdvance as any)._totalMs = delay;
+    playlist.spotifyPlaying = false;
+    void commitPlayerState({ spotifyPlaying: false });
+    return;
+  }
+  playlist.spotifyPlaying = false;
+  void commitPlayerState({ spotifyPlaying: false });
 }
 
-function scheduleAdvance(ms: number) {
-  scheduleAdvanceUntil(Date.now() + ms + ADVANCE_BUFFER_MS);
+async function pollSpeaker() {
+  if (playInFlight || playlist.activeTransport === 'podcast') return;
+  if (!playlist.spotifyPlaying && !startingUri) return;
+  try {
+    const r = await fetch('/api/spotify/now-playing', { cache: 'no-store' });
+    const data = await r.json();
+    const speaker = parseSpeakerSnapshot(data);
+    if (startHasLanded(startingUri, speaker)) startingUri = '';
+    applySpeakerObservation(
+      observeSpeaker({
+        queue: activeQueue(),
+        activeIndex: activeIndex(),
+        assumedPlaying: playlist.spotifyPlaying,
+        startingUri,
+        speaker,
+      }),
+    );
+  } catch {
+    /* hub offline */
+  }
 }
 
-function pauseAdvanceTimer() {
-  if (!advanceTimer) return;
-  const startedAt = (scheduleAdvance as any)._startedAt ?? 0;
-  const totalMs = (scheduleAdvance as any)._totalMs ?? 0;
-  const elapsed = Date.now() - startedAt;
-  pausedRemainingMs = Math.max(0, totalMs - elapsed);
-  clearAdvanceTimer();
+async function playUris(uris: string[]): Promise<boolean> {
+  const first = uris[0];
+  if (!first?.startsWith('spotify:track:')) return false;
+  playInFlight = true;
+  startingUri = first;
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  if (playlist.activeTransport === 'podcast' || playlist.podcastPlaying) {
+    await releasePodcastForMusic();
+  }
+  try {
+    const r = await fetch('/api/spotify/play-uris', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uris, offset: 0, position_ms: 0 }),
+    });
+    const data = (await r.json()) as {
+      ok: boolean;
+      detail?: string;
+      error?: string;
+    };
+    if (data.ok) {
+      playlist.activeTransport = 'spotify';
+      playlist.spotifyPlaying = true;
+      pushImmediately();
+      return true;
+    }
+    startingUri = '';
+    playlist.spotifyPlaying = false;
+    const detail = String(data.detail || data.error || '').trim();
+    if (detail) showFeedback(detail, { kind: 'error' });
+  } catch (e) {
+    startingUri = '';
+    playlist.spotifyPlaying = false;
+    showFeedback((e as Error).message || 'POST /api/spotify/play-uris fejlede', { kind: 'error' });
+  } finally {
+    playInFlight = false;
+  }
+  return false;
+}
+
+async function startSpotifyFromIndex(index: number): Promise<boolean> {
+  const uris = remainingUris(activeQueue(), index);
+  if (!uris.length) return false;
+  setActiveIndex(index);
+  browseIndex = -1;
+  paintNpFromQueues();
+  scrollToNowPlaying();
+  void commitPlayerState({
+    spotifyPlaying: true,
+    activeTransport: 'spotify',
+  });
+  return playUris(uris);
 }
 
 function isQTrack(x: unknown): x is QTrack {
@@ -294,7 +332,6 @@ function currentSyncPayload(): SyncPayload {
     savedPlaylistActive: playlist.savedPlaylistActive,
     savedPlaylistTitle: playlist.savedPlaylistTitle,
     spotifyPlaying: playlist.spotifyPlaying,
-    spotifyEndsAt: playlist.spotifyEndsAt,
     activeTransport: playlist.activeTransport,
     podcastQueue: playlist.podcastQueue,
     podcastIndex: playlist.podcastIndex,
@@ -341,11 +378,6 @@ function normalizeSyncData(d: Record<string, unknown>): SyncPayload {
         ? d.savedPlaylistTitle
         : '',
     spotifyPlaying: !!(player.playing ?? d.spotifyPlaying),
-    spotifyEndsAt: typeof player.endsAt === 'number'
-      ? player.endsAt
-      : typeof d.spotifyEndsAt === 'number'
-        ? d.spotifyEndsAt
-        : 0,
     activeTransport: parseTransport(transport.active ?? d.activeTransport),
     podcastQueue: parsePodcastQueue(podcasts.queue ?? d.podcastQueue),
     podcastIndex: typeof podcasts.index === 'number'
@@ -383,7 +415,7 @@ function normalizeSyncData(d: Record<string, unknown>): SyncPayload {
 }
 
 function schedulePush() {
-  if (applyingRemote || !docRef) return;
+  if (applyingRemote || committing || !docRef) return;
   if (pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
     pushTimer = null;
@@ -397,14 +429,11 @@ function pushImmediately() {
   void flushPush();
 }
 
-async function flushPush() {
-  if (!docRef || applyingRemote) return;
-  const p = currentSyncPayload();
-  const payload = {
+function firestoreDocFromPayload(p: SyncPayload) {
+  return {
     player: {
       mode: p.playListMode,
       playing: p.spotifyPlaying,
-      endsAt: p.spotifyEndsAt,
     },
     queues: {
       mic: p.micQueue,
@@ -439,11 +468,71 @@ async function flushPush() {
     },
     updatedAt: serverTimestamp(),
   };
+}
+
+async function writePayload(p: SyncPayload) {
+  if (!docRef) return;
   try {
-    await setDoc(docRef, payload);
+    await setDoc(docRef, firestoreDocFromPayload(p));
   } catch {
     /* hub offline eller regler */
   }
+}
+
+async function flushPush() {
+  if (!docRef || applyingRemote || committing) return;
+  await writePayload(currentSyncPayload());
+}
+
+async function commitPlayerState(patch: Partial<SyncPayload>) {
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  const next = { ...currentSyncPayload(), ...patch };
+  committing = true;
+  applyingRemote = true;
+  try {
+    applyPayload(next);
+  } finally {
+    applyingRemote = false;
+  }
+  try {
+    await writePayload(currentSyncPayload());
+  } finally {
+    committing = false;
+  }
+}
+
+function applyPayload(incoming: SyncPayload) {
+  playlist.micQueue = incoming.micQueue;
+  playlist.radioQueue = incoming.radioQueue;
+  playlist.albumQueue = incoming.albumQueue;
+  playlist.savedPlaylistQueue = incoming.savedPlaylistQueue;
+  const mi = incoming.micIndex;
+  const ri = incoming.radioIndex;
+  const ai = incoming.albumIndex;
+  const pi = incoming.savedPlaylistIndex;
+  playlist.micIndex = Math.max(0, Math.min(Math.max(0, playlist.micQueue.length - 1), mi));
+  playlist.radioIndex = Math.max(0, Math.min(Math.max(0, playlist.radioQueue.length - 1), ri));
+  playlist.albumIndex = Math.max(0, Math.min(Math.max(0, playlist.albumQueue.length - 1), ai));
+  playlist.savedPlaylistIndex = Math.max(0, Math.min(Math.max(0, playlist.savedPlaylistQueue.length - 1), pi));
+  playlist.playListMode = incoming.playListMode;
+  playlist.spotifyRadio = incoming.spotifyRadio;
+  playlist.spotifyAlbumActive = incoming.spotifyAlbumActive;
+  playlist.savedPlaylistActive = incoming.savedPlaylistActive;
+  playlist.savedPlaylistTitle = incoming.savedPlaylistTitle;
+  playlist.spotifyPlaying = incoming.spotifyPlaying;
+  playlist.activeTransport = incoming.activeTransport;
+  playlist.podcastQueue = incoming.podcastQueue;
+  playlist.podcastIndex = Math.max(0, Math.min(Math.max(0, playlist.podcastQueue.length - 1), incoming.podcastIndex));
+  playlist.podcastShowTitle = incoming.podcastShowTitle;
+  playlist.podcastEpisodeTitle = incoming.podcastEpisodeTitle;
+  playlist.podcastPlaying = incoming.podcastPlaying;
+  playlist.podcastPositionMs = incoming.podcastPositionMs;
+  playlist.podcastDurationMs = incoming.podcastDurationMs;
+  playlist.podcastUpdatedAt = incoming.podcastUpdatedAt;
+  paintNpFromQueues();
 }
 
 export function activeQueue(): QTrack[] {
@@ -489,9 +578,11 @@ export function paintNpFromQueues() {
   playlist.spotifyTitle = row.name;
   playlist.spotifyArtist = row.artist;
   playlist.spotifyTrackUri = row.uri;
-  const nxt = q[idx + 1];
-  playlist.spotifyNextTitle = nxt?.name ?? '';
-  playlist.spotifyNextArtist = nxt?.artist ?? '';
+  const preview = browseIndex >= 0 && browseIndex < q.length
+    ? q[browseIndex]
+    : q[idx + 1];
+  playlist.spotifyNextTitle = preview?.name ?? '';
+  playlist.spotifyNextArtist = preview?.artist ?? '';
   if (!applyingRemote) schedulePush();
 }
 
@@ -510,64 +601,34 @@ function seedUriForAlbumBuild(): string {
   return q[idx]?.uri ?? '';
 }
 
-async function playTrackUri(uri: string): Promise<boolean> {
-  if (!uri?.startsWith('spotify:track:')) return false;
-  clearAdvanceTimer();
-  pausedRemainingMs = 0;
-  await releasePodcastForMusic();
-  try {
-    const r = await fetch('/api/spotify/play-uris', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uris: [uri], offset: 0, position_ms: 0 }),
-    });
-    const data = (await r.json()) as {
-      ok: boolean;
-      duration_ms?: number;
-      detail?: string;
-      error?: string;
-    };
-    if (data.ok) {
-      playlist.activeTransport = 'spotify';
-      playlist.spotifyPlaying = true;
-      scheduleAdvance(data.duration_ms && data.duration_ms > 0 ? data.duration_ms : FALLBACK_TRACK_DURATION_MS);
-      pushImmediately();
-      return true;
-    }
-    const detail = String(data.detail || data.error || '').trim();
-    if (detail) showFeedback(detail, { kind: 'error' });
-  } catch (e) {
-    showFeedback((e as Error).message || 'POST /api/spotify/play-uris fejlede', { kind: 'error' });
-  }
-  return false;
-}
-
 export async function playFromCurrentIndex(): Promise<boolean> {
-  const q = activeQueue();
-  const idx = activeIndex();
-  const uri = q[idx]?.uri;
-  const ok = await playTrackUri(uri);
-  if (ok) scrollToNowPlaying();
-  return ok;
+  return startSpotifyFromIndex(activeIndex());
 }
 
 export async function togglePlayPause() {
   if (playlist.spotifyPlaying) {
-    try {
-      const r = await fetch('/api/spotify/pause', { method: 'POST' });
-      const data = await r.json();
-      if (data.ok) {
-        playlist.spotifyPlaying = false;
-        playlist.spotifyEndsAt = 0;
-        pauseAdvanceTimer();
-      }
-    } catch {
-      /* */
-    }
-    schedulePush();
+    await pauseSpotifyRemote();
+    startingUri = '';
+    playlist.spotifyPlaying = false;
+    void commitPlayerState({ spotifyPlaying: false });
     return;
   }
-  await playTrackUri(playlist.spotifyTrackUri);
+  try {
+    const r = await fetch('/api/spotify/resume', { method: 'POST' });
+    const data = (await r.json()) as { ok?: boolean };
+    if (data.ok) {
+      playlist.spotifyPlaying = true;
+      playlist.activeTransport = 'spotify';
+      void commitPlayerState({
+        spotifyPlaying: true,
+        activeTransport: 'spotify',
+      });
+      return;
+    }
+  } catch {
+    /* no Connect context to resume — start the queued track */
+  }
+  await playFromCurrentIndex();
 }
 
 let onPodcastReleased: (() => void) | null = null;
@@ -589,10 +650,8 @@ export async function releasePodcastForMusic() {
 
 /** Stop Spotify Connect + auto-advance, så en direkte stream kan overtage M5. */
 export async function releaseSpotifyForPodcast() {
-  clearAdvanceTimer();
-  pausedRemainingMs = 0;
+  startingUri = '';
   playlist.spotifyPlaying = false;
-  playlist.spotifyEndsAt = 0;
   try {
     await fetch('/api/spotify/pause', { method: 'POST' });
   } catch {
@@ -644,31 +703,43 @@ export function clearPodcastTransport(push = true) {
 }
 
 async function pausePlaybackNow() {
+  startingUri = '';
   try {
     await fetch('/api/spotify/pause', { method: 'POST' });
   } catch {
     /* */
   }
   playlist.spotifyPlaying = false;
-  playlist.spotifyEndsAt = 0;
-  clearAdvanceTimer();
-  pausedRemainingMs = 0;
 }
 
-export async function spotifyNextTrack() {
+function previewIndex(): number | null {
+  const q = activeQueue();
+  if (q.length === 0) return null;
+  if (browseIndex >= 0) return Math.max(0, Math.min(q.length - 1, browseIndex));
+  const next = activeIndex() + 1;
+  return next < q.length ? next : null;
+}
+
+export function spotifyNextTrack() {
   const q = activeQueue();
   if (q.length <= 1) return;
-  await pausePlaybackNow();
-  setActiveIndex(activeIndex() + 1);
+  const from = previewIndex() ?? activeIndex();
+  browseIndex = Math.min(q.length - 1, from + 1);
   paintNpFromQueues();
 }
 
-export async function spotifyPreviousTrack() {
+export function spotifyPreviousTrack() {
   const q = activeQueue();
   if (q.length <= 1) return;
-  await pausePlaybackNow();
-  setActiveIndex(activeIndex() - 1);
+  const from = previewIndex() ?? activeIndex() + 1;
+  browseIndex = Math.max(0, from - 1);
   paintNpFromQueues();
+}
+
+export async function playBrowsedTrack() {
+  const idx = previewIndex();
+  if (idx == null) return;
+  await startSpotifyFromIndex(idx);
 }
 
 function detachCurrentTrackFromPlaylistContext() {
@@ -821,9 +892,14 @@ export async function playSavedPlaylist(playlistUri: string, title = '') {
 
 export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleResult {
   if (data.ok === false) {
+    const query = typeof data.query === 'string' ? data.query.trim() : '';
     return {
       handled: false,
-      error: typeof data.error === 'string' && data.error ? data.error : 'Stemmesøgning fejlede',
+      error: typeof data.error === 'string' && data.error
+        ? data.error
+        : query
+          ? `Fandt ikke ${query}`
+          : 'Fandt ikke noget',
     };
   }
 
@@ -833,50 +909,59 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
       name: String(data.name ?? ''),
       artist: String(data.artist ?? ''),
     };
-    playlist.micQueue = [...playlist.micQueue, row];
-    playlist.playListMode = 'mic';
-    playlist.spotifyRadio = false;
-    playlist.spotifyAlbumActive = false;
-    playlist.savedPlaylistActive = false;
-    playlist.micIndex = playlist.micQueue.length - 1;
-    clearAdvanceTimer();
-    pausedRemainingMs = 0;
-    void releasePodcastForMusic();
-    paintNpFromQueues();
-    pushImmediately();
-    scrollToNowPlaying();
-    return { handled: true, message: row.name || 'Tilføjet til kø' };
+    void (async () => {
+      startingUri = '';
+      await pauseSpotifyRemote();
+      await releasePodcastForMusic();
+      await commitPlayerState({
+        micQueue: [row],
+        micIndex: 0,
+        playListMode: 'mic',
+        spotifyRadio: false,
+        spotifyAlbumActive: false,
+        savedPlaylistActive: false,
+        savedPlaylistTitle: '',
+        spotifyPlaying: false,
+        activeTransport: 'spotify',
+      });
+      scrollToNowPlaying();
+    })();
+    return { handled: true, message: row.name || row.artist || 'Fandt sangen' };
   }
   if (data.action === 'enqueue_queue' && data.ok && Array.isArray(data.queue)) {
-    const rows = data.queue as QTrack[];
+    const rows = (data.queue as QTrack[]).filter((row) => row?.uri?.startsWith('spotify:track:'));
     if (!rows.length) return { handled: false, error: 'Fandt ingen sange i køen' };
-    const start = playlist.micQueue.length;
-    playlist.micQueue = [...playlist.micQueue, ...rows];
-    playlist.playListMode = 'mic';
-    playlist.spotifyRadio = false;
-    playlist.spotifyAlbumActive = false;
-    playlist.savedPlaylistActive = false;
-    playlist.micIndex = start;
-    clearAdvanceTimer();
-    pausedRemainingMs = 0;
-    void releasePodcastForMusic();
-    paintNpFromQueues();
-    pushImmediately();
-    scrollToNowPlaying();
+    void (async () => {
+      startingUri = '';
+      await pauseSpotifyRemote();
+      await releasePodcastForMusic();
+      await commitPlayerState({
+        micQueue: rows,
+        micIndex: 0,
+        playListMode: 'mic',
+        spotifyRadio: false,
+        spotifyAlbumActive: false,
+        savedPlaylistActive: false,
+        savedPlaylistTitle: '',
+        spotifyPlaying: false,
+        activeTransport: 'spotify',
+      });
+      scrollToNowPlaying();
+    })();
     return {
       handled: true,
-      message: typeof data.label === 'string' && data.label ? data.label : rows[0]?.name || 'Tilføjet til kø',
+      message: typeof data.label === 'string' && data.label ? data.label : rows[0]?.name || 'Fandt sangene',
     };
   }
   if (data.action === 'local_nav' && typeof data.delta === 'number') {
-    const d = data.delta as number;
     const q = activeQueue();
     if (q.length <= 1) return { handled: false, error: 'Ingen næste sang i køen' };
-    setActiveIndex(activeIndex() + d);
-    paintNpFromQueues();
+    if (data.delta > 0) spotifyNextTrack();
+    else spotifyPreviousTrack();
     return { handled: true };
   }
   if (data.action === 'pause') {
+    startingUri = '';
     if (data.ok) playlist.spotifyPlaying = false;
     schedulePush();
     return data.ok
@@ -894,67 +979,32 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
 }
 
 function applyRemoteData(d: Record<string, unknown>) {
+  if (committing) return;
   const incoming = normalizeSyncData(d);
   const isStructured = !!(d.player && d.queues && d.indices && d.contexts);
-  if (serializeSyncPayload(incoming) === serializeSyncPayload()) {
+  const sameAsLocal = serializeSyncPayload(incoming) === serializeSyncPayload();
+  if (sameAsLocal) {
     if (!isStructured) schedulePush();
+    if (!hydratedFromDoc) hydratedFromDoc = true;
     return;
   }
 
-  let remotePlaybackAlreadyEnded = false;
   applyingRemote = true;
   try {
-    playlist.micQueue = incoming.micQueue;
-    playlist.radioQueue = incoming.radioQueue;
-    playlist.albumQueue = incoming.albumQueue;
-    playlist.savedPlaylistQueue = incoming.savedPlaylistQueue;
-    const mi = incoming.micIndex;
-    const ri = incoming.radioIndex;
-    const ai = incoming.albumIndex;
-    const pi = incoming.savedPlaylistIndex;
-    playlist.micIndex = Math.max(0, Math.min(Math.max(0, playlist.micQueue.length - 1), mi));
-    playlist.radioIndex = Math.max(0, Math.min(Math.max(0, playlist.radioQueue.length - 1), ri));
-    playlist.albumIndex = Math.max(0, Math.min(Math.max(0, playlist.albumQueue.length - 1), ai));
-    playlist.savedPlaylistIndex = Math.max(0, Math.min(Math.max(0, playlist.savedPlaylistQueue.length - 1), pi));
-    playlist.playListMode = incoming.playListMode;
-    playlist.spotifyRadio = incoming.spotifyRadio;
-    playlist.spotifyAlbumActive = incoming.spotifyAlbumActive;
-    playlist.savedPlaylistActive = incoming.savedPlaylistActive;
-    playlist.savedPlaylistTitle = incoming.savedPlaylistTitle;
-    playlist.spotifyPlaying = incoming.spotifyPlaying;
-    playlist.spotifyEndsAt = incoming.spotifyEndsAt;
-    playlist.activeTransport = incoming.activeTransport;
-    playlist.podcastQueue = incoming.podcastQueue;
-    playlist.podcastIndex = Math.max(0, Math.min(Math.max(0, playlist.podcastQueue.length - 1), incoming.podcastIndex));
-    playlist.podcastShowTitle = incoming.podcastShowTitle;
-    playlist.podcastEpisodeTitle = incoming.podcastEpisodeTitle;
-    playlist.podcastPlaying = incoming.podcastPlaying;
-    playlist.podcastPositionMs = incoming.podcastPositionMs;
-    playlist.podcastDurationMs = incoming.podcastDurationMs;
-    playlist.podcastUpdatedAt = incoming.podcastUpdatedAt;
-    paintNpFromQueues();
-    if (playlist.spotifyPlaying && playlist.spotifyEndsAt > Date.now()) {
-      scheduleAdvanceUntil(playlist.spotifyEndsAt);
-    } else if (playlist.spotifyPlaying && playlist.spotifyEndsAt > 0) {
-      remotePlaybackAlreadyEnded = true;
-      clearAdvanceTimer();
-      pausedRemainingMs = 0;
-      playlist.spotifyPlaying = false;
-      playlist.spotifyEndsAt = 0;
-      if (playlist.playListMode === 'radio') playlist.spotifyRadio = false;
-      if (playlist.playListMode === 'playlist') playlist.savedPlaylistActive = false;
-    } else if (!playlist.spotifyPlaying) {
-      clearAdvanceTimer();
-      pausedRemainingMs = 0;
-    }
+    applyPayload(incoming);
   } finally {
     applyingRemote = false;
   }
-  if (remotePlaybackAlreadyEnded || !isStructured) schedulePush();
+  if (!isStructured) schedulePush();
+  if (!hydratedFromDoc) hydratedFromDoc = true;
 }
 
 export async function initPlaylistHub(): Promise<() => void> {
   docRef = null;
+  hydratedFromDoc = false;
+  playInFlight = false;
+  startingUri = '';
+  committing = false;
   if (unsub) {
     unsub();
     unsub = null;
@@ -963,11 +1013,10 @@ export async function initPlaylistHub(): Promise<() => void> {
     clearTimeout(pushTimer);
     pushTimer = null;
   }
-  if (playbackReconcileTimer) {
-    clearInterval(playbackReconcileTimer);
-    playbackReconcileTimer = null;
+  if (speakerPollTimer) {
+    clearInterval(speakerPollTimer);
+    speakerPollTimer = null;
   }
-  clearAdvanceTimer();
 
   let cfg: Record<string, unknown>;
   try {
@@ -1003,12 +1052,12 @@ export async function initPlaylistHub(): Promise<() => void> {
 
   unsub = onSnapshot(docRef, (snap) => {
     if (!snap.exists()) return;
-    if (snap.metadata.hasPendingWrites) return;
-    const raw = snap.data();
-    applyRemoteData(raw as Record<string, unknown>);
+    applyRemoteData(snap.data() as Record<string, unknown>);
   });
-  playbackReconcileTimer = setInterval(reconcilePlaybackClock, 1_000);
-  reconcilePlaybackClock();
+  speakerPollTimer = setInterval(() => {
+    void pollSpeaker();
+  }, 2_000);
+  void pollSpeaker();
   return () => {
     if (unsub) {
       unsub();
@@ -1018,11 +1067,10 @@ export async function initPlaylistHub(): Promise<() => void> {
       clearTimeout(pushTimer);
       pushTimer = null;
     }
-    if (playbackReconcileTimer) {
-      clearInterval(playbackReconcileTimer);
-      playbackReconcileTimer = null;
+    if (speakerPollTimer) {
+      clearInterval(speakerPollTimer);
+      speakerPollTimer = null;
     }
-    clearAdvanceTimer();
     docRef = null;
   };
 }

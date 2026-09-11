@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { hsvToHex, store, type AudioTargetStatus } from '$lib/ws.svelte';
+  import { store, type AudioTargetStatus } from '$lib/ws.svelte';
   import Card from '$lib/Card.svelte';
   import VolumeKnob from '$lib/VolumeKnob.svelte';
   import SpotifyVoice from '$lib/SpotifyVoice.svelte';
   import FeedbackOverlay from '$lib/FeedbackOverlay.svelte';
   import CameraCard from '$lib/CameraCard.svelte';
+  import FossibotCard from '$lib/FossibotCard.svelte';
+  import SwitchbotCard from '$lib/SwitchbotCard.svelte';
+  import LightsCard from '$lib/LightsCard.svelte';
   import { showFeedback } from '$lib/feedback.svelte';
   import {
     radioLibrary,
@@ -35,6 +38,7 @@
     registerPodcastReleaseHandler,
     paintNpFromQueues,
     playFromCurrentIndex,
+    playBrowsedTrack,
     setPodcastTransportFromPlayer,
     clearPodcastTransport,
   } from '$lib/playlistHub.svelte';
@@ -64,28 +68,56 @@
     try { await fetch(`/api/brightness/${level}`, { method: 'PUT' }); } catch {}
   }
 
+  function isPortraitViewport() {
+    return window.innerHeight >= window.innerWidth;
+  }
+
   function lockLandscape() {
+    // Wall kiosk is already landscape (ADB). Do not force a phone into
+    // landscape — that keeps the 2-column layout after the splash tap.
+    if (isPortraitViewport()) return;
     const orientation = screen.orientation as ScreenOrientation & {
       lock?: (orientation: 'landscape') => Promise<void>;
     };
     orientation?.lock?.('landscape').catch(() => {});
   }
 
+  function enterFullscreenFromGesture() {
+    const root = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => void;
+    };
+    try {
+      const pending = root.requestFullscreen?.({ navigationUI: 'hide' });
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(() => {
+          try { root.webkitRequestFullscreen?.(); } catch { /* already fullscreen or denied */ }
+        });
+      } else {
+        root.webkitRequestFullscreen?.();
+      }
+    } catch {
+      try { root.webkitRequestFullscreen?.(); } catch { /* ignore */ }
+    }
+  }
+
   function requestFullscreenAndKiosk() {
-    document.documentElement.requestFullscreen?.()
-      .then(lockLandscape)
-      .catch(lockLandscape);
+    enterFullscreenFromGesture();
     setTimeout(lockLandscape, 250);
     requestWakeLock();
     if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
   }
 
-  function resetDim(_wakeKiosk = false) {
+  function resetDim(wakeKiosk = false) {
     if (showSplash) return;
+    // pointermove is not a fullscreen user-activation. If it clears dimmed,
+    // the real tap finds the clock already gone and never retries.
+    if (dimmed && !wakeKiosk) return;
     lastActivityAt = Date.now();
     if (!dimmed) return;
-    requestFullscreenAndKiosk();
+    enterFullscreenFromGesture();
+    if (enabled('adbKiosk')) fetch('/api/kiosk/wake', { method: 'POST' }).catch(() => {});
     setBrightness(255);
+    requestWakeLock();
     dimmed = false;
   }
 
@@ -145,6 +177,11 @@
     }
   }
 
+  function audioTargetState(target: AudioTargetStatus): string {
+    if (target.online) return 'forbundet';
+    return target.connected ? 'tilsluttet uden lydprofil' : 'ikke forbundet';
+  }
+
   async function reconnectAudioTarget(targetId: string) {
     if (connectingAudioTarget) return;
     connectingAudioTarget = targetId;
@@ -166,6 +203,7 @@
   }
 
   onMount(() => {
+    syncPageLayout();
     store.connect();
     updateClock();
     clockInterval = setInterval(updateClock, 1000);
@@ -205,15 +243,11 @@
           activePodcastId = '';
           activeEpisodeId = '';
         });
+        if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
       })
       .catch(() => {
         if (enabled('spotify')) void initSpotifyWebPlayer();
       });
-    // Re-apply kiosk settings once on page load. Do not run it on every visibility
-    // change; Android may briefly hide/show Chrome around system overlays.
-    setTimeout(() => {
-      if (enabled('adbKiosk')) fetch('/api/kiosk', { method: 'POST' }).catch(() => {});
-    }, 1500);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         requestWakeLock();
@@ -251,32 +285,71 @@
   // ── Horizontal page carousel ────────────────────────────────────────────────
   let pagesEl: HTMLDivElement;
   let advancing = $state(false);
-  let nextPageName = $state('');
+  let singlePage = $state(false);
 
-  function readNextPageName() {
-    const el = pagesEl?.children[2] as HTMLElement | undefined
-      ?? pagesEl?.children[1] as HTMLElement | undefined;
-    nextPageName = el?.querySelector('.col-header')?.textContent ?? '';
+  function syncPageLayout() {
+    singlePage = isPortraitViewport();
   }
 
-  function advance() {
-    if (advancing || !pagesEl || pagesEl.children.length < 2) return;
-    advancing = true;
-    const pageW = pagesEl.clientWidth / 2;  // each page = 50%
-    pagesEl.scrollTo({ left: pageW, behavior: 'smooth' });
+  function pageWidth() {
+    const first = pagesEl?.firstElementChild as HTMLElement | undefined;
+    return first?.getBoundingClientRect().width || pagesEl?.clientWidth || 0;
+  }
 
-    // When scroll finishes: move first page to end, reset scroll instantly
-    function onDone() {
-      pagesEl.removeEventListener('scrollend', onDone);
-      const first = pagesEl.firstElementChild;
-      if (first && pagesEl.children.length > 1) pagesEl.appendChild(first);
+  function visiblePageCount() {
+    if (!pagesEl) return 1;
+    const width = pageWidth();
+    if (width <= 0) return 1;
+    return Math.max(1, Math.round(pagesEl.clientWidth / width));
+  }
+
+  /** Rotate children so the first visible page is first and scroll is 0.
+   *  scroll-to-now-playing leaves the carousel scrolled to the LYD page;
+   *  advance() assumes position 0. */
+  function normalizeCarousel() {
+    if (!pagesEl) return;
+    const width = pageWidth();
+    if (width <= 0) return;
+    const firstVisible = Math.round(pagesEl.scrollLeft / width);
+    for (let i = 0; i < firstVisible && pagesEl.children.length > 1; i++) {
+      pagesEl.appendChild(pagesEl.firstElementChild as HTMLElement);
+    }
+    if (firstVisible > 0) pagesEl.scrollTo({ left: 0, behavior: 'instant' });
+  }
+
+  /** Step a whole screen (all visible columns) in either direction. The
+   *  carousel is a ring: pages are rotated in the DOM so scroll is always 0
+   *  when idle, and stepping wraps around. */
+  function advance(direction: 1 | -1 = 1) {
+    if (advancing || !pagesEl || pagesEl.children.length < 2) return;
+    normalizeCarousel();
+    const width = pageWidth();
+    const step = Math.min(visiblePageCount(), pagesEl.children.length - 1);
+    if (width <= 0 || step < 1) return;
+    advancing = true;
+
+    function finish() {
+      pagesEl.removeEventListener('scrollend', finish);
+      if (direction > 0) {
+        // Forward: the pages we scrolled past go to the back of the ring.
+        for (let i = 0; i < step; i++) pagesEl.appendChild(pagesEl.firstElementChild as HTMLElement);
+      }
       pagesEl.scrollTo({ left: 0, behavior: 'instant' });
       advancing = false;
-      readNextPageName();
     }
-    pagesEl.addEventListener('scrollend', onDone, { once: true });
+
+    if (direction > 0) {
+      pagesEl.scrollTo({ left: width * step, behavior: 'smooth' });
+    } else {
+      // Backward: pull the last pages to the front, jump onto the current
+      // screen instantly, then glide back to 0 where the new pages sit.
+      for (let i = 0; i < step; i++) pagesEl.prepend(pagesEl.lastElementChild as HTMLElement);
+      pagesEl.scrollTo({ left: width * step, behavior: 'instant' });
+      requestAnimationFrame(() => pagesEl.scrollTo({ left: 0, behavior: 'smooth' }));
+    }
+    pagesEl.addEventListener('scrollend', finish, { once: true });
     // Fallback if scrollend doesn't fire (older browsers)
-    setTimeout(() => { if (advancing) onDone(); }, 600);
+    setTimeout(() => { if (advancing) finish(); }, 700);
   }
 
   // ── Lyd: mute (ét mute-niveau per enhed) ───────────────────────────────────
@@ -430,38 +503,6 @@
     }
   }
 
-  function lightStatus(light: { id: string; on: boolean; online: boolean; error?: string }): string {
-    if (connectingLight === light.id) return 'forbinder';
-    if (light.error === 'ikke parret') return 'ikke parret';
-    if (light.error === 'mangler nøgle') return 'mangler nøgle';
-    if (!light.online) return 'offline';
-    return light.on ? 'tændt' : 'slukket';
-  }
-
-  async function reconnectLight(lightId: string) {
-    if (connectingLight) return;
-    connectingLight = lightId;
-    try {
-      const result = await store.connectLight(lightId);
-      showFeedback(result?.online ? 'forbundet' : (result?.error ?? 'kunne ikke forbinde'), {
-        kind: result?.online ? 'success' : 'error',
-        duration: 5000,
-      });
-    } catch {
-      showFeedback('kunne ikke forbinde', { kind: 'error', duration: 5000 });
-    } finally {
-      connectingLight = '';
-    }
-  }
-
-  let connectingLight = $state('');
-
-  const lightColorPresets = [
-    { id: 'warm', hue: 32, sat: 48, label: 'varm' },
-    { id: 'amber', hue: 38, sat: 80, label: 'amber' },
-    { id: 'red', hue: 0, sat: 85, label: 'rød' },
-  ];
-
   let spotifySaved = $state(false);
   let saveLoading = $state(false);
   let radioSaveDone = $state(false);
@@ -469,24 +510,22 @@
   // ── Vertical card carousel ──────────────────────────────────────────────
   let lydInner = $state<HTMLDivElement>();
   let lysInner = $state<HTMLDivElement>();
+  let solInner = $state<HTMLDivElement>();
   let cardAdvancing = $state(false);
-  let nextLydCard = $state('');
-  let nextLysCard = $state('');
 
-  function readNextCardName(el: HTMLDivElement): string {
-    const child = el?.children[1] as HTMLElement | undefined;
-    if (!child) return '';
-    return child.querySelector('.card-name')?.textContent ?? child.dataset.name ?? '';
-  }
-
-  function advanceCard(el: HTMLDivElement, kind: 'lyd' | 'lys' | 'podcast' | 'playlist') {
+  function advanceCard(el: HTMLDivElement, kind: 'lyd' | 'lys' | 'sol' | 'podcast' | 'playlist') {
     if (cardAdvancing || !el || el.children.length < 2) return;
     if (kind === 'playlist') {
       scrollPlaylistPage(1);
       return;
     }
     cardAdvancing = true;
-    const cardH = el.clientHeight;
+    // Scroll exactly one card, not the container height: the container has
+    // bottom padding for the arrow, so clientHeight overshoots into card 3
+    // and the reorder snap-back becomes a visible jump.
+    const first = el.children[0] as HTMLElement;
+    const second = el.children[1] as HTMLElement;
+    const cardH = second.offsetTop - first.offsetTop || first.offsetHeight || el.clientHeight;
     el.scrollTo({ top: cardH, behavior: 'smooth' });
 
     function onDone() {
@@ -495,26 +534,11 @@
       if (first) el.appendChild(first);
       el.scrollTo({ top: 0, behavior: 'instant' });
       cardAdvancing = false;
-      if (kind === 'lyd') nextLydCard = readNextCardName(el);
-      else if (kind === 'lys') nextLysCard = readNextCardName(el);
-      else if (kind === 'podcast') nextPodcastCard = readNextCardName(el);
-      else nextPlaylistCard = readNextCardName(el);
     }
     el.addEventListener('scrollend', onDone, { once: true });
     setTimeout(() => { if (cardAdvancing) onDone(); }, 600);
   }
 
-  // Read initial next-names once DOM is ready
-  $effect(() => {
-    if (pagesEl) readNextPageName();
-    if (lydInner) nextLydCard = readNextCardName(lydInner);
-    if (lysInner) nextLysCard = readNextCardName(lysInner);
-    // re-read når podcasts er hentet (dom-børn ændrer sig)
-    void podcasts.length;
-    if (podcastInner) nextPodcastCard = readNextCardName(podcastInner);
-    void radioLibrary.playlists.length;
-    if (playlistInner) nextPlaylistCard = readNextCardName(playlistInner);
-  });
 
   $effect(() => {
     if (!lydInner) return;
@@ -523,7 +547,6 @@
       const lydPage = lydInner.closest('.page') as HTMLElement | null;
       if (pagesEl && lydPage) {
         pagesEl.scrollTo({ left: lydPage.offsetLeft, behavior: 'smooth' });
-        setTimeout(readNextPageName, 350);
       }
       while (lydInner.firstElementChild && !lydInner.firstElementChild.classList.contains('np-card')) {
         lydInner.appendChild(lydInner.firstElementChild);
@@ -559,9 +582,9 @@
   }
 
   function currentSaveLabel() {
-    if (isRadioPlaylistSaveable()) return radioSaveDone ? 'PLAYLISTE GEMT' : 'GEM PLAYLISTE';
-    if (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive) return 'PLAYLISTE GEMT';
-    return isCurrentTrackSaved() ? 'GEMT' : 'GEM';
+    if (isRadioPlaylistSaveable()) return radioSaveDone ? 'Playliste gemt' : 'Gem playliste';
+    if (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive) return 'Playliste gemt';
+    return isCurrentTrackSaved() ? 'Sang gemt' : 'Gem sang';
   }
 
   async function saveCurrentSelection() {
@@ -672,36 +695,30 @@
   let loadingPodcastId = $state('');
   let loadingEpisodeId = $state('');
   let podcastInner = $state<HTMLDivElement>();
-  let nextPodcastCard = $state('');
-  let prevPodcastCard = $state('');
   let showPodcastQueue = $state(false);
 
-  function updatePodcastScrollLabels() {
-    if (!podcastInner) return;
-    const rows = [...podcastInner.querySelectorAll<HTMLElement>('.podcast-card')];
-    if (!rows.length) { nextPodcastCard = ''; prevPodcastCard = ''; return; }
-    const currentTop = podcastInner.scrollTop;
-    const next = rows.find((row) => row.offsetTop > currentTop + 12);
-    const previous = [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
-    nextPodcastCard = next?.dataset.name ?? '';
-    prevPodcastCard = previous?.dataset.name ?? '';
+  // Lists step two rows per arrow tap. The row nearest the top is "current";
+  // we land exactly on a row edge so the list never sits half a row off.
+  const LIST_STEP_ROWS = 2;
+
+  function scrollListRows(el: HTMLDivElement | undefined, selector: string, direction: 1 | -1) {
+    if (!el) return;
+    const rows = [...el.querySelectorAll<HTMLElement>(selector)];
+    if (!rows.length) return;
+    const currentTop = el.scrollTop;
+    let current = rows.findIndex((row) => row.offsetTop >= currentTop - 12);
+    if (current < 0) current = rows.length - 1;
+    const maxTop = el.scrollHeight - el.clientHeight;
+    const targetIndex = current + direction * LIST_STEP_ROWS;
+    if (targetIndex >= rows.length || (direction > 0 && rows[targetIndex].offsetTop >= maxTop)) {
+      el.scrollTo({ top: maxTop, behavior: 'smooth' });
+      return;
+    }
+    el.scrollTo({ top: rows[Math.max(0, targetIndex)].offsetTop, behavior: 'smooth' });
   }
 
   function scrollPodcastPage(direction: 1 | -1) {
-    if (!podcastInner) return;
-    const rows = [...podcastInner.querySelectorAll<HTMLElement>('.podcast-card')];
-    if (!rows.length) return;
-    const currentTop = podcastInner.scrollTop;
-    const target = direction > 0
-      ? rows.find((row) => row.offsetTop > currentTop + 12)
-      : [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
-    if (!target) {
-      podcastInner.scrollTo({ top: direction > 0 ? podcastInner.scrollHeight : 0, behavior: 'smooth' });
-      setTimeout(updatePodcastScrollLabels, 350);
-      return;
-    }
-    podcastInner.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
-    setTimeout(updatePodcastScrollLabels, 350);
+    scrollListRows(podcastInner, '.podcast-card', direction);
   }
 
   function openPodcastSeek() {
@@ -714,8 +731,19 @@
     seekingPodcast = false;
   }
 
+  // ── Bibliotek: playlister og podcast deler én side ─────────────────────────
+  let libraryTab = $state<'playlists' | 'podcasts'>('playlists');
+  const libraryView = $derived<'playlists' | 'podcasts'>(
+    enabled('playlists') && (libraryTab === 'playlists' || !enabled('podcasts')) ? 'playlists' : 'podcasts'
+  );
+
+  function setLibraryTab(tab: 'playlists' | 'podcasts') {
+    libraryTab = tab;
+  }
+
   function goToPodcastNow() {
     closePodcastSeek();
+    libraryTab = 'podcasts';
     openPodcastQueue();
     if (!pagesEl) return;
     for (let i = 0; i < pagesEl.children.length; i++) {
@@ -724,22 +752,17 @@
       if (first) pagesEl.appendChild(first);
     }
     pagesEl.scrollTo({ left: 0, behavior: 'instant' });
-    readNextPageName();
   }
 
   function openPodcastQueue() {
     if (!activePodcastPlayer.active && playlist.podcastQueue.length === 0) return;
     closeDrill();
     showPodcastQueue = true;
-    requestAnimationFrame(() => {
-      podcastInner?.scrollTo({ top: 0, behavior: 'smooth' });
-      updatePodcastScrollLabels();
-    });
+    requestAnimationFrame(() => podcastInner?.scrollTo({ top: 0, behavior: 'smooth' }));
   }
 
   function closePodcastQueue() {
     showPodcastQueue = false;
-    requestAnimationFrame(updatePodcastScrollLabels);
   }
 
   // ── Drill-in state (per show, holdt indenfor podcast-kolonnen) ────────────
@@ -1035,18 +1058,15 @@
   }
 
   function liveNowPlaying() {
-    const speaker = speakerNowPlaying();
-    if (speaker?.name) {
-      const podcastArtist = isPodcastTransport()
-        ? (activePodcastPlayer.showTitle || playlist.podcastShowTitle || '')
-        : '';
-      return {
-        title: speaker.name,
-        artist: speaker.artist || podcastArtist,
-        fromSpeaker: true,
-      };
-    }
     if (isPodcastTransport()) {
+      const speaker = speakerNowPlaying();
+      if (speaker?.name) {
+        return {
+          title: speaker.name,
+          artist: speaker.artist || activePodcastPlayer.showTitle || playlist.podcastShowTitle || '',
+          fromSpeaker: true,
+        };
+      }
       return {
         title: activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast',
         artist: activePodcastPlayer.showTitle || playlist.podcastShowTitle || '',
@@ -1061,31 +1081,12 @@
 
   function liveIsPlaying() {
     if (isPodcastTransport()) return activePodcastPlayer.playing;
-    const speaker = speakerNowPlaying();
-    if (typeof speaker?.playing === 'boolean') return speaker.playing;
     return playlist.spotifyPlaying;
   }
 
   async function toggleNpPlayback() {
     if (isPodcastTransport()) {
       await togglePodcastPlayPause();
-      return;
-    }
-    const speaker = speakerNowPlaying();
-    if (speaker?.name && speaker.playing) {
-      try {
-        await fetch('/api/spotify/pause', { method: 'POST' });
-      } catch {
-        /* */
-      }
-      return;
-    }
-    if (speaker?.name && speaker.playing === false) {
-      try {
-        await fetch('/api/spotify/resume', { method: 'POST' });
-      } catch {
-        /* */
-      }
       return;
     }
     await togglePlayPause();
@@ -1100,8 +1101,10 @@
   let deletingTrackIndex = $state(-1);
   let activePlaylistId = $state('');
   let playlistInner = $state<HTMLDivElement>();
-  let nextPlaylistCard = $state('');
-  let prevPlaylistCard = $state('');
+
+  $effect(() => {
+    if (playlist.playListMode !== 'playlist') activePlaylistId = '';
+  });
 
   type PlaylistTrack = { uri: string; name: string; artist: string; position?: number };
   let drilledPlaylist = $state<RadioPlaylist | null>(null);
@@ -1118,36 +1121,8 @@
     paintNpFromQueues();
   }
 
-  function updatePlaylistScrollLabels() {
-    if (!playlistInner) return;
-    const rows = [...playlistInner.querySelectorAll<HTMLElement>('.playlist-card')];
-    if (!rows.length) {
-      nextPlaylistCard = '';
-      prevPlaylistCard = '';
-      return;
-    }
-    const currentTop = playlistInner.scrollTop;
-    const next = rows.find((row) => row.offsetTop > currentTop + 12);
-    const previous = [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
-    nextPlaylistCard = next?.dataset.name ?? '';
-    prevPlaylistCard = previous?.dataset.name ?? '';
-  }
-
   function scrollPlaylistPage(direction: 1 | -1) {
-    if (!playlistInner) return;
-    const rows = [...playlistInner.querySelectorAll<HTMLElement>('.playlist-card')];
-    if (!rows.length) return;
-    const currentTop = playlistInner.scrollTop;
-    const target = direction > 0
-      ? rows.find((row) => row.offsetTop > currentTop + 12)
-      : [...rows].reverse().find((row) => row.offsetTop < currentTop - 12);
-    if (!target) {
-      playlistInner.scrollTo({ top: direction > 0 ? playlistInner.scrollHeight : 0, behavior: 'smooth' });
-      setTimeout(updatePlaylistScrollLabels, 350);
-      return;
-    }
-    playlistInner.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
-    setTimeout(updatePlaylistScrollLabels, 350);
+    scrollListRows(playlistInner, '.playlist-card', direction);
   }
 
   async function playSpotifyPlaylist(p: RadioPlaylist) {
@@ -1242,9 +1217,15 @@
   <meta name="apple-mobile-web-app-title" content={isGarden() ? 'Haven' : 'Ejdersted'} />
 </svelte:head>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape') closePodcastSeek(); }} />
+<svelte:window
+  onkeydown={(e) => { if (e.key === 'Escape') closePodcastSeek(); }}
+  onresize={() => {
+    syncPageLayout();
+    pagesEl?.scrollTo({ left: 0, behavior: 'instant' });
+  }}
+/>
 
-<main>
+<main class:single-page={singlePage}>
   <FeedbackOverlay />
 
   <!-- Splash screen for fullscreen entry -->
@@ -1254,21 +1235,21 @@
     </div>
   {/if}
 
-  <!-- Dim overlay -->
+  <!-- Dim overlay + clock: clock lives inside so the tap target is the overlay. -->
   <div
     class="dim-overlay"
     class:dimmed
     role="button"
     tabindex="-1"
     aria-label="Væk kiosk"
+    onpointerdown={() => noteActivity(true)}
     onclick={() => noteActivity(true)}
     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') noteActivity(true); }}
-  ></div>
-
-  <!-- Clock (above dim) -->
-  {#if dimmed}
-    <div class="clock">{clockTime}</div>
-  {/if}
+  >
+    {#if dimmed}
+      <div class="clock">{clockTime}</div>
+    {/if}
+  </div>
 
   <!-- Song streamer (above dim) -->
   {#if streamer}
@@ -1287,13 +1268,19 @@
     {/if}
   </nav>
 
-  <!-- ── Advance arrow ─────────────────────────────────────────────────────── -->
-  <button class="advance-arrow" onclick={advance} aria-label="Næste">
-    <span class="arrow-label">{nextPageName}</span>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="9 6 15 12 9 18" />
-    </svg>
-  </button>
+  <!-- ── Page arrows: one screen (all visible columns) per tap ─────────────── -->
+  <div class="page-nav">
+    <button class="advance-arrow" onclick={() => advance(-1)} aria-label="Forrige side">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 6 9 12 15 18" />
+      </svg>
+    </button>
+    <button class="advance-arrow" onclick={() => advance(1)} aria-label="Næste side">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 6 15 12 9 18" />
+      </svg>
+    </button>
+  </div>
 
   <!-- ── Swipe container ───────────────────────────────────────────────────── -->
   <div class="pages" bind:this={pagesEl}>
@@ -1301,41 +1288,34 @@
     {#if enabled('camera') && store.config.site === 'garden'}
       <!-- PAGE · KAMERA (garden-first) ────────────────────────────────────── -->
       <section class="page page--primary-camera">
-        <div class="col-header">KAMERA</div>
+        <div class="col-header" aria-hidden="true"></div>
         <div class="scroll-inner camera-page">
           <CameraCard />
         </div>
       </section>
     {/if}
 
-    <!-- PAGE · SOL (garden solar charge relay) ──────────────────────────── -->
-    {#if enabled('solar')}
+    <!-- PAGE · SOL (Fossibot + garden solar charge relay) ───────────────── -->
+    {#if enabled('solar') || enabled('fossibot')}
     <section class="page">
-      <div class="col-header">SOL</div>
-      <div class="scroll-inner">
+      <div class="col-header" aria-hidden="true"></div>
+      <div class="scroll-inner" bind:this={solInner}>
+        {#if enabled('fossibot')}
+          <FossibotCard />
+        {/if}
+        {#if enabled('solar')}
+        <!-- Header carries the relay state; the active button carries the mode.
+             The window is sunrise+offset → sunset−offset, so the raw sun times add nothing. -->
         <Card
           name="Solcelle"
-          status={store.solar.mode === 'on' ? 'Manuel · tændt' : store.solar.mode === 'off' ? 'Manuel · slukket' : 'Automatisk'}
+          status={store.solar.relayOn ? 'tilsluttet' : 'afbrudt'}
           online={!!store.solar.relayOn}
         >
           <div class="solar">
-            <div class="solar-state" class:on={store.solar.relayOn}>
-              <span class="solar-state-dot"></span>
-              <span class="solar-state-label">{store.solar.relayOn ? 'Solcelle tilsluttet' : 'Solcelle afbrudt'}</span>
-            </div>
-
-            <div class="solar-schedule">
-              <div class="solar-sched-row">
-                <span class="solar-sched-label">Tænder</span>
-                <span class="solar-sched-time">{store.solar.onTime ?? '–'}</span>
-              </div>
-              <div class="solar-sched-row">
-                <span class="solar-sched-label">Slukker</span>
-                <span class="solar-sched-time">{store.solar.offTime ?? '–'}</span>
-              </div>
-              <div class="solar-sun">
-                sol op {store.solar.sunrise ?? '–'} · sol ned {store.solar.sunset ?? '–'}
-              </div>
+            <div class="solar-window" class:muted={store.solar.mode !== 'auto'} aria-label="Automatisk tidsrum">
+              <span class="solar-sched-time">{store.solar.onTime ?? '–'}</span>
+              <span class="solar-window-dash">–</span>
+              <span class="solar-sched-time">{store.solar.offTime ?? '–'}</span>
             </div>
 
             <div class="solar-modes" role="group" aria-label="Solcelle-styring">
@@ -1345,14 +1325,25 @@
             </div>
           </div>
         </Card>
+        {/if}
+        {#if store.config.switchbot?.configured}
+          <SwitchbotCard />
+        {/if}
       </div>
+      {#if [enabled('fossibot'), enabled('solar'), !!store.config.switchbot?.configured].filter(Boolean).length > 1}
+      <button type="button" class="card-arrow" onclick={() => solInner && advanceCard(solInner, 'sol')} aria-label="Næste kort">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {/if}
     </section>
     {/if}
 
     <!-- PAGE 0 · LYD ─────────────────────────────────────────────────────── -->
     {#if enabled('audio') || enabled('spotify')}
     <section class="page">
-      <div class="col-header">LYD</div>
+      <div class="col-header" aria-hidden="true"></div>
       <div class="scroll-inner" bind:this={lydInner}>
 
         <!-- Now Playing (default card, always visible) -->
@@ -1400,9 +1391,13 @@
                   class:loading={saveLoading}
                   onclick={saveCurrentSelection}
                   disabled={saveLoading || !playlist.spotifyTrackUri || (isRadioPlaylistSaveable() && radioSaveDone)}
-                  aria-label={isRadioPlaylistSaveable() ? 'Gem radio som playliste' : 'Gem sang'}
+                  aria-label={currentSaveLabel()}
+                  title={currentSaveLabel()}
                 >
-                  {saveLoading ? '· · ·' : currentSaveLabel()}
+                  <!-- Glyph, not a sentence: filled = saved. The overlay says what was saved. -->
+                  <svg viewBox="0 0 24 24" fill={spotifySaved || radioSaveDone ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M6 3h12v18l-6-4.5L6 21z" />
+                  </svg>
                 </button>
                 {#if activeQueue().length > 1}
                   <button type="button" class="np-track-nav-btn" onclick={spotifyNextTrack} aria-label="Næste i køen">
@@ -1413,10 +1408,12 @@
                 {/if}
               </div>
               {#if playlist.spotifyNextTitle}
-                <div class="np-next-streamer">
-                  <span class="np-next-title">{playlist.spotifyNextTitle}</span>
-                  {#if playlist.spotifyNextArtist}<span class="np-next-artist">{playlist.spotifyNextArtist}</span>{/if}
-                </div>
+                <button type="button" class="np-next-streamer" onclick={playBrowsedTrack} aria-label="Spring til næste sang">
+                  <span class="np-next-line">
+                    <span class="np-next-mark" aria-hidden="true">›</span>
+                    {playlist.spotifyNextTitle}{#if playlist.spotifyNextArtist}<span class="np-next-artist"> · {playlist.spotifyNextArtist}</span>{/if}
+                  </span>
+                </button>
               {/if}
             {:else}
               <span class="np-card-title np-card-title--muted">Ingen valgt sang</span>
@@ -1424,7 +1421,6 @@
             {/if}
           </div>
           <div class="unified-vol unified-vol--horizontal np-volume" aria-label="Afspiller-volumen">
-            <span class="unified-vol-label">vol</span>
             <input
               type="range"
               min="0"
@@ -1515,20 +1511,25 @@
           {/if}
 
           {#if audioTargets.length > 0}
+            {@const single = audioTargets.length === 1 ? audioTargets[0] : null}
+            <!-- One speaker: its name and state live in the card header, and the
+                 state is the reconnect button. Several: the old per-row list. -->
             <Card
-              name="Audio output"
-              status={`${audioTargets.filter((target) => target.online).length}/${audioTargets.length} online`}
+              name={single ? single.name : 'Højttalere'}
+              status={single
+                ? (connectingAudioTarget === single.id ? 'forbinder…' : audioTargetState(single))
+                : `${audioTargets.filter((target) => target.online).length}/${audioTargets.length} online`}
               online={audioTargets.some((target) => target.online)}
+              onstatus={single && !single.online ? () => reconnectAudioTarget(single.id) : undefined}
             >
               <div class="audio-targets">
                 {#each audioTargets as target (target.id)}
                   <div class="audio-target" class:offline={!target.online}>
+                    {#if !single}
                     <div class="audio-target-row">
                       <div class="audio-target-main">
                         <span class="audio-target-name">{target.name}</span>
-                        <span class="audio-target-status">
-                          {target.online ? 'forbundet' : target.connected ? 'tilsluttet uden lydprofil' : 'ikke forbundet'}
-                        </span>
+                        <span class="audio-target-status">{audioTargetState(target)}</span>
                       </div>
                       <button
                         type="button"
@@ -1540,8 +1541,8 @@
                         {connectingAudioTarget === target.id ? 'forbinder' : 'forbind igen'}
                       </button>
                     </div>
+                    {/if}
                     <div class="unified-vol unified-vol--horizontal audio-target-vol">
-                      <span class="unified-vol-label">vol</span>
                       <input
                         type="range"
                         min="0"
@@ -1577,19 +1578,15 @@
 
         <!-- Spotify Voice -->
         {#if enabled('spotify')}
+        <!-- The card is the input (mic + search). Play mode already shows on the
+             player's action row, so the status only carries transient work. -->
         <Card
-          name="Musik"
+          name="Søg"
           status={playlist.spotifyRadioLoading
             ? 'Opbygger playliste…'
             : playlist.spotifyAlbumLoading
               ? 'Henter album…'
-              : playlist.playListMode === 'playlist'
-                ? (playlist.savedPlaylistTitle || 'Playliste')
-                : playlist.playListMode === 'radio'
-                  ? 'Playliste (lokal kø)'
-                  : playlist.playListMode === 'album'
-                    ? 'Album (lokal kø)'
-                    : 'Mikrofon-kø'}
+              : ''}
         >
           <SpotifyVoice onvoice={handleVoicePayload} />
         </Card>
@@ -1597,7 +1594,6 @@
 
       </div>
       <button type="button" class="card-arrow card-arrow--lyd" onclick={() => lydInner && advanceCard(lydInner, 'lyd')} aria-label="Næste kort">
-        <span class="arrow-label">{nextLydCard}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
@@ -1605,165 +1601,10 @@
     </section>
     {/if}
 
-    <!-- PAGE 1 · LYS ─────────────────────────────────────────────────────── -->
-    {#if enabled('hue') || enabled('lights')}
-    <section class="page">
-      <div class="col-header">LYS</div>
-      <div class="scroll-inner" bind:this={lysInner}>
-        {#if enabled('hue')}
-        {#if !store.connected}
-          <div class="pair-wrap">
-            <p class="pair-label">Hub ikke forbundet</p>
-            <p class="pair-hint">
-              Lys-kortet får live-data via WebSocket fra backend.<br />
-              Start backend: <code>cd backend && python3.13 main.py</code><br />
-              Med Vite-dev: <code>cd frontend && npm run dev</code> → åbn <strong>localhost:5173</strong>.<br />
-              Eller åbn interfacet direkte på <strong>https://localhost:8443</strong> (samme origin som hubben).
-            </p>
-          </div>
-
-        {:else if store.hueStatus.paired && store.hueRooms.length > 0}
-          <!-- Rum-knobs (filtrér rum uden pærer fra) -->
-          {#each store.hueRooms.filter(r => r.lights !== 0) as room (room.id)}
-            <Card name={room.name} status={room.any_on ? 'tændt' : 'slukket'} online={room.any_on}>
-              <div class="knob-wrap">
-                <VolumeKnob
-                  value={hueMuteState[room.id]?.muted ? 0 : room.brightness}
-                  muted={!room.any_on || (hueMuteState[room.id]?.muted ?? false)}
-                  disabled={hueMuteState[room.id]?.muted ?? false}
-                  onchange={(v) => store.setHueBrightness(room.id, v)}
-                  onmute={() => toggleHueMute(room.id, room.brightness)}
-                />
-              </div>
-            </Card>
-          {/each}
-
-        {:else if store.hueStatus.paired && store.hueRooms.length === 0}
-          <p class="empty">Forbundet — henter rum…</p>
-
-        {:else}
-          <!-- Pairing flow -->
-          <div class="pair-wrap">
-            {#if store.hueStatus.ip}
-              <p class="pair-label">Bridge fundet</p>
-              <p class="pair-ip">{store.hueStatus.ip}</p>
-              <p class="pair-hint">
-                Tryk på knappen på din Hue bridge,<br />og tap par herunder.
-              </p>
-            {:else}
-              <p class="pair-label">Søger efter bridge…</p>
-              <p class="pair-hint">
-                Ingen bridge fundet via mDNS.<br />
-                Indtast IP manuelt:
-              </p>
-            {/if}
-
-            <form onsubmit={handlePair}>
-              {#if !store.hueStatus.ip}
-                <input type="text" bind:value={hueManualIp}
-                  placeholder="Bridge IP (f.eks. 192.168.1.10)"
-                  inputmode="url" autocomplete="off" />
-              {/if}
-              <button type="submit" class="btn-primary" disabled={huePairing}>
-                {huePairing ? '…' : 'par'}
-              </button>
-            </form>
-          </div>
-        {/if}
-        {:else if enabled('lights')}
-          {#if store.lights.length === 0}
-            <Card name="gårdlys" status="ikke parret" online={false}>
-              <div class="pair-wrap">
-                <p class="pair-label">gårdlys</p>
-                <p class="pair-hint">
-                  Par lampen til have-WiFi i LEDVANCE SMART+ appen.<br />
-                  Hubben finder den bagefter på LAN.
-                </p>
-              </div>
-            </Card>
-          {:else}
-            {#each store.lights as light (light.id)}
-              <Card name="gårdlys" status={lightStatus(light)} online={light.online && light.any_on}>
-                <div class="garden-light">
-                  <div class="unified-vol unified-vol--horizontal garden-light-row">
-                    <span class="unified-vol-label">lys</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="1"
-                      class="unified-vol-slider"
-                      value={light.brightness}
-                      disabled={!light.online}
-                      oninput={(e) => store.setLightBrightness(light.id, +(e.currentTarget as HTMLInputElement).value)}
-                      aria-label="Lysstyrke"
-                    />
-                    <span class="unified-vol-value">{light.brightness}</span>
-                  </div>
-                  {#if light.has_color}
-                    <div class="garden-light-row garden-light-color">
-                      <span class="unified-vol-label">farve</span>
-                      <input
-                        class="hue-slider"
-                        type="range"
-                        min="0"
-                        max="360"
-                        step="1"
-                        value={light.hue ?? 30}
-                        disabled={!light.online}
-                        oninput={(e) => store.setLightColor(light.id, +(e.currentTarget as HTMLInputElement).value, light.sat ?? 80)}
-                        aria-label="Farve"
-                      />
-                      <span class="garden-light-swatch" style="background: {light.hex || hsvToHex(light.hue ?? 30, light.sat ?? 80)}"></span>
-                    </div>
-                    <div class="garden-light-presets">
-                      <button
-                        type="button"
-                        class="action-btn"
-                        class:active={light.mode !== 'colour'}
-                        disabled={!light.online}
-                        onclick={() => store.setLightWhite(light.id)}
-                      >hvid</button>
-                      {#each lightColorPresets as preset (preset.id)}
-                        <button
-                          type="button"
-                          class="action-btn"
-                          class:active={light.mode === 'colour' && (light.hue ?? 30) === preset.hue}
-                          disabled={!light.online}
-                          onclick={() => store.setLightColor(light.id, preset.hue, preset.sat)}
-                        >{preset.label}</button>
-                      {/each}
-                    </div>
-                  {/if}
-                  {#if !light.online}
-                    <button
-                      type="button"
-                      class="action-btn"
-                      class:loading={connectingLight === light.id}
-                      disabled={!!connectingLight}
-                      onclick={() => reconnectLight(light.id)}
-                    >{connectingLight === light.id ? 'forbinder' : 'forbind'}</button>
-                  {/if}
-                </div>
-              </Card>
-            {/each}
-          {/if}
-        {/if}
-
-      </div>
-      <button type="button" class="card-arrow card-arrow--lys" onclick={() => lysInner && advanceCard(lysInner, 'lys')} aria-label="Næste kort">
-        <span class="arrow-label">{nextLysCard}</span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-    </section>
-    {/if}
-
-    <!-- PAGE 2 · PLAYLISTER ──────────────────────────────────────────────── -->
-    {#if enabled('playlists')}
-    <section class="page">
-      {#if drilledPlaylist}
+    <!-- PAGE 1 · BIBLIOTEK (playlister · podcast) ───────────────────────── -->
+    {#if enabled('playlists') || enabled('podcasts')}
+    <section class="page" data-page="podcast">
+      {#if libraryView === 'playlists' && drilledPlaylist}
         <div class="col-header drill-header">
           <button type="button" class="drill-back" onclick={closePlaylistDrill} aria-label="Tilbage til playliste-liste">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -1772,11 +1613,38 @@
             <span class="drill-back-label">{drilledPlaylist.name}</span>
           </button>
         </div>
+      {:else if libraryView === 'podcasts' && showPodcastQueue}
+        <div class="col-header drill-header">
+          <button type="button" class="drill-back" onclick={closePodcastQueue} aria-label="Tilbage til podcast-liste">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+            <span class="drill-back-label">Afspiller nu</span>
+          </button>
+        </div>
+      {:else if libraryView === 'podcasts' && drilledShow}
+        <div class="col-header drill-header">
+          <button type="button" class="drill-back" onclick={closeDrill} aria-label="Tilbage til podcast-liste">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+            <span class="drill-back-label">{drilledShow.show_name}</span>
+          </button>
+        </div>
       {:else}
-        <div class="col-header">PLAYLISTER</div>
+        <!-- One library page: the header is the switch. -->
+        <div class="col-header col-header--tabs" role="tablist">
+          {#if enabled('playlists')}
+            <button type="button" role="tab" class:active={libraryView === 'playlists'} aria-selected={libraryView === 'playlists'} onclick={() => setLibraryTab('playlists')}>playlister</button>
+          {/if}
+          {#if enabled('podcasts')}
+            <button type="button" role="tab" class:active={libraryView === 'podcasts'} aria-selected={libraryView === 'podcasts'} onclick={() => setLibraryTab('podcasts')}>podcast</button>
+          {/if}
+        </div>
       {/if}
 
-      <div class="scroll-inner list-scroll" bind:this={playlistInner} onscroll={updatePlaylistScrollLabels}>
+      {#if libraryView === 'playlists'}
+      <div class="scroll-inner list-scroll" bind:this={playlistInner}>
         {#if drilledPlaylist}
           {#if drilledTracks.length === 0}
             <p class="empty">Ingen sange fundet.</p>
@@ -1880,48 +1748,19 @@
 
       {#if !drilledPlaylist}
         <button type="button" class="card-arrow list-arrow list-arrow--up" onclick={() => scrollPlaylistPage(-1)} aria-label="Forrige playliste">
-          <span class="arrow-label">{prevPlaylistCard}</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="18 15 12 9 6 15" />
           </svg>
         </button>
 
         <button type="button" class="card-arrow list-arrow list-arrow--down" onclick={() => scrollPlaylistPage(1)} aria-label="Næste playliste">
-          <span class="arrow-label">{nextPlaylistCard}</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="6 9 12 15 18 9" />
           </svg>
         </button>
       {/if}
-    </section>
-    {/if}
-
-    <!-- PAGE 3 · PODCAST ──────────────────────────────────────────────────── -->
-    {#if enabled('podcasts')}
-    <section class="page" data-page="podcast">
-      {#if showPodcastQueue}
-        <div class="col-header drill-header">
-          <button type="button" class="drill-back" onclick={closePodcastQueue} aria-label="Tilbage til podcast-liste">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="15 6 9 12 15 18" />
-            </svg>
-            <span class="drill-back-label">Afspiller nu</span>
-          </button>
-        </div>
-      {:else if drilledShow}
-        <div class="col-header drill-header">
-          <button type="button" class="drill-back" onclick={closeDrill} aria-label="Tilbage til podcast-liste">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="15 6 9 12 15 18" />
-            </svg>
-            <span class="drill-back-label">{drilledShow.show_name}</span>
-          </button>
-        </div>
       {:else}
-        <div class="col-header">PODCAST</div>
-      {/if}
-
-      <div class="scroll-inner list-scroll" bind:this={podcastInner} onscroll={updatePodcastScrollLabels}>
+      <div class="scroll-inner list-scroll" bind:this={podcastInner}>
         {#if showPodcastQueue}
           <div class="podcast-queue-view" data-podcast-current="true">
             <div class="podcast-queue-now">
@@ -2087,26 +1926,103 @@
 
       {#if !drilledShow}
         <button type="button" class="card-arrow list-arrow list-arrow--up" onclick={() => scrollPodcastPage(-1)} aria-label="Forrige podcast">
-          <span class="arrow-label">{prevPodcastCard}</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="18 15 12 9 6 15" />
           </svg>
         </button>
 
         <button type="button" class="card-arrow list-arrow list-arrow--down" onclick={() => scrollPodcastPage(1)} aria-label="Næste podcast">
-          <span class="arrow-label">{nextPodcastCard}</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="6 9 12 15 18 9" />
           </svg>
         </button>
       {/if}
+      {/if}
+    </section>
+    {/if}
+
+    <!-- PAGE 2 · LYS ─────────────────────────────────────────────────────── -->
+    {#if enabled('hue') || enabled('lights')}
+    <section class="page">
+      <div class="col-header" aria-hidden="true"></div>
+      <div class="scroll-inner" bind:this={lysInner}>
+        {#if enabled('hue')}
+        {#if !store.connected}
+          <div class="pair-wrap">
+            <p class="pair-label">Hub ikke forbundet</p>
+            <p class="pair-hint">
+              Lys-kortet får live-data via WebSocket fra backend.<br />
+              Start backend: <code>cd backend && python3.13 main.py</code><br />
+              Med Vite-dev: <code>cd frontend && npm run dev</code> → åbn <strong>localhost:5173</strong>.<br />
+              Eller åbn interfacet direkte på <strong>https://localhost:8443</strong> (samme origin som hubben).
+            </p>
+          </div>
+
+        {:else if store.hueStatus.paired && store.hueRooms.length > 0}
+          <!-- Rum-knobs (filtrér rum uden pærer fra) -->
+          {#each store.hueRooms.filter(r => r.lights !== 0) as room (room.id)}
+            <Card name={room.name} status="" online={room.any_on}>
+              <div class="knob-wrap">
+                <VolumeKnob
+                  value={hueMuteState[room.id]?.muted ? 0 : room.brightness}
+                  muted={!room.any_on || (hueMuteState[room.id]?.muted ?? false)}
+                  disabled={hueMuteState[room.id]?.muted ?? false}
+                  onchange={(v) => store.setHueBrightness(room.id, v)}
+                  onmute={() => toggleHueMute(room.id, room.brightness)}
+                />
+              </div>
+            </Card>
+          {/each}
+
+        {:else if store.hueStatus.paired && store.hueRooms.length === 0}
+          <p class="empty">Forbundet — henter rum…</p>
+
+        {:else}
+          <!-- Pairing flow -->
+          <div class="pair-wrap">
+            {#if store.hueStatus.ip}
+              <p class="pair-label">Bridge fundet</p>
+              <p class="pair-ip">{store.hueStatus.ip}</p>
+              <p class="pair-hint">
+                Tryk på knappen på din Hue bridge,<br />og tap par herunder.
+              </p>
+            {:else}
+              <p class="pair-label">Søger efter bridge…</p>
+              <p class="pair-hint">
+                Ingen bridge fundet via mDNS.<br />
+                Indtast IP manuelt:
+              </p>
+            {/if}
+
+            <form onsubmit={handlePair}>
+              {#if !store.hueStatus.ip}
+                <input type="text" bind:value={hueManualIp}
+                  placeholder="Bridge IP (f.eks. 192.168.1.10)"
+                  inputmode="url" autocomplete="off" />
+              {/if}
+              <button type="submit" class="btn-primary" disabled={huePairing}>
+                {huePairing ? '…' : 'par'}
+              </button>
+            </form>
+          </div>
+        {/if}
+        {:else if enabled('lights')}
+          <LightsCard />
+        {/if}
+
+      </div>
+      <button type="button" class="card-arrow card-arrow--lys" onclick={() => lysInner && advanceCard(lysInner, 'lys')} aria-label="Næste kort">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
     </section>
     {/if}
 
     <!-- PAGE 4 · KAMERA ──────────────────────────────────────────────────── -->
     {#if enabled('camera') && store.config.site !== 'garden'}
     <section class="page">
-      <div class="col-header">KAMERA</div>
+      <div class="col-header" aria-hidden="true"></div>
       <div class="scroll-inner camera-page">
         <CameraCard />
       </div>
@@ -2190,6 +2106,7 @@
     background: #000;
     opacity: 0;
     pointer-events: none;
+    touch-action: manipulation;
     transition: opacity 1.5s ease;
     z-index: 999;
   }
@@ -2207,10 +2124,13 @@
     align-items: center;
     justify-content: center;
     pointer-events: none;
+    /* Landscape: the old 12rem floor. Portrait: drop it — 12rem × ~2.75
+       overflows a 390–720px page. */
     font-size: clamp(12rem, 38vw, 28rem);
     font-weight: 300;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     font-family: 'Roboto', -apple-system, system-ui, sans-serif;
     color: transparent;
     -webkit-text-fill-color: transparent;
@@ -2294,6 +2214,28 @@
     background: #000;
   }
 
+  .col-header--tabs {
+    gap: 26px;
+  }
+  .col-header--tabs button {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    color: #5a5a5a;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.2s;
+  }
+  .col-header--tabs button.active {
+    color: #9b9b9b;
+  }
+  .col-header--tabs button:active {
+    color: #f2f2f2;
+  }
+
   /* ── Pages (2-visible, horizontal carousel) ───────────────────────────── */
   .pages {
     flex: 1;
@@ -2308,6 +2250,8 @@
 
   .page {
     flex: 0 0 50%;
+    width: 50%;
+    min-width: 50%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -2317,17 +2261,44 @@
     flex-basis: 50%;
   }
 
+  /* One card/page when the viewport is taller than wide. Aspect-ratio beats
+     max-width: 720px, which also matched the landscape A12 (~712–800 CSS px). */
+  @media (orientation: portrait), (max-aspect-ratio: 1/1) {
+    .page,
+    .page--primary-camera {
+      flex: 0 0 100%;
+      flex-basis: 100%;
+      width: 100%;
+      min-width: 100%;
+    }
+    .clock {
+      font-size: min(32vw, 18vh);
+    }
+  }
+  main.single-page .page,
+  main.single-page .page--primary-camera {
+    flex: 0 0 100%;
+    flex-basis: 100%;
+    width: 100%;
+    min-width: 100%;
+  }
+  main.single-page .clock {
+    font-size: min(32vw, 18vh);
+  }
+
   /* ── Advance arrow ────────────────────────────────────────────────────────── */
-  .advance-arrow {
+  .page-nav {
     position: fixed;
     top: 0;
     right: 0;
     z-index: 10;
+    display: flex;
+  }
+  .advance-arrow {
     height: 48px;
     display: flex;
     align-items: flex-end;
-    gap: 4px;
-    padding: 0 12px 10px 0;
+    padding: 0 12px 10px 12px;
     background: none;
     border: none;
     cursor: pointer;
@@ -2345,6 +2316,7 @@
 
   .scroll-inner {
     flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
@@ -2404,14 +2376,6 @@
   }
 
   /* ── Shared arrow label ──────────────────────────────────────────────────────── */
-  .arrow-label {
-    font-size: 0.7rem;
-    font-weight: 400;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
   .knob-wrap {
     max-width: 200px;
     margin: 0 auto;
@@ -2504,8 +2468,10 @@
   .speaker-fader {
     position: relative;
     width: 34px;
-    flex: 1;
+    flex: 1 1 auto;
     min-height: 142px;
+    max-height: 160px;
+    align-self: center;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2537,6 +2503,7 @@
     cursor: pointer;
     -webkit-appearance: none;
     appearance: none;
+    touch-action: none;
   }
 
   .speaker-fader input::-webkit-slider-runnable-track {
@@ -2706,69 +2673,31 @@
     padding: 14px 6px;
   }
 
-  .solar-state {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-
-  .solar-state-dot {
-    width: 13px;
-    height: 13px;
-    border-radius: 50%;
-    background: #333;
-    transition: background 0.5s ease, box-shadow 0.5s ease;
-  }
-
-  .solar-state.on .solar-state-dot {
-    background: var(--accent);
-    box-shadow: 0 0 20px 3px rgba(0, 128, 200, 0.55);
-  }
-
-  .solar-state-label {
-    color: #f2f2f2;
-    font-size: 0.95rem;
-    font-weight: 300;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-
-  .solar-schedule {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .solar-sched-row {
+  .solar-window {
     display: flex;
     align-items: baseline;
-    gap: 18px;
+    gap: 14px;
+    transition: opacity 0.3s ease;
   }
 
-  .solar-sched-label {
-    color: #9b9b9b;
-    font-size: 0.68rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    min-width: 84px;
-    text-align: right;
+  .solar-window.muted {
+    opacity: 0.35;
   }
 
   .solar-sched-time {
     color: #f2f2f2;
-    font-size: 1.7rem;
+    font-size: 2.4rem;
     font-weight: 200;
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
+    line-height: 1;
   }
 
-  .solar-sun {
-    margin-top: 4px;
+  .solar-window-dash {
     color: #9b9b9b;
-    font-size: 0.66rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
+    font-size: 1.4rem;
+    font-weight: 200;
+    line-height: 1;
   }
 
   .solar-modes {
@@ -2776,18 +2705,37 @@
     gap: 6px;
   }
 
+  @media (max-width: 932px) {
+    .solar {
+      gap: 8px;
+      padding: 6px 4px;
+    }
+    .solar-window {
+      gap: 10px;
+    }
+    .solar-sched-time {
+      font-size: 1.7rem;
+    }
+    .solar-window-dash {
+      font-size: 1rem;
+    }
+  }
+
   /* ── Now Playing card ────────────────────────────────────────────────────── */
   .np-card {
-    height: calc(100dvh - 48px);
-    min-height: calc(100dvh - 48px);
-    max-height: calc(100dvh - 48px);
+    flex: 0 0 100%;
+    height: 100%;
+    min-height: 100%;
+    max-height: 100%;
     overflow: hidden;
     display: grid;
     grid-template-rows: minmax(0, 1fr) 42px 34px;
     align-items: center;
     justify-items: center;
-    gap: 6px;
-    padding: 8px 24px 62px;
+    gap: 14px;
+    /* The card-arrow lives in .scroll-inner's own bottom padding, so the card
+       only needs a hair of clearance — not a second 62 px reservation. */
+    padding: 8px 24px 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     position: relative;
   }
@@ -2870,14 +2818,6 @@
     letter-spacing: 0.16em;
   }
 
-  .unified-vol-label {
-    min-width: 30px;
-    color: #c2c2c2;
-    font-size: 0.64rem;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-  }
-
   .unified-vol-slider {
     position: relative;
     width: 100%;
@@ -2888,6 +2828,7 @@
     cursor: pointer;
     -webkit-appearance: none;
     appearance: none;
+    touch-action: pan-x;
   }
 
   .unified-vol-slider::-webkit-slider-runnable-track {
@@ -2972,31 +2913,30 @@
   }
 
   .np-save-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     background: none;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
+    border: none;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    padding: 6px 10px;
-    min-width: 66px;
-    max-width: 128px;
-    color: #c2c2c2;
-    font-size: 0.58rem;
-    font-weight: 300;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: color 0.2s, border-color 0.2s;
+    padding: 10px 14px;
+    color: #8a8a8a;
+    transition: color 0.15s;
+  }
+  .np-save-btn svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+  }
+  .np-save-btn.loading {
+    animation: pulse-dim 1.2s ease-in-out infinite;
   }
   .np-save-btn:active {
     color: #f2f2f2;
-    border-color: rgba(255, 255, 255, 0.18);
   }
   .np-save-btn.saved {
-    color: #c8e8ff;
-    border-color: rgba(200, 232, 255, 0.18);
+    color: #0080c8;
   }
   .np-save-btn:disabled {
     cursor: default;
@@ -3022,6 +2962,12 @@
     align-items: center;
     gap: 1px;
     margin-top: 3px;
+    padding: 0;
+    border: 0;
+    background: none;
+    width: 100%;
+    font: inherit;
+    color: inherit;
     opacity: 0;
     animation: streamer-in 0.8s ease 0.2s forwards;
   }
@@ -3035,10 +2981,11 @@
     text-transform: uppercase;
     text-align: center;
   }
-  .np-next-title {
+  /* Next track: one muted line under the title, tap to skip to it. */
+  .np-next-line {
     font-size: 0.7rem;
     font-weight: 300;
-    color: #c2c2c2;
+    color: #9b9b9b;
     text-align: center;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3046,16 +2993,13 @@
     max-width: 100%;
   }
 
+  .np-next-mark {
+    margin-right: 6px;
+    color: #6f6f6f;
+  }
+
   .np-next-artist {
-    font-size: 0.56rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: #8a8a8a;
-    text-align: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
+    color: #6f6f6f;
   }
 
   @keyframes streamer-in {

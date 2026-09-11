@@ -78,12 +78,24 @@ Home and garden share playlist library data, but not physical player state.
 - `ejdersted/radioPlaylists` is the shared library for saved radio playlists and
   saved songs.
 - `ejdersted/player_home` is the Vesterbro player runtime: current queue, index,
-  playing flag, transport and podcast state.
+  playing flag, transport and podcast state. Now-playing cards are views of this
+  document. Spotify Connect owns the playback timeline; the kiosk follows
+  `/api/spotify/now-playing` and does not keep a local auto-advance deadline.
 - `ejdersted/player_garden` is the garden player runtime with the same shape,
   independent from Vesterbro.
 - `ejdersted/security_garden` is the garden security/presence state: armed flag,
   presence state, alert flag, camera/model health, timestamps, confidence and
   evidence metadata.
+- `ejdersted/fossibot_garden` is the latest Fossibot snapshot (SoC, solar W,
+  output W, USB/AC, charging). History lives in the `samples` subcollection,
+  one document per 5-minute UTC bucket. The garden backend writes these;
+  browsers must not. Garden AC policy (15 % floor, 25 % resume, kiosk hold)
+  lives on the Pi in `power_state.json`; each SwitchBot press it makes is
+  logged to the `events` subcollection with `source: floor | rule | hold`.
+- `ejdersted/audio_home` and `ejdersted/audio_garden` hold playback handoff
+  events (`events/{id}`). Each hub also keeps a local JSONL at
+  `backend/var/audio.jsonl` and exposes `GET /api/audio/log` for debugging.
+  Browsers must not write these documents.
 
 The legacy `ejdersted/playlists` document is only used as a one-time seed when a
 site-specific player document does not exist yet.

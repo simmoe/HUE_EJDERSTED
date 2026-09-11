@@ -88,6 +88,72 @@ the existing Gemini integration and passes the resulting text through the same
 `/api/spotify/voice` command parser used by typed and home-kiosk voice input.
 The camera stream resumes automatically after recording.
 
+## USB gadget (Mac recovery)
+
+Garden Pi 5 has official `rpi-usb-gadget`. USB-C on the board is the OTG
+port. Plug that into the Mac (data cable). The Pi appears as Ethernet;
+SSH `simmoe@10.12.194.1`. The Mac can also power the board, so this works
+when Fossibot and Alohomora are dead.
+
+Do not use the USB-A ports for this. Leave gadget **on**.
+
+## Pi power (Fossibot USB)
+
+Verified 2026-09-02: the Pi 5 stays up on a Fossibot **USB output** (board
+USB-C). A running Pi is enough load that the F2400 USB 5-minute idle timeout
+does not trip — observed 20+ minutes and counting. Prefer the 100 W USB-C
+port if it is free. Relæ 5 V/GND remains on the Pi header.
+
+The old powerbank/UPS island is optional. USB sleep was the empty-port
+problem, not “USB cannot power a Pi”.
+
+## AC policy (SwitchBot) — floor, hold, resume
+
+Always on for the garden hub; there is no mode switch. After each Fossibot
+poll (`power.py`), top layer wins:
+
+- **floor** SoC ≤ 15 % and AC on → press (AC off). Beats everything and
+  burns a hold-on, so the outlet does not flap at the threshold.
+- **hold** a tap on the kiosk's 230 V card: AC on/off until a wall-clock
+  deadline chosen on the wheel — `1h · 2h · 5h · tomorrow` (tomorrow = next
+  day's solar on-time, 08:00 if solar is off). Persisted in
+  `power_state.json` as `{ "hold": { acOn, until, duration } }`. `auto`
+  drops it.
+- **resume** SoC ≥ 25 % and AC off → press (AC on).
+- 15–25 % → no opinion.
+
+WS `set_power_hold {acOn, duration}` / `clear_power_hold`; REST
+`POST /api/power/hold` with the same body or `{ "clear": true }`. Every press
+the Pi makes lands in Firestore `ejdersted/fossibot_garden/events` with
+`source: floor | rule | hold`.
+
+The night rule (AC off outside the sun window unless someone is home) is
+**not** built: 230 V also feeds the router, so it would cut the Pi's uplink.
+First move the Huawei to 12 V from the Fossibot (USB-C PD trigger cable or a
+DC5521 port), then add the rule.
+
+The finger belongs on the Fossibot **AC** button, never the main power
+switch (that would kill USB and the Pi).
+
+## Garden lights after mains
+
+Lamps on Fossibot 230 V boot **on**. When the **resume rule** pressed within
+the last 3 min and AC comes back, a sweep starts: wait ~20 s, then send a
+generic `OFF` through `light_bus` (retries for 15 min until each lamp is
+online and off). A hold-on from the kiosk or a finger on the Fossibot is
+Simon opening the hut and does not touch the lights.
+
+`light_bus` is the only handler (on/off/dim/colour/white). Flare is the
+Tuya adapter. The bed rail is `protocol: zigbee` (Sonoff dongle on the
+garden Pi, existing IKEA PAN — do not re-form). RODRET stays locally
+bound. A later lamp is another `protocol` in `garden_lights.json`,
+not a second policy.
+
+Gårdlys scenes: `kraftig` / `dæmpet` (warm white) and `fest` (slow
+tequila-sunrise wash). Seng is tap on/off, ±, long-press fade. Toilet
+is a TRADFRI bulb plus motion sensor: the sensor binds locally to the
+bulb; the kiosk only speaks to the bulb.
+
 ## Deploy
 
 ```bash
@@ -165,3 +231,37 @@ client writes. The backend uploads through the Google Cloud Storage API using
 bucket IAM, while evidence links read through the Firebase Storage API. If cloud
 upload fails, evidence is still kept locally and served through
 `/api/security/evidence/{eventId}.jpg`.
+
+## Solar array (installed)
+
+One module, bought as [500W DAH Solar Full Screen Double Glass](https://www.solaroutlet.dk/shop/500w-dah-solar-full-screen-double-glass-pv-module/).
+Family is **DHN-54Z16/DG** (Full Screen listing: **DHN-54Z16/DG/FS-500**). Shop
+page is marketing-only; electrical numbers below are the 500 W row of that
+family's datasheet (STC). Shop thickness is 28 mm; most datasheets print 30 mm.
+
+| | |
+| --- | --- |
+| Pmax | 500 W (+5 % bin) |
+| Vmp / Imp | 33.9 V / 14.75 A |
+| Voc / Isc | 39.9 V / 15.7 A |
+| Voc temp. coeff. | −0.25 %/°C |
+| Cells / bifacial | 108 TOPCon, up to ~80–85 % bifacial |
+| Size / weight | 1962 × 1134 mm, ~26.6 kg |
+| Connectors | MC4 |
+
+Fossibot F2400 PV input (manual): **11.5–50 V, 20 A, 500 W**, XT90. One of these
+modules sits inside that window: Vmp 33.9 V, cold-weather Voc still ~43 V at
+−10 °C. Nameplate is already the station's watt ceiling; BLE showing 40–100 W
+is weather/angle/clip, not a smaller panel.
+
+Do **not** series a second module (Voc ≈ 80 V). Parallel would share voltage
+but Isc ≈ 31 A against a 20 A input, and nameplate 1000 W against a 500 W
+clip. Same-class pairing only if we ever add more — never mix 12 V / 18 V
+classes with this one.
+
+Fossibot samples (SoC, solar W, out W, `acOn`/`usbOn`) are written to Firestore
+`ejdersted/fossibot_garden` plus `samples/{yyyyMMddTHHmm}` every five minutes,
+and immediately when a port or online/charging flag flips. Intended rules for
+p5-diary-ca5f7. Live rules (fetched 2026-08-30) are still the 2022 test-mode
+catch-all until 2027-03-24; the fossibot match uses that same window. Do not
+deploy these rules to p5-firebase-eebc1.

@@ -21,7 +21,8 @@ import wave
 import time
 import subprocess
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -31,14 +32,22 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceBrowser, Zeroconf
 
+import audio_log
 import bo_dlna
 import bo_link
 import sr
 import audio_targets
 import camera_presence
+import fossibot_ble
+import fossibot_log
 import garden_lights
 import hub_config
+import light_bus
+import light_scenes
+import power
+import zigbee_lights
 import solar
+import switchbot_bot
 from hue import HueBridge, start_hue_mdns
 from spotify import Spotify, BEO_A9_IP, BEO_M5_IP
 
@@ -178,12 +187,114 @@ _notify_tasks: dict[str, asyncio.Task] = {}
 
 # ─── Solar charge relay ───────────────────────────────────────────────────────
 SOLAR_STATE_FILE = REPO_ROOT / "solar_state.json"
+POWER_STATE_FILE = REPO_ROOT / "power_state.json"
 solar_ctrl: solar.SolarController | None = None
 solar_status_cache: dict = {}
+power_ctrl: power.PowerPolicy | None = None
 
 
 def _solar_status() -> dict:
     return solar_ctrl.status() if solar_ctrl else {"enabled": False}
+
+
+fossibot_monitor: fossibot_ble.FossibotMonitor | None = None
+fossibot_status_cache: dict = {"enabled": False}
+_fossibot_log_at: float = 0.0
+_fossibot_log_key: tuple | None = None
+_last_ac_on: bool | None = None
+_lights_after_ac_task: asyncio.Task | None = None
+
+
+def _fossibot_status() -> dict:
+    if fossibot_monitor is not None:
+        return fossibot_monitor.status()
+    return {"enabled": False}
+
+
+def _power_status() -> dict:
+    if power_ctrl is None:
+        return {"hold": None}
+    return power_ctrl.status(_fossibot_status())
+
+
+def _hold_until(duration: str) -> float | None:
+    """Wall-clock deadline for a wheel choice. "tomorrow" = when tomorrow's
+    solar window opens (sunrise + offset); 08:00 local if solar is off."""
+    if duration in power.HOLD_DURATIONS:
+        return time.time() + power.HOLD_DURATIONS[duration]
+    if duration != power.HOLD_TOMORROW:
+        return None
+    tz = solar_ctrl.tz if solar_ctrl is not None else ZoneInfo("Europe/Copenhagen")
+    tomorrow = datetime.now(tz).date() + timedelta(days=1)
+    on_dt = solar_ctrl.window(tomorrow)[0] if solar_ctrl is not None else None
+    if on_dt is None:
+        on_dt = datetime.combine(tomorrow, dt_time(8, 0), tzinfo=tz)
+    return on_dt.timestamp()
+
+
+async def _set_power_hold(ac_on: bool, duration: str) -> tuple[bool, str]:
+    if power_ctrl is None:
+        return False, "Kun på haven-hubben"
+    until = _hold_until(duration)
+    if until is None:
+        return False, "duration skal være 1h, 2h, 5h eller tomorrow"
+    power_ctrl.set_hold(ac_on, until=until, duration=duration)
+    await manager.broadcast({"type": "power_status", **_power_status()})
+    await _apply_power_policy(_fossibot_status())
+    return True, ""
+
+
+async def _clear_power_hold() -> None:
+    if power_ctrl is None:
+        return
+    power_ctrl.clear_hold()
+    await manager.broadcast({"type": "power_status", **_power_status()})
+    await _apply_power_policy(_fossibot_status())
+
+
+def _fossibot_broadcast_key(status: dict) -> dict:
+    return {key: value for key, value in status.items() if key != "error"}
+
+
+async def _fossibot_loop() -> None:
+    global fossibot_status_cache, _fossibot_log_at, _fossibot_log_key
+    monitor = fossibot_monitor
+    if monitor is None:
+        return
+    try:
+        log_sec = float(hub_config.fossibot_config().get("logSec") or fossibot_log.DEFAULT_LOG_SEC)
+    except (TypeError, ValueError):
+        log_sec = fossibot_log.DEFAULT_LOG_SEC
+    while True:
+        try:
+            status = await asyncio.to_thread(monitor.poll_once)
+            compare = _fossibot_broadcast_key(status)
+            if compare != fossibot_status_cache:
+                fossibot_status_cache = compare
+                await manager.broadcast({"type": "fossibot_status", **status})
+            now = time.time()
+            if fossibot_log.should_log(
+                status,
+                last_at=_fossibot_log_at,
+                last_key=_fossibot_log_key,
+                now=now,
+                interval_sec=log_sec,
+            ):
+                wrote = await fossibot_log.persist(
+                    status,
+                    firebase_config=_load_firebase_config(),
+                    http_client=_http,
+                )
+                if wrote:
+                    _fossibot_log_at = now
+                    _fossibot_log_key = fossibot_log.event_key(status)
+            await _apply_power_policy(status)
+            _note_ac_edge(status)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[fossibot] poll failed: {exc}")
+        await asyncio.sleep(max(5.0, monitor.poll_sec))
 
 # ─── Hue ───────────────────────────────────────────────────────────────────────
 hue_bridge: HueBridge                    # initialised in lifespan
@@ -209,6 +320,57 @@ def _store_light_state(state: dict) -> None:
         lights_cache = [state if r.get("id") == state.get("id") else r for r in lights_cache]
     else:
         lights_cache = [*lights_cache, state]
+
+
+def _note_ac_edge(status: dict) -> None:
+    global _last_ac_on
+    online = bool(status.get("online"))
+    ac_on = bool(status.get("acOn"))
+    # Only a rule-driven resume (SoC back at 25 %) sweeps the lamps. A hold-on
+    # from the kiosk or a finger on the Fossibot is Simon opening the hut.
+    by_rule = bool(power_ctrl and power_ctrl.pressed_recently(power.SOURCE_RULE))
+    if light_bus.should_force_off_after_ac(
+        by_rule=by_rule,
+        ac_was_on=_last_ac_on,
+        ac_on=ac_on,
+        online=online,
+    ):
+        _start_lights_after_ac()
+    if online:
+        _last_ac_on = ac_on
+
+
+def _start_lights_after_ac() -> None:
+    global _lights_after_ac_task
+    if not hub_config.feature_enabled("lights"):
+        return
+    if _lights_after_ac_task and not _lights_after_ac_task.done():
+        _lights_after_ac_task.cancel()
+    _lights_after_ac_task = asyncio.create_task(_lights_off_after_ac())
+
+
+async def _lights_off_after_ac() -> None:
+    print("[lights] 230 V back by rule — waiting for lamps, then off")
+    await asyncio.sleep(light_bus.AFTER_AC_FIRST_WAIT_S)
+    deadline = time.monotonic() + light_bus.AFTER_AC_GIVE_UP_S
+    while time.monotonic() < deadline:
+        # The Pi itself has no Wi-Fi until the router has booted. A failed Tuya
+        # scan is a retry, not the end of the sweep — Zigbee lamps hang off the
+        # Pi's own coordinator and must go off regardless.
+        try:
+            await asyncio.to_thread(light_bus.refresh_for_apply)
+        except Exception as exc:
+            print(f"[lights] after-ac: LAN not ready ({exc})")
+        states = await asyncio.to_thread(light_bus.apply_all, light_bus.OFF)
+        for state in states:
+            _store_light_state(state)
+        await manager.broadcast({"type": "lights", "lights": lights_cache})
+        if light_bus.all_off_and_online(states):
+            print("[lights] after-ac: all off")
+            return
+        print(f"[lights] after-ac retry ({len(states)} lamps)")
+        await asyncio.sleep(light_bus.AFTER_AC_RETRY_S)
+    print("[lights] after-ac gave up — lamp(s) never came online")
 
 
 # ─── Spotify ───────────────────────────────────────────────────────────────
@@ -624,6 +786,7 @@ class BeoListener:
 async def lifespan(app: FastAPI):
     global hue_bridge
     loop = asyncio.get_event_loop()
+    audio_log.configure(BASE_DIR / "var" / "audio.jsonl", site=hub_config.site())
 
     # Force Android kiosk settings on startup (reuses /api/kiosk logic)
     if hub_config.feature_enabled("adbKiosk"):
@@ -633,6 +796,20 @@ async def lifespan(app: FastAPI):
             # Trigger full kiosk lockdown via the endpoint handler
             await trigger_kiosk()
 
+    global fossibot_monitor
+    if hub_config.feature_enabled("fossibot"):
+        cfg = hub_config.fossibot_config()
+        address = str(cfg.get("address") or "").strip()
+        if address:
+            try:
+                poll_sec = float(cfg.get("pollSec") or 20)
+            except (TypeError, ValueError):
+                poll_sec = 20.0
+            fossibot_monitor = fossibot_ble.FossibotMonitor(address, poll_sec=poll_sec)
+            print(f"[fossibot] monitor ready ({address}, {poll_sec:.0f}s)")
+        else:
+            print("[fossibot] enabled but no address configured")
+
     global solar_ctrl
     if hub_config.feature_enabled("solar"):
         try:
@@ -641,6 +818,11 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             print(f"[solar] failed to start: {exc}")
             solar_ctrl = None
+
+    global power_ctrl
+    if hub_config.site() == "garden":
+        power_ctrl = power.PowerPolicy(POWER_STATE_FILE)
+        print(f"[power] policy ready (hold={power_ctrl.hold})")
 
     hue_bridge = HueBridge()
     global lights_cache
@@ -653,7 +835,13 @@ async def lifespan(app: FastAPI):
             print(f"[lights] {len(lights_cache)} configured")
         except Exception as exc:
             print(f"[lights] boot scan failed: {exc}")
+        try:
+            await zigbee_lights.start()
+            lights_cache = await asyncio.to_thread(garden_lights.snapshot)
+        except Exception as exc:
+            print(f"[zigbee] {exc}")
     poll_task = asyncio.create_task(poll_loop())
+    fossibot_task = asyncio.create_task(_fossibot_loop()) if fossibot_monitor else None
 
     zc = Zeroconf()
     if hub_config.bo_speakers_enabled():
@@ -669,6 +857,12 @@ async def lifespan(app: FastAPI):
     yield
 
     poll_task.cancel()
+    if fossibot_task is not None:
+        fossibot_task.cancel()
+    if _lights_after_ac_task is not None:
+        _lights_after_ac_task.cancel()
+    light_scenes.stop_all()
+    await zigbee_lights.stop()
     for t in _notify_tasks.values():
         t.cancel()
     if solar_ctrl is not None:
@@ -701,6 +895,8 @@ async def websocket_endpoint(ws: WebSocket):
             "now_playing": now_playing_cache,
             "config": hub_config.public_config(),
             "solar": _solar_status(),
+            "fossibot": _fossibot_status(),
+            "power": _power_status(),
         }))
 
         async for text in ws.iter_text():
@@ -755,6 +951,14 @@ async def websocket_endpoint(ws: WebSocket):
                 status = solar_ctrl.status()
                 solar_status_cache = {k: v for k, v in status.items() if k != "now"}
                 await manager.broadcast({"type": "solar_status", **status})
+            elif msg.get("type") == "set_power_hold":
+                if power_ctrl is None:
+                    continue
+                ok, error = await _set_power_hold(bool(msg.get("acOn")), str(msg.get("duration") or ""))
+                if not ok:
+                    print(f"[power] hold rejected: {error}")
+            elif msg.get("type") == "clear_power_hold":
+                await _clear_power_hold()
             elif msg.get("type") == "set_hue_brightness":
                 if not hub_config.feature_enabled("hue"):
                     continue
@@ -785,7 +989,9 @@ async def websocket_endpoint(ws: WebSocket):
                 dev = _garden_light_dev(light_id)
                 if not dev:
                     continue
-                state = await asyncio.to_thread(garden_lights.set_brightness, dev, brightness)
+                state = await asyncio.to_thread(
+                    light_bus.apply, dev, light_bus.LightCommand(on=brightness > 0, brightness=brightness)
+                )
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
             elif msg.get("type") == "set_light_color":
@@ -802,7 +1008,11 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 current = next((r for r in lights_cache if r.get("id") == light_id), None)
                 brightness = max(1, int((current or {}).get("brightness") or 80))
-                state = await asyncio.to_thread(garden_lights.set_color, dev, hue, sat, brightness)
+                state = await asyncio.to_thread(
+                    light_bus.apply,
+                    dev,
+                    light_bus.LightCommand(on=True, hue=hue, sat=sat, brightness=brightness),
+                )
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
             elif msg.get("type") == "set_light_white":
@@ -813,8 +1023,69 @@ async def websocket_endpoint(ws: WebSocket):
                 if not dev:
                     continue
                 current = next((r for r in lights_cache if r.get("id") == light_id), None)
-                brightness = max(1, int((current or {}).get("brightness") or 80))
-                state = await asyncio.to_thread(garden_lights.set_white, dev, brightness)
+                try:
+                    brightness = max(1, min(100, int(msg["brightness"])))
+                except (KeyError, ValueError, TypeError):
+                    brightness = max(1, int((current or {}).get("brightness") or 80))
+                state = await asyncio.to_thread(
+                    light_bus.apply,
+                    dev,
+                    light_bus.LightCommand(on=True, white=True, brightness=brightness),
+                )
+                state["scene"] = "white"
+                _store_light_state(state)
+                await manager.broadcast({"type": "lights", "lights": lights_cache})
+            elif msg.get("type") == "set_light_scene":
+                if not hub_config.feature_enabled("lights"):
+                    continue
+                light_id = str(msg.get("light_id", ""))
+                scene = str(msg.get("scene") or "").strip().lower()
+                dev = _garden_light_dev(light_id)
+                if not dev:
+                    continue
+                if scene == "fest":
+                    async def _fest_apply(device, command):
+                        return await asyncio.to_thread(
+                            light_bus.apply, device, command, stop_scene=False
+                        )
+
+                    async def _fest_state(state):
+                        _store_light_state(state)
+                        await manager.broadcast({"type": "lights", "lights": lights_cache})
+
+                    await light_scenes.start_fest(dev, _fest_apply, _fest_state)
+                    continue
+                command = light_scenes.command_for(scene)
+                if command is None:
+                    continue
+                state = await asyncio.to_thread(light_bus.apply, dev, command)
+                state["scene"] = scene
+                _store_light_state(state)
+                await manager.broadcast({"type": "lights", "lights": lights_cache})
+            elif msg.get("type") == "set_light_fade":
+                if not hub_config.feature_enabled("lights"):
+                    continue
+                light_id = str(msg.get("light_id", ""))
+                dev = _garden_light_dev(light_id)
+                if not dev:
+                    continue
+                try:
+                    brightness = max(0, min(100, int(msg["brightness"])))
+                except (KeyError, ValueError, TypeError):
+                    continue
+                try:
+                    transition_s = max(0.0, min(12.0, float(msg.get("transition_s") or 4)))
+                except (TypeError, ValueError):
+                    transition_s = 4.0
+                state = await asyncio.to_thread(
+                    light_bus.apply,
+                    dev,
+                    light_bus.LightCommand(
+                        on=brightness > 0,
+                        brightness=brightness,
+                        transition_s=transition_s,
+                    ),
+                )
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
             elif msg.get("type") == "connect_light":
@@ -880,6 +1151,107 @@ async def set_audio_target_volume(target_id: str, data: dict = Body(default_fact
 @app.get("/api/solar/status")
 async def get_solar_status():
     return _solar_status()
+
+
+@app.get("/api/fossibot/status")
+async def get_fossibot_status():
+    return _fossibot_status()
+
+
+_switchbot_lock = asyncio.Lock()
+_switchbot_last: dict = {"ok": False, "action": "", "error": ""}
+
+
+async def _switchbot_run(action: str) -> tuple[bool, str]:
+    """Send a SwitchBot command. Returns (ok, error)."""
+    global _switchbot_last
+    if action not in switchbot_bot.COMMANDS:
+        return False, "Ukendt kommando"
+    address = hub_config.switchbot_address()
+    if not address:
+        return False, "SwitchBot er ikke konfigureret"
+    if _switchbot_lock.locked():
+        return False, "SwitchBot er optaget"
+    async with _switchbot_lock:
+        try:
+            await switchbot_bot.send_command(address, action)
+        except Exception as exc:
+            _switchbot_last = {"ok": False, "action": action, "error": str(exc)}
+            return False, "Kunne ikke nå SwitchBot"
+    _switchbot_last = {"ok": True, "action": action, "error": ""}
+    return True, ""
+
+
+async def _apply_power_policy(status: dict) -> None:
+    if power_ctrl is None or not hub_config.switchbot_address():
+        return
+    decision = power_ctrl.decide(status)
+    if decision is None:
+        return
+    want_ac_on = decision.ac_on
+    ok, error = await _switchbot_run("press")
+    if ok:
+        power_ctrl.note_press(decision.source)
+        print(f"[power] {decision.source} SwitchBot press → AC {'on' if want_ac_on else 'off'}")
+    else:
+        print(f"[power] {decision.source} press skipped: {error}")
+    # Firestore row so a dark hut can be explained afterwards
+    # (ejdersted/fossibot_garden/events). Failure to log must not stop the policy.
+    try:
+        await fossibot_log.persist_policy_event(
+            status,
+            want_ac_on=want_ac_on,
+            source=decision.source,
+            threshold_percent=decision.threshold,
+            pressed=ok,
+            error=error,
+            firebase_config=_load_firebase_config(),
+            http_client=_http,
+        )
+    except Exception as exc:
+        print(f"[power] event log failed: {exc}")
+    await manager.broadcast({"type": "power_status", **_power_status()})
+
+
+@app.get("/api/switchbot/status")
+async def get_switchbot_status():
+    address = hub_config.switchbot_address()
+    return {
+        "configured": bool(address),
+        **_switchbot_last,
+    }
+
+
+@app.post("/api/switchbot/{action}")
+async def set_switchbot_action(action: str):
+    ok, error = await _switchbot_run(action)
+    if not ok:
+        code = 400 if error == "Ukendt kommando" else 409 if error == "SwitchBot er optaget" else 503 if "ikke konfigureret" in error else 502
+        return JSONResponse({"ok": False, "error": error}, status_code=code)
+    return {"ok": True, "action": action}
+
+
+@app.get("/api/power/status")
+async def get_power_status():
+    return _power_status()
+
+
+@app.post("/api/power/hold")
+async def set_power_hold(data: dict = Body(default_factory=dict)):
+    """Body {acOn: bool, duration: '1h'|'2h'|'5h'|'tomorrow'} sets a hold;
+    {clear: true} drops it and lets the rules take over again."""
+    if power_ctrl is None:
+        return JSONResponse({"ok": False, "error": "Kun på haven-hubben"}, status_code=404)
+    if data.get("clear") is True:
+        await _clear_power_hold()
+        return {"ok": True, **_power_status()}
+    ac_on = data.get("acOn")
+    if not isinstance(ac_on, bool):
+        return JSONResponse({"ok": False, "error": "acOn skal være true eller false"}, status_code=400)
+    ok, error = await _set_power_hold(ac_on, str(data.get("duration") or ""))
+    if not ok:
+        return JSONResponse({"ok": False, "error": error}, status_code=400)
+    return {"ok": True, **_power_status()}
 
 
 @app.post("/api/solar/mode")
@@ -1001,6 +1373,33 @@ async def connect_lights(request: Request):
     await manager.broadcast({"type": "lights", "lights": lights_cache})
     return {"ok": True, "light": state, "lights": lights_cache}
 
+
+@app.post("/api/zigbee/permit")
+async def zigbee_permit(request: Request):
+    if not hub_config.feature_enabled("lights"):
+        return JSONResponse({"error": "Lys er deaktiveret for denne profil"}, status_code=404)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    try:
+        seconds = max(30, min(300, int((body or {}).get("seconds") or 180)))
+    except (TypeError, ValueError):
+        seconds = 180
+    try:
+        await zigbee_lights.permit(seconds)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    return {"ok": True, "seconds": seconds}
+
+
+@app.get("/api/zigbee/joins")
+async def zigbee_joins():
+    if not hub_config.feature_enabled("lights"):
+        return JSONResponse({"error": "Lys er deaktiveret for denne profil"}, status_code=404)
+    return {"ok": True, "joins": zigbee_lights.recent_joins()}
+
 # ─── ADB constants (kiosk: Samsung Galaxy A12, se KIOSK.md) ───────────────────
 KIOSK_PHONE_IP = hub_config.kiosk_phone_ip()
 ADB_SERIAL = hub_config.adb_serial()
@@ -1048,6 +1447,29 @@ async def set_brightness(level: int):
     )
     await proc.wait()
     return {"ok": True, "brightness": level}
+
+
+@app.post("/api/kiosk/wake")
+async def wake_kiosk():
+    """Re-hide Chrome/SystemUI after the idle clock. Keep this short — the full
+    /api/kiosk script takes too long and can fight a just-granted fullscreen."""
+    if not hub_config.feature_enabled("adbKiosk"):
+        return {"ok": False, "error": "adbKiosk disabled"}
+    serial = await _get_adb_serial()
+    if not serial:
+        return {"ok": False, "error": "no ADB device"}
+    cmds = [
+        f"adb -s {serial} shell settings put global policy_control immersive.full=com.android.chrome,{MULTIAPP_PACKAGE}",
+        f"adb -s {serial} shell cmd statusbar collapse",
+        f"adb -s {serial} shell settings put system screen_brightness 255",
+    ]
+    for cmd in cmds:
+        proc = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
+        await proc.wait()
+    return {"ok": True}
+
 
 @app.post("/api/kiosk")
 async def trigger_kiosk():
@@ -1128,6 +1550,25 @@ def _load_firebase_config() -> dict:
     return fb if isinstance(fb, dict) else {}
 
 
+def _audio(event: str, **fields):
+    row = audio_log.log(event, **fields)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return row
+
+    async def _mirror() -> None:
+        await audio_log.persist_remote(
+            row,
+            firebase_config=_load_firebase_config(),
+            http_client=_http,
+            site=hub_config.site(),
+        )
+
+    loop.create_task(_mirror())
+    return row
+
+
 @app.get("/api/config/firebase")
 async def hub_firebase_config():
     """Returnerer Firebase web client config til frontend (tom objekt hvis fil mangler)."""
@@ -1205,6 +1646,7 @@ async def spotify_pause():
     if not hub_config.feature_enabled("spotify"):
         return {"ok": False, "error": "Spotify disabled"}
     ok = await spotify.pause()
+    _audio("spotify.pause", ok=ok)
     if ok:
         _allow_garden_idle_keepalive_pulses()
         _mark_garden_audio_active()
@@ -1238,8 +1680,21 @@ async def spotify_play_uris(data: dict = Body(default_factory=dict)):
     position_ms = int(data.get("position_ms") or 0)
     detail = await _prepare_garden_spotify_audio()
     if detail:
+        _audio("spotify.play-uris", ok=False, n=len(uris), offset=offset, detail=detail)
         return {"ok": False, "detail": detail}
+    if hub_config.site() != "garden":
+        dlna_ok, dlna_detail = await bo_dlna.stop()
+        _audio("dlna.stop", ok=dlna_ok, reason="spotify.play-uris", detail=dlna_detail)
     ok, detail, duration_ms = await spotify.play_uris_queue(uris, offset, position_ms)
+    first = next((u for u in uris if isinstance(u, str) and u.startswith("spotify:track:")), "")
+    _audio(
+        "spotify.play-uris",
+        ok=ok,
+        n=len(uris),
+        offset=offset,
+        uri=first,
+        detail=detail,
+    )
     resp: dict = {"ok": ok}
     if ok and duration_ms:
         remaining_ms = max(0, duration_ms - position_ms)
@@ -1577,6 +2032,7 @@ async def _prepare_garden_spotify_audio() -> str:
     try:
         await _garden_bluealsa_device()
     except RuntimeError as exc:
+        _audio("spotify.prepare", ok=False, detail=str(exc))
         return str(exc)
     return ""
 
@@ -2064,12 +2520,14 @@ async def play_latest_podcast(data: dict = Body(default_factory=dict)):
         ok, detail, ep = await _play_latest_sr(sh)
         if ok:
             _active_podcast_engine = "garden_sr" if hub_config.site() == "garden" else "dlna"
+        _audio("podcast.play", source="sr", ok=ok, title=(ep or {}).get("name"), detail=detail)
         return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
     if sh["source"] == "rss":
         ok, detail, ep = await _play_latest_rss(sh)
         if ok:
             _active_podcast_engine = "rss"
+        _audio("podcast.play", source="rss", ok=ok, title=(ep or {}).get("name"), detail=detail)
         return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
     return JSONResponse(
@@ -2220,7 +2678,9 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
             ok, detail, ep = remapped
             if ok:
                 _active_podcast_engine = "rss"
+            _audio("podcast.play", source="rss", ok=ok, title=(ep or {}).get("name"), detail=detail)
             return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
+        _audio("podcast.play", source="rss", ok=False, detail="ingen RSS-match for spotify:episode URI")
         return {"ok": False, "detail": "ingen RSS-match for spotify:episode URI", "player": _public_podcast_state()}
 
     if uri.startswith("sr:episode:"):
@@ -2258,6 +2718,7 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
                 durationMs=ep.get("duration_ms") or 0,
                 error="",
             )
+        _audio("podcast.play", source="sr", ok=ok, title=title, detail=detail)
         return {"ok": ok, "detail": detail}
 
     if uri.startswith("rss:"):
@@ -2276,6 +2737,7 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
         ok, detail, ep = await _play_rss_index(sh, queue_idx)
         if ok:
             _active_podcast_engine = "rss"
+        _audio("podcast.play", source="rss", ok=ok, title=(ep or {}).get("name"), detail=detail)
         return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
     return JSONResponse(
@@ -2445,12 +2907,20 @@ async def podcast_player_previous():
 @app.post("/api/podcasts/player/clear")
 async def podcast_player_clear():
     state = _public_podcast_state()
+    _audio(
+        "podcast.clear",
+        source=state.get("source"),
+        title=state.get("episodeTitle"),
+        playing=state.get("playing"),
+    )
     await _stop_rss_player()
     await _stop_garden_sr_player()
     if hub_config.site() != "garden" and state.get("source") in ("rss", "sr"):
-        await bo_dlna.stop()
+        dlna_ok, dlna_detail = await bo_dlna.stop()
+        _audio("dlna.stop", ok=dlna_ok, detail=dlna_detail)
     elif state.get("source") == "spotify":
         await spotify.pause()
+        _audio("spotify.pause", reason="podcast.clear")
     _allow_garden_idle_keepalive_pulses()
     _set_podcast_state(
         active=False,
@@ -2468,6 +2938,11 @@ async def podcast_player_clear():
         error="",
     )
     return {"ok": True, "player": _public_podcast_state()}
+
+
+@app.get("/api/audio/log")
+async def audio_event_log(limit: int = 40):
+    return {"ok": True, "site": hub_config.site(), "events": audio_log.recent(limit)}
 
 
 @app.get("/api/spotify/token")

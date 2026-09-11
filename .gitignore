@@ -14,6 +14,11 @@ backend/var/
 # OS
 .DS_Store
 
+# Runtime state on the Pi (not credentials, but machine-local)
+solar_state.json
+power_state.json
+zigbee.db
+
 # Local config (contains credentials)
 hue_config.json
 spotify_config.json

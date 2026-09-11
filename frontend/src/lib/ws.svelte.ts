@@ -33,6 +33,8 @@ export interface GardenLight {
   online: boolean;
   lights: number;
   error?: string;
+  protocol?: string;
+  scene?: string;
   has_color?: boolean;
   mode?: string;
   hue?: number;
@@ -80,6 +82,34 @@ export interface SolarStatus {
   now?: string;
 }
 
+export interface FossibotStatus {
+  enabled: boolean;
+  online?: boolean;
+  socPercent?: number | null;
+  solarWatts?: number | null;
+  outWatts?: number | null;
+  usbOn?: boolean;
+  acOn?: boolean;
+  charging?: boolean;
+  error?: string | null;
+}
+
+export type HoldDuration = '1h' | '2h' | '5h' | 'tomorrow';
+
+export interface PowerHold {
+  acOn: boolean;
+  until: number; // wall clock, seconds since epoch
+  duration: HoldDuration | string;
+}
+
+export interface PowerStatus {
+  hold: PowerHold | null;
+  onPercent?: number;
+  offPercent?: number;
+  wantAc?: boolean | null;
+  wantSource?: 'floor' | 'rule' | 'hold' | null;
+}
+
 export interface HubConfig {
   site: 'home' | 'garden' | string;
   publicUrl: string;
@@ -93,6 +123,7 @@ export interface HubConfig {
     adbKiosk: boolean;
     solar: boolean;
     lights?: boolean;
+    fossibot?: boolean;
   };
   camera: {
     mode: 'publisher' | 'viewer';
@@ -100,6 +131,9 @@ export interface HubConfig {
   audio?: {
     defaultTarget: string;
     targets: AudioTargetSummary[];
+  };
+  switchbot?: {
+    configured: boolean;
   };
 }
 
@@ -116,6 +150,7 @@ export const defaultHubConfig: HubConfig = {
     adbKiosk: true,
     solar: false,
     lights: false,
+    fossibot: false,
   },
   camera: {
     mode: 'viewer',
@@ -124,11 +159,16 @@ export const defaultHubConfig: HubConfig = {
     defaultTarget: '',
     targets: [],
   },
+  switchbot: {
+    configured: false,
+  },
 };
 
 type ServerMsg =
-  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus }
+  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus; fossibot?: FossibotStatus; power?: PowerStatus }
   | ({ type: 'solar_status' } & SolarStatus)
+  | ({ type: 'fossibot_status' } & FossibotStatus)
+  | ({ type: 'power_status' } & PowerStatus)
   | { type: 'device_added'; device: Device }
   | { type: 'device_removed'; device_id: string }
   | { type: 'volume_update'; device_id: string; level: number; online: boolean }
@@ -170,6 +210,8 @@ class WSStore {
   nowPlaying = $state<Record<string, NowPlaying>>({});
   config = $state<HubConfig>(defaultHubConfig);
   solar = $state<SolarStatus>({ enabled: false });
+  fossibot = $state<FossibotStatus>({ enabled: false });
+  power = $state<PowerStatus>({ hold: null });
   connected = $state(false);
 
   private ws: WebSocket | null = null;
@@ -308,10 +350,22 @@ class WSStore {
         this.nowPlaying = msg.now_playing ?? {};
         this.config = msg.config ?? defaultHubConfig;
         if (msg.solar) this.solar = msg.solar;
+        if (msg.fossibot) this.fossibot = msg.fossibot;
+        if (msg.power) this.power = msg.power;
         break;
       case 'solar_status': {
         const { type, ...rest } = msg;
         this.solar = rest as SolarStatus;
+        break;
+      }
+      case 'fossibot_status': {
+        const { type, ...rest } = msg;
+        this.fossibot = rest as FossibotStatus;
+        break;
+      }
+      case 'power_status': {
+        const { type, ...rest } = msg;
+        this.power = rest as PowerStatus;
         break;
       }
       case 'device_added':
@@ -388,6 +442,18 @@ class WSStore {
     this.ws?.send(JSON.stringify({ type: 'set_solar_mode', mode }));
   }
 
+  /** A tap on the 230 V card: hold the outlet on/off until the wheel choice runs out.
+   *  The backend resolves `until` (tomorrow = next solar on-time) and presses. */
+  setPowerHold(acOn: boolean, duration: HoldDuration) {
+    this.ws?.send(JSON.stringify({ type: 'set_power_hold', acOn, duration }));
+  }
+
+  /** Back to auto: drop the hold, rules take over on the next poll. */
+  clearPowerHold() {
+    this.power = { ...this.power, hold: null };
+    this.ws?.send(JSON.stringify({ type: 'clear_power_hold' }));
+  }
+
   setHueBrightness(roomId: string, brightness: number) {
     // Optimistic update
     this.hueRooms = this.hueRooms.map((r) =>
@@ -438,11 +504,49 @@ class WSStore {
     );
   }
 
-  setLightWhite(lightId: string) {
+  setLightWhite(lightId: string, brightness?: number) {
     this.lights = this.lights.map((l) =>
-      l.id === lightId ? { ...l, mode: 'white', on: true, any_on: true } : l
+      l.id === lightId
+        ? {
+            ...l,
+            mode: 'white',
+            on: true,
+            any_on: true,
+            brightness: brightness ?? l.brightness,
+            scene: 'white',
+          }
+        : l
     );
-    this.ws?.send(JSON.stringify({ type: 'set_light_white', light_id: lightId }));
+    this.ws?.send(
+      JSON.stringify({
+        type: 'set_light_white',
+        light_id: lightId,
+        ...(brightness != null ? { brightness } : {}),
+      })
+    );
+  }
+
+  setLightScene(lightId: string, scene: string) {
+    this.lights = this.lights.map((l) =>
+      l.id === lightId ? { ...l, scene, on: scene !== 'off', any_on: scene !== 'off' } : l
+    );
+    this.ws?.send(JSON.stringify({ type: 'set_light_scene', light_id: lightId, scene }));
+  }
+
+  setLightFade(lightId: string, brightness: number, transitionS = 4) {
+    this.lights = this.lights.map((l) =>
+      l.id === lightId
+        ? { ...l, brightness, on: brightness > 0, any_on: brightness > 0 }
+        : l
+    );
+    this.ws?.send(
+      JSON.stringify({
+        type: 'set_light_fade',
+        light_id: lightId,
+        brightness,
+        transition_s: transitionS,
+      })
+    );
   }
 
   async connectLight(lightId: string): Promise<GardenLight | null> {

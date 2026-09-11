@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Stemme → hub returnerer kun kø-metadata; afspilning styres på +page.
+   * Stemme skriver player-dokumentet og skifter kortet. Play er et tryk.
    */
   import { onDestroy } from 'svelte';
   import { showFeedback } from '$lib/feedback.svelte';
@@ -49,21 +49,24 @@
         return;
       }
       const data = (await r.json()) as Record<string, unknown>;
+      if (data.ok === false) {
+        const query = typeof data.query === 'string' ? data.query.trim() : '';
+        const detail = String(data.error || (query ? `Fandt ikke ${query}` : 'Fandt ikke noget')).trim();
+        showFeedback(detail, { kind: 'error', duration: 7000 });
+        return;
+      }
       const handled = onvoice?.(data);
-      if (data.ok === false && data.error) {
-        showFeedback(String(data.error), { kind: 'error', duration: 7000 });
-      } else if (data.action === 'pause') {
+      if (data.action === 'pause') {
         showFeedback(data.ok ? 'pause' : 'pause fejlede', { kind: data.ok ? 'info' : 'error' });
       } else if (data.action === 'local_nav') {
         if (handled?.error) showFeedback(handled.error, { kind: 'error' });
       } else if (data.action === 'use_play_button') {
         showFeedback('Tryk play');
       } else if (data.action === 'enqueue' || data.action === 'enqueue_queue') {
-        showFeedback(handled?.message || 'Tilføjet til kø', { kind: 'success' });
-      } else if (data.name && typeof data.name === 'string') {
-        showFeedback(data.name);
-      } else if (!data.ok && data.action === 'search') {
-        showFeedback('ikke fundet', { kind: 'error', duration: 7000 });
+        showFeedback(handled?.message || handled?.error || 'Fandt ikke noget', {
+          kind: handled?.handled ? 'success' : 'error',
+          duration: handled?.handled ? 4000 : 7000,
+        });
       } else if (handled?.error) {
         showFeedback(handled.error, { kind: 'error', duration: 7000 });
       } else if (!handled?.handled) {

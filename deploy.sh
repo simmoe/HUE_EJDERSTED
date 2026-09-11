@@ -70,6 +70,9 @@ if [[ "$HUB_SITE" == "garden" ]]; then
   HUB_FEATURE_PLAYLISTS="${HUB_FEATURE_PLAYLISTS:-true}"
   HUB_FEATURE_ADBKIOSK="${HUB_FEATURE_ADBKIOSK:-true}"
   HUB_FEATURE_LIGHTS="${HUB_FEATURE_LIGHTS:-true}"
+  HUB_FEATURE_SOLAR="${HUB_FEATURE_SOLAR:-true}"
+  HUB_FEATURE_FOSSIBOT="${HUB_FEATURE_FOSSIBOT:-true}"
+  HUB_FOSSIBOT_ADDRESS="${HUB_FOSSIBOT_ADDRESS:-F0:9E:9E:A5:D2:E6}"
 elif [[ "${HUB_FEATURE_CAMERA:-true}" == "true" && -z "${HUB_GARDEN_HUB_URL:-}" ]]; then
   echo "Refusing home deploy: HUB_GARDEN_HUB_URL is required for the camera viewer" >&2
   exit 2
@@ -174,6 +177,8 @@ if [[ "$HUB_SITE" == "garden" ]]; then
   ssh_run "if ! command -v ffmpeg >/dev/null; then $SUDO apt-get update && $SUDO apt-get install -y ffmpeg; fi"
   echo "→ Installing garden light control (tinytuya)..."
   ssh_run "if [[ -x '$PI_REPO_DIR/.venv/bin/pip' ]]; then '$PI_REPO_DIR/.venv/bin/pip' install -q 'tinytuya>=1.13'; else python3 -m pip install -q --user 'tinytuya>=1.13'; fi"
+  echo "→ Installing Fossibot BLE client (bleak)..."
+  ssh_run "if [[ -x '$PI_REPO_DIR/.venv/bin/pip' ]]; then '$PI_REPO_DIR/.venv/bin/pip' install -q 'bleak>=0.22'; else python3 -m pip install -q --user 'bleak>=0.22'; fi"
   echo "→ Refreshing Tailscale/Let's Encrypt TLS certificate..."
   ssh_run "command -v tailscale >/dev/null && [[ -x '$PI_REPO_DIR/scripts/provision-tls-cert.sh' ]] && '$PI_REPO_DIR/scripts/provision-tls-cert.sh'"
   if [[ -z "${HUB_PUBLIC_URL:-}" ]]; then
@@ -207,6 +212,13 @@ RUNTIME_ENV=$(mktemp)
   [[ -n "${HUB_FEATURE_PLAYLISTS:-}" ]] && echo "HUB_FEATURE_PLAYLISTS=$HUB_FEATURE_PLAYLISTS"
   [[ -n "${HUB_FEATURE_ADBKIOSK:-}" ]] && echo "HUB_FEATURE_ADBKIOSK=$HUB_FEATURE_ADBKIOSK"
   [[ -n "${HUB_FEATURE_LIGHTS:-}" ]] && echo "HUB_FEATURE_LIGHTS=$HUB_FEATURE_LIGHTS"
+  [[ -n "${HUB_FEATURE_SOLAR:-}" ]] && echo "HUB_FEATURE_SOLAR=$HUB_FEATURE_SOLAR"
+  [[ -n "${HUB_FEATURE_FOSSIBOT:-}" ]] && echo "HUB_FEATURE_FOSSIBOT=$HUB_FEATURE_FOSSIBOT"
+  [[ -n "${HUB_FOSSIBOT_ADDRESS:-}" ]] && echo "HUB_FOSSIBOT_ADDRESS=$HUB_FOSSIBOT_ADDRESS"
+  [[ -n "${HUB_FOSSIBOT_POLL_SEC:-}" ]] && echo "HUB_FOSSIBOT_POLL_SEC=$HUB_FOSSIBOT_POLL_SEC"
+  [[ -n "${HUB_FOSSIBOT_LOG_SEC:-}" ]] && echo "HUB_FOSSIBOT_LOG_SEC=$HUB_FOSSIBOT_LOG_SEC"
+  # The SwitchBot finger on the Fossibot AC button; without it the power policy is inert.
+  [[ -n "${HUB_SWITCHBOT_ADDRESS:-}" ]] && echo "HUB_SWITCHBOT_ADDRESS=$HUB_SWITCHBOT_ADDRESS"
   [[ -n "${HUB_KIOSK_PHONE_IP:-}" ]] && echo "HUB_KIOSK_PHONE_IP=$HUB_KIOSK_PHONE_IP"
   [[ -n "${HUB_KIOSK_ADB_SERIAL:-${KIOSK_ADB_SERIAL:-}}" ]] && echo "HUB_KIOSK_ADB_SERIAL=${HUB_KIOSK_ADB_SERIAL:-$KIOSK_ADB_SERIAL}"
   [[ -n "${HUB_KIOSK_MULTIAPP_PACKAGE:-}" ]] && echo "HUB_KIOSK_MULTIAPP_PACKAGE=$HUB_KIOSK_MULTIAPP_PACKAGE"

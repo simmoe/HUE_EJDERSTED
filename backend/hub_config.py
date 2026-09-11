@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "adbKiosk": True,
         "solar": False,
         "lights": False,
+        "fossibot": False,
     },
     "kiosk": {
         "phoneIp": "192.168.86.15",
@@ -55,6 +56,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "sunriseOffsetMin": 30,
         "sunsetOffsetMin": 90,
         "tz": "Europe/Copenhagen",
+    },
+    "fossibot": {
+        "address": "",
+        "pollSec": 20,
+        "logSec": 300,
+    },
+    "switchbot": {
+        "address": "",
     },
 }
 
@@ -104,7 +113,7 @@ def _apply_env_overrides() -> None:
         CONFIG["publicUrl"] = public_url
 
     features = CONFIG.setdefault("features", {})
-    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk", "solar", "lights"):
+    for feature in ("camera", "audio", "hue", "spotify", "podcasts", "playlists", "adbKiosk", "solar", "lights", "fossibot"):
         value = _bool_env(f"HUB_FEATURE_{feature.upper()}")
         if value is not None:
             features[feature] = value
@@ -134,6 +143,18 @@ def _apply_env_overrides() -> None:
         camera["publisherHosts"] = [
             host.strip() for host in publisher_hosts.split(",") if host.strip()
         ]
+
+    fossibot = CONFIG.setdefault("fossibot", {})
+    if address := os.environ.get("HUB_FOSSIBOT_ADDRESS"):
+        fossibot["address"] = address.strip()
+    if poll := os.environ.get("HUB_FOSSIBOT_POLL_SEC"):
+        fossibot["pollSec"] = int(poll)
+    if log_sec := os.environ.get("HUB_FOSSIBOT_LOG_SEC"):
+        fossibot["logSec"] = int(log_sec)
+
+    switchbot = CONFIG.setdefault("switchbot", {})
+    if bot_address := os.environ.get("HUB_SWITCHBOT_ADDRESS"):
+        switchbot["address"] = bot_address.strip()
 
 
 _apply_env_overrides()
@@ -285,6 +306,19 @@ def solar_config() -> dict[str, Any]:
     return solar if isinstance(solar, dict) else {}
 
 
+def fossibot_config() -> dict[str, Any]:
+    """Read-only Fossibot BLE poll (address + interval)."""
+    fossibot = CONFIG.get("fossibot", {})
+    return fossibot if isinstance(fossibot, dict) else {}
+
+
+def switchbot_address() -> str:
+    switchbot = CONFIG.get("switchbot", {})
+    if isinstance(switchbot, dict):
+        return str(switchbot.get("address") or "").strip()
+    return ""
+
+
 def public_config() -> dict[str, Any]:
     """Configuration safe for the browser."""
     targets = [
@@ -306,5 +340,8 @@ def public_config() -> dict[str, Any]:
         "audio": {
             "defaultTarget": default_audio_target(),
             "targets": targets,
+        },
+        "switchbot": {
+            "configured": bool(switchbot_address()),
         },
     }
