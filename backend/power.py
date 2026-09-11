@@ -4,12 +4,16 @@ Solar still follows its own sun window. This module only decides whether the
 Fossibot AC outlet should be on. It is always active on the garden hub — there
 is no "autonomous" flag any more. Three layers, top wins:
 
-  floor   SoC <= 15 %  → AC off. Beats everything, and burns a hold-on so the
+  floor   SoC <= 45 %  → AC off. Beats everything, and burns a hold-on so the
                           outlet does not flap at the threshold.
   hold    a tap on the kiosk: AC on/off until a wall-clock deadline
                           (1 t · 2 t · 5 t · i morgen). Beats the rules below.
-  resume  SoC >= 25 %  → AC on.
-  band    15–25 %      → no opinion.
+  resume  SoC >= 55 %  → AC on.
+  band    45–55 %      → no opinion.
+
+The band sits high on purpose (Sep 2026): the hut should keep half a battery
+in reserve through grey days, and 230 V only carries lights and the Flare once
+the router and Pi are on the DC group.
 
 The night rule (AC off outside the sun window unless someone is home) waits
 until the router is off the inverter; otherwise we cut our own uplink.
@@ -27,8 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ON_PERCENT = 25.0
-OFF_PERCENT = 15.0
+ON_PERCENT = 55.0
+OFF_PERCENT = 45.0
 PRESS_COOLDOWN_S = 90.0
 
 # Fixed-length holds in seconds. "tomorrow" is resolved by the caller from the
@@ -186,8 +190,8 @@ class PowerPolicy:
         soc = _soc(status)
         wall = wall if wall is not None else time.time()
         hold = self.active_hold(wall)
-        # The floor burns a hold-on: otherwise we would turn on again at 15.1 %,
-        # drain to 15 %, turn off, and repeat every cooldown.
+        # The floor burns a hold-on: otherwise we would turn on again just above
+        # the floor, drain back to it, turn off, and repeat every cooldown.
         if hold is not None and hold.ac_on and soc is not None and soc <= OFF_PERCENT:
             self.clear_hold()
             hold = None

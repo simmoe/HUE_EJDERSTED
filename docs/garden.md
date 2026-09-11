@@ -112,15 +112,16 @@ problem, not “USB cannot power a Pi”.
 Always on for the garden hub; there is no mode switch. After each Fossibot
 poll (`power.py`), top layer wins:
 
-- **floor** SoC ≤ 15 % and AC on → press (AC off). Beats everything and
+- **floor** SoC ≤ 45 % and AC on → press (AC off). Beats everything and
   burns a hold-on, so the outlet does not flap at the threshold.
 - **hold** a tap on the kiosk's 230 V card: AC on/off until a wall-clock
   deadline chosen on the wheel — `1h · 2h · 5h · tomorrow` (tomorrow = next
   day's solar on-time, 08:00 if solar is off). Persisted in
   `power_state.json` as `{ "hold": { acOn, until, duration } }`. `auto`
   drops it.
-- **resume** SoC ≥ 25 % and AC off → press (AC on).
-- 15–25 % → no opinion.
+- **resume** SoC ≥ 55 % and AC off → press (AC on).
+- 45–55 % → no opinion. The band is deliberately high so the battery keeps a
+  reserve through grey autumn days; lower it in `power.py` if that changes.
 
 WS `set_power_hold {acOn, duration}` / `clear_power_hold`; REST
 `POST /api/power/hold` with the same body or `{ "clear": true }`. Every press

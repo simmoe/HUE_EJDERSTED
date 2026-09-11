@@ -18,22 +18,22 @@ class DesiredAcTests(unittest.TestCase):
     def test_idle_without_soc_and_hold(self):
         self.assertIsNone(self.want(None))
 
-    def test_resume_at_or_above_25(self):
-        for soc in (25.0, 25.1, 99.0):
+    def test_resume_at_or_above_on_percent(self):
+        for soc in (power.ON_PERCENT, power.ON_PERCENT + 0.1, 99.0):
             d = self.want(soc)
             self.assertTrue(d.ac_on)
             self.assertEqual(d.source, power.SOURCE_RULE)
-            self.assertEqual(d.threshold, 25.0)
+            self.assertEqual(d.threshold, power.ON_PERCENT)
 
-    def test_floor_at_or_below_15(self):
-        for soc in (15.0, 14.9, 0.0):
+    def test_floor_at_or_below_off_percent(self):
+        for soc in (power.OFF_PERCENT, power.OFF_PERCENT - 0.1, 0.0):
             d = self.want(soc)
             self.assertFalse(d.ac_on)
             self.assertEqual(d.source, power.SOURCE_FLOOR)
-            self.assertEqual(d.threshold, 15.0)
+            self.assertEqual(d.threshold, power.OFF_PERCENT)
 
     def test_band_has_no_opinion(self):
-        for soc in (15.1, 20.0, 24.9):
+        for soc in (power.OFF_PERCENT + 0.1, (power.OFF_PERCENT + power.ON_PERCENT) / 2, power.ON_PERCENT - 0.1):
             self.assertIsNone(self.want(soc))
 
     def test_hold_off_beats_resume(self):
@@ -43,13 +43,13 @@ class DesiredAcTests(unittest.TestCase):
         self.assertIsNone(d.threshold)
 
     def test_hold_on_beats_band(self):
-        self.assertTrue(self.want(20.0, hold(True)).ac_on)
+        self.assertTrue(self.want(power.OFF_PERCENT + 5, hold(True)).ac_on)
 
     def test_hold_works_without_soc(self):
         self.assertTrue(self.want(None, hold(True)).ac_on)
 
     def test_floor_beats_hold_on(self):
-        d = self.want(12.0, hold(True))
+        d = self.want(power.OFF_PERCENT - 3, hold(True))
         self.assertFalse(d.ac_on)
         self.assertEqual(d.source, power.SOURCE_FLOOR)
 
@@ -76,18 +76,19 @@ class DecidePressTests(unittest.TestCase):
         self.assertTrue(self._press(soc=80.0, ac_on=False).ac_on)
 
     def test_press_to_turn_ac_off(self):
-        self.assertFalse(self._press(soc=10.0, ac_on=True).ac_on)
+        self.assertFalse(self._press(soc=power.OFF_PERCENT - 5, ac_on=True).ac_on)
 
     def test_already_correct_is_idle(self):
         self.assertIsNone(self._press(soc=80.0, ac_on=True))
-        self.assertIsNone(self._press(soc=10.0, ac_on=False))
+        self.assertIsNone(self._press(soc=power.OFF_PERCENT - 5, ac_on=False))
 
     def test_band_never_presses(self):
-        self.assertIsNone(self._press(soc=20.0, ac_on=True))
-        self.assertIsNone(self._press(soc=20.0, ac_on=False))
+        mid = (power.OFF_PERCENT + power.ON_PERCENT) / 2
+        self.assertIsNone(self._press(soc=mid, ac_on=True))
+        self.assertIsNone(self._press(soc=mid, ac_on=False))
 
     def test_offline_never_presses(self):
-        self.assertIsNone(self._press(online=False, soc=10.0, ac_on=True))
+        self.assertIsNone(self._press(online=False, soc=power.OFF_PERCENT - 5, ac_on=True))
 
     def test_hold_off_presses_off_at_high_soc(self):
         d = self._press(soc=90.0, ac_on=True, hold=hold(False))
@@ -123,18 +124,18 @@ class PowerPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             policy = power.PowerPolicy(Path(tmp) / "power_state.json")
             policy.set_hold(True, until=WALL + 3600, duration="1h")
-            d = policy.decide({"online": True, "socPercent": 14.0, "acOn": True}, now=10.0, wall=WALL)
+            d = policy.decide({"online": True, "socPercent": power.OFF_PERCENT - 1, "acOn": True}, now=10.0, wall=WALL)
             self.assertEqual(d.source, power.SOURCE_FLOOR)
             self.assertIsNone(policy.hold)
-            # …so climbing back to 16 % does not turn it on again.
+            # …so climbing back just above the floor does not turn it on again.
             self.assertIsNone(
-                policy.decide({"online": True, "socPercent": 16.0, "acOn": False}, now=200.0, wall=WALL)
+                policy.decide({"online": True, "socPercent": power.OFF_PERCENT + 1, "acOn": False}, now=200.0, wall=WALL)
             )
 
     def test_decide_uses_cooldown_and_remembers_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             policy = power.PowerPolicy(Path(tmp) / "power_state.json")
-            status = {"online": True, "socPercent": 30, "acOn": False}
+            status = {"online": True, "socPercent": power.ON_PERCENT + 5, "acOn": False}
             d = policy.decide(status, now=10.0, wall=WALL)
             self.assertEqual(d.source, power.SOURCE_RULE)
             policy.note_press(d.source, now=10.0)

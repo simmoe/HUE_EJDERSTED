@@ -89,7 +89,7 @@ Home and garden share playlist library data, but not physical player state.
 - `ejdersted/fossibot_garden` is the latest Fossibot snapshot (SoC, solar W,
   output W, USB/AC, charging). History lives in the `samples` subcollection,
   one document per 5-minute UTC bucket. The garden backend writes these;
-  browsers must not. Garden AC policy (15 % floor, 25 % resume, kiosk hold)
+  browsers must not. Garden AC policy (45 % floor, 55 % resume, kiosk hold)
   lives on the Pi in `power_state.json`; each SwitchBot press it makes is
   logged to the `events` subcollection with `source: floor | rule | hold`.
 - `ejdersted/audio_home` and `ejdersted/audio_garden` hold playback handoff
