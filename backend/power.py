@@ -4,16 +4,18 @@ Solar still follows its own sun window. This module only decides whether the
 Fossibot AC outlet should be on. It is always active on the garden hub — there
 is no "autonomous" flag any more. Three layers, top wins:
 
-  floor   SoC <= 45 %  → AC off. Beats everything, and burns a hold-on so the
+  floor   SoC <= off %  → AC off. Beats everything, and burns a hold-on so the
                           outlet does not flap at the threshold.
   hold    a tap on the kiosk: AC on/off until a wall-clock deadline
                           (1 t · 2 t · 5 t · i morgen). Beats the rules below.
-  resume  SoC >= 55 %  → AC on.
-  band    45–55 %      → no opinion.
+  resume  SoC >= on %   → AC on.
+  between              → no opinion.
 
-The band sits high on purpose (Sep 2026): the hut should keep half a battery
-in reserve through grey days, and 230 V only carries lights and the Flare once
-the router and Pi are on the DC group.
+Defaults are 15/25. The band is a `Band` passed in from hub_config
+(HUB_POWER_OFF_PERCENT / HUB_POWER_ON_PERCENT), so raising it — e.g. to 45/55
+to keep a reserve through grey days — is a deploy setting, not a code change.
+Mind that while the router hangs on 230 V, any floor above the current SoC
+takes the garden offline until SoC reaches the resume level.
 
 The night rule (AC off outside the sun window unless someone is home) waits
 until the router is off the inverter; otherwise we cut our own uplink.
@@ -31,8 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ON_PERCENT = 55.0
-OFF_PERCENT = 45.0
+ON_PERCENT = 25.0
+OFF_PERCENT = 15.0
 PRESS_COOLDOWN_S = 90.0
 
 # Fixed-length holds in seconds. "tomorrow" is resolved by the caller from the
@@ -73,29 +75,39 @@ class Hold:
 
 
 @dataclass(frozen=True)
+class Band:
+    """SoC hysteresis band: off at or below `off`, on at or above `on`."""
+
+    off: float = OFF_PERCENT
+    on: float = ON_PERCENT
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.off < self.on <= 100:
+            raise ValueError(f"power band must satisfy 0 <= off < on <= 100, got {self.off}/{self.on}")
+
+
+DEFAULT_BAND = Band()
+
+
+@dataclass(frozen=True)
 class Decision:
     ac_on: bool
     source: str  # SOURCE_FLOOR | SOURCE_HOLD | SOURCE_RULE
-
-    @property
-    def threshold(self) -> float | None:
-        if self.source == SOURCE_FLOOR:
-            return OFF_PERCENT
-        if self.source == SOURCE_RULE:
-            return ON_PERCENT
-        return None
+    threshold: float | None = None  # the band edge that decided, for floor/rule
 
 
-def desired_ac(soc: float | None, *, hold: Hold | None, wall: float) -> Decision | None:
+def desired_ac(
+    soc: float | None, *, hold: Hold | None, wall: float, band: Band = DEFAULT_BAND
+) -> Decision | None:
     """What the outlet should be right now. None = no opinion."""
-    if soc is not None and soc <= OFF_PERCENT:
-        return Decision(False, SOURCE_FLOOR)
+    if soc is not None and soc <= band.off:
+        return Decision(False, SOURCE_FLOOR, band.off)
     if hold is not None and hold.active(wall):
         return Decision(hold.ac_on, SOURCE_HOLD)
     if soc is None:
         return None
-    if soc >= ON_PERCENT:
-        return Decision(True, SOURCE_RULE)
+    if soc >= band.on:
+        return Decision(True, SOURCE_RULE, band.on)
     return None
 
 
@@ -109,11 +121,12 @@ def decide_press(
     wall: float,
     last_press_at: float,
     cooldown_s: float = PRESS_COOLDOWN_S,
+    band: Band = DEFAULT_BAND,
 ) -> Decision | None:
     """The press we should make now, or None to leave the finger alone."""
     if not online:
         return None
-    want = desired_ac(soc, hold=hold, wall=wall)
+    want = desired_ac(soc, hold=hold, wall=wall, band=band)
     if want is None or want.ac_on is ac_on:
         return None
     if last_press_at and now - last_press_at < cooldown_s:
@@ -122,8 +135,9 @@ def decide_press(
 
 
 class PowerPolicy:
-    def __init__(self, state_path: Path):
+    def __init__(self, state_path: Path, *, band: Band = DEFAULT_BAND):
         self._state_path = state_path
+        self.band = band
         self._lock = threading.Lock()
         self.hold: Hold | None = self._load()
         self.last_press_at = 0.0
@@ -192,7 +206,7 @@ class PowerPolicy:
         hold = self.active_hold(wall)
         # The floor burns a hold-on: otherwise we would turn on again just above
         # the floor, drain back to it, turn off, and repeat every cooldown.
-        if hold is not None and hold.ac_on and soc is not None and soc <= OFF_PERCENT:
+        if hold is not None and hold.ac_on and soc is not None and soc <= self.band.off:
             self.clear_hold()
             hold = None
         return decide_press(
@@ -203,17 +217,18 @@ class PowerPolicy:
             now=now if now is not None else time.monotonic(),
             wall=wall,
             last_press_at=self.last_press_at,
+            band=self.band,
         )
 
     def status(self, fossibot: dict[str, Any] | None = None, *, wall: float | None = None) -> dict[str, Any]:
         fb = fossibot or {}
         wall = wall if wall is not None else time.time()
         hold = self.active_hold(wall)
-        want = desired_ac(_soc(fb), hold=hold, wall=wall)
+        want = desired_ac(_soc(fb), hold=hold, wall=wall, band=self.band)
         return {
             "hold": hold.to_json() if hold else None,
-            "onPercent": ON_PERCENT,
-            "offPercent": OFF_PERCENT,
+            "onPercent": self.band.on,
+            "offPercent": self.band.off,
             "wantAc": want.ac_on if want else None,
             "wantSource": want.source if want else None,
         }

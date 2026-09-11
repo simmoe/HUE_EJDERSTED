@@ -219,6 +219,9 @@ RUNTIME_ENV=$(mktemp)
   [[ -n "${HUB_FOSSIBOT_LOG_SEC:-}" ]] && echo "HUB_FOSSIBOT_LOG_SEC=$HUB_FOSSIBOT_LOG_SEC"
   # The SwitchBot finger on the Fossibot AC button; without it the power policy is inert.
   [[ -n "${HUB_SWITCHBOT_ADDRESS:-}" ]] && echo "HUB_SWITCHBOT_ADDRESS=$HUB_SWITCHBOT_ADDRESS"
+  # AC policy band (defaults 15/25 in power.py). Raise only once router + Pi are on DC.
+  [[ -n "${HUB_POWER_OFF_PERCENT:-}" ]] && echo "HUB_POWER_OFF_PERCENT=$HUB_POWER_OFF_PERCENT"
+  [[ -n "${HUB_POWER_ON_PERCENT:-}" ]] && echo "HUB_POWER_ON_PERCENT=$HUB_POWER_ON_PERCENT"
   [[ -n "${HUB_KIOSK_PHONE_IP:-}" ]] && echo "HUB_KIOSK_PHONE_IP=$HUB_KIOSK_PHONE_IP"
   [[ -n "${HUB_KIOSK_ADB_SERIAL:-${KIOSK_ADB_SERIAL:-}}" ]] && echo "HUB_KIOSK_ADB_SERIAL=${HUB_KIOSK_ADB_SERIAL:-$KIOSK_ADB_SERIAL}"
   [[ -n "${HUB_KIOSK_MULTIAPP_PACKAGE:-}" ]] && echo "HUB_KIOSK_MULTIAPP_PACKAGE=$HUB_KIOSK_MULTIAPP_PACKAGE"

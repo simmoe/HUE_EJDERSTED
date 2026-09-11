@@ -156,6 +156,12 @@ def _apply_env_overrides() -> None:
     if bot_address := os.environ.get("HUB_SWITCHBOT_ADDRESS"):
         switchbot["address"] = bot_address.strip()
 
+    power = CONFIG.setdefault("power", {})
+    if off_percent := os.environ.get("HUB_POWER_OFF_PERCENT"):
+        power["offPercent"] = float(off_percent)
+    if on_percent := os.environ.get("HUB_POWER_ON_PERCENT"):
+        power["onPercent"] = float(on_percent)
+
 
 _apply_env_overrides()
 
@@ -310,6 +316,12 @@ def fossibot_config() -> dict[str, Any]:
     """Read-only Fossibot BLE poll (address + interval)."""
     fossibot = CONFIG.get("fossibot", {})
     return fossibot if isinstance(fossibot, dict) else {}
+
+
+def power_config() -> dict[str, Any]:
+    """AC policy band overrides ({offPercent, onPercent}); empty = power.py defaults."""
+    power = CONFIG.get("power", {})
+    return power if isinstance(power, dict) else {}
 
 
 def switchbot_address() -> str:

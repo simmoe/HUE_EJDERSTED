@@ -160,3 +160,28 @@ class PowerPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BandTests(unittest.TestCase):
+    def test_custom_band_moves_floor_and_resume(self):
+        band = power.Band(off=45.0, on=55.0)
+        floor = power.desired_ac(45.0, hold=None, wall=WALL, band=band)
+        self.assertEqual((floor.ac_on, floor.source, floor.threshold), (False, power.SOURCE_FLOOR, 45.0))
+        self.assertIsNone(power.desired_ac(50.0, hold=None, wall=WALL, band=band))
+        resume = power.desired_ac(55.0, hold=None, wall=WALL, band=band)
+        self.assertEqual((resume.ac_on, resume.source, resume.threshold), (True, power.SOURCE_RULE, 55.0))
+        # The default band still says "on" at 34 %; the raised band says "off".
+        self.assertTrue(power.desired_ac(34.0, hold=None, wall=WALL).ac_on)
+        self.assertFalse(power.desired_ac(34.0, hold=None, wall=WALL, band=band).ac_on)
+
+    def test_band_rejects_inverted_or_out_of_range(self):
+        for off, on in ((25.0, 15.0), (20.0, 20.0), (-1.0, 10.0), (50.0, 101.0)):
+            with self.assertRaises(ValueError):
+                power.Band(off=off, on=on)
+
+    def test_policy_status_reports_its_band(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = power.PowerPolicy(Path(tmp) / "s.json", band=power.Band(off=45.0, on=55.0))
+            status = policy.status({"online": True, "socPercent": 34.0, "acOn": True}, wall=WALL)
+            self.assertEqual((status["offPercent"], status["onPercent"]), (45.0, 55.0))
+            self.assertEqual((status["wantAc"], status["wantSource"]), (False, power.SOURCE_FLOOR))

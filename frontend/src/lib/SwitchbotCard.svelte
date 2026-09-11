@@ -2,7 +2,7 @@
   import Card from '$lib/Card.svelte';
   import { store, type HoldDuration, type PowerHold } from '$lib/ws.svelte';
 
-  // Auto is the ground state (45 % floor, 55 % resume). A tap is a hold with an
+  // Auto is the ground state (floor/resume band from the hub, default 15/25 %). A tap is a hold with an
   // expiry, chosen on a small wheel. "auto" drops the hold again.
   const WHEEL: { id: HoldDuration; label: string }[] = [
     { id: '1h', label: '1 t' },

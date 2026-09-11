@@ -112,16 +112,21 @@ problem, not “USB cannot power a Pi”.
 Always on for the garden hub; there is no mode switch. After each Fossibot
 poll (`power.py`), top layer wins:
 
-- **floor** SoC ≤ 45 % and AC on → press (AC off). Beats everything and
+- **floor** SoC ≤ off % (default 15) and AC on → press (AC off). Beats everything and
   burns a hold-on, so the outlet does not flap at the threshold.
 - **hold** a tap on the kiosk's 230 V card: AC on/off until a wall-clock
   deadline chosen on the wheel — `1h · 2h · 5h · tomorrow` (tomorrow = next
   day's solar on-time, 08:00 if solar is off). Persisted in
   `power_state.json` as `{ "hold": { acOn, until, duration } }`. `auto`
   drops it.
-- **resume** SoC ≥ 55 % and AC off → press (AC on).
-- 45–55 % → no opinion. The band is deliberately high so the battery keeps a
-  reserve through grey autumn days; lower it in `power.py` if that changes.
+- **resume** SoC ≥ on % (default 25) and AC off → press (AC on).
+- between → no opinion.
+
+The band is a deploy setting: `HUB_POWER_OFF_PERCENT` / `HUB_POWER_ON_PERCENT`
+(→ `hub_config.power_config()` → `power.Band`). Plan: raise to 45/55 to keep a
+reserve through grey days — **but only after the router and Pi are on the
+Fossibot DC group**. While the router is on 230 V, a floor above the current
+SoC takes the whole garden offline until SoC climbs back to the resume level.
 
 WS `set_power_hold {acOn, duration}` / `clear_power_hold`; REST
 `POST /api/power/hold` with the same body or `{ "clear": true }`. Every press

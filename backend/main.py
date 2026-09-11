@@ -821,8 +821,13 @@ async def lifespan(app: FastAPI):
 
     global power_ctrl
     if hub_config.site() == "garden":
-        power_ctrl = power.PowerPolicy(POWER_STATE_FILE)
-        print(f"[power] policy ready (hold={power_ctrl.hold})")
+        power_cfg = hub_config.power_config()
+        band = power.Band(
+            off=float(power_cfg.get("offPercent", power.OFF_PERCENT)),
+            on=float(power_cfg.get("onPercent", power.ON_PERCENT)),
+        )
+        power_ctrl = power.PowerPolicy(POWER_STATE_FILE, band=band)
+        print(f"[power] policy ready (band={band.off:g}/{band.on:g} %, hold={power_ctrl.hold})")
 
     hue_bridge = HueBridge()
     global lights_cache
