@@ -110,6 +110,11 @@ let committing = false;
 let hydratedFromDoc = false;
 let playInFlight = false;
 let startingUri = '';
+/** We paused the track that is still on the card. Resume is only legal then. */
+let pausedThisTrack = false;
+/** Voice/search replaced the queue — Play must start those URIs from 0. */
+let forceFreshStart = false;
+let voiceApply: Promise<void> | null = null;
 let speakerPollTimer: ReturnType<typeof setInterval> | null = null;
 let browseIndex = -1;
 
@@ -243,6 +248,8 @@ async function playUris(uris: string[]): Promise<boolean> {
     if (data.ok) {
       playlist.activeTransport = 'spotify';
       playlist.spotifyPlaying = true;
+      pausedThisTrack = false;
+      forceFreshStart = false;
       pushImmediately();
       return true;
     }
@@ -606,33 +613,37 @@ export async function playFromCurrentIndex(): Promise<boolean> {
 }
 
 export async function togglePlayPause() {
+  if (voiceApply) await voiceApply;
   if (playlist.spotifyPlaying) {
     await pauseSpotifyRemote();
     startingUri = '';
+    pausedThisTrack = true;
     playlist.spotifyPlaying = false;
     void commitPlayerState({ spotifyPlaying: false });
     return;
   }
-  // Resume only continues what the speaker already has paused — and only if
-  // that is the track we are showing. Anything else (a fresh voice search, a
-  // stale Connect context from this morning) starts the queued track instead,
-  // so play never revives an unrelated song mid-way.
-  const wanted = seedUriForAlbumBuild();
-  if (wanted && (await speakerIsPausedOn(wanted))) {
-    try {
-      const r = await fetch('/api/spotify/resume', { method: 'POST' });
-      const data = (await r.json()) as { ok?: boolean };
-      if (data.ok) {
-        playlist.spotifyPlaying = true;
-        playlist.activeTransport = 'spotify';
-        void commitPlayerState({
-          spotifyPlaying: true,
-          activeTransport: 'spotify',
-        });
-        return;
+  // Resume only if we ourselves paused this card. A voice search, a leftover
+  // Connect session, or B&O Mozart still playing something else must never
+  // win — Play starts the queued track from 0.
+  if (!forceFreshStart && pausedThisTrack) {
+    const wanted = seedUriForAlbumBuild();
+    if (wanted && (await speakerIsPausedOn(wanted))) {
+      try {
+        const r = await fetch('/api/spotify/resume', { method: 'POST' });
+        const data = (await r.json()) as { ok?: boolean };
+        if (data.ok) {
+          playlist.spotifyPlaying = true;
+          playlist.activeTransport = 'spotify';
+          pausedThisTrack = false;
+          void commitPlayerState({
+            spotifyPlaying: true,
+            activeTransport: 'spotify',
+          });
+          return;
+        }
+      } catch {
+        /* fall through to a clean start */
       }
-    } catch {
-      /* fall through to a clean start */
     }
   }
   await playFromCurrentIndex();
@@ -907,6 +918,40 @@ export async function playSavedPlaylist(playlistUri: string, title = '') {
   }
 }
 
+function applyVoiceQueue(rows: QTrack[]) {
+  startingUri = '';
+  pausedThisTrack = false;
+  forceFreshStart = true;
+  playlist.micQueue = rows;
+  playlist.micIndex = 0;
+  playlist.playListMode = 'mic';
+  playlist.spotifyRadio = false;
+  playlist.spotifyAlbumActive = false;
+  playlist.savedPlaylistActive = false;
+  playlist.savedPlaylistTitle = '';
+  playlist.spotifyPlaying = false;
+  playlist.activeTransport = 'spotify';
+  paintNpFromQueues();
+  scrollToNowPlaying();
+  voiceApply = (async () => {
+    await pauseSpotifyRemote();
+    await releasePodcastForMusic();
+    await commitPlayerState({
+      micQueue: rows,
+      micIndex: 0,
+      playListMode: 'mic',
+      spotifyRadio: false,
+      spotifyAlbumActive: false,
+      savedPlaylistActive: false,
+      savedPlaylistTitle: '',
+      spotifyPlaying: false,
+      activeTransport: 'spotify',
+    });
+  })().finally(() => {
+    voiceApply = null;
+  });
+}
+
 export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleResult {
   if (data.ok === false) {
     const query = typeof data.query === 'string' ? data.query.trim() : '';
@@ -926,45 +971,13 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
       name: String(data.name ?? ''),
       artist: String(data.artist ?? ''),
     };
-    void (async () => {
-      startingUri = '';
-      await pauseSpotifyRemote();
-      await releasePodcastForMusic();
-      await commitPlayerState({
-        micQueue: [row],
-        micIndex: 0,
-        playListMode: 'mic',
-        spotifyRadio: false,
-        spotifyAlbumActive: false,
-        savedPlaylistActive: false,
-        savedPlaylistTitle: '',
-        spotifyPlaying: false,
-        activeTransport: 'spotify',
-      });
-      scrollToNowPlaying();
-    })();
+    applyVoiceQueue([row]);
     return { handled: true, message: row.name || row.artist || 'Fandt sangen' };
   }
   if (data.action === 'enqueue_queue' && data.ok && Array.isArray(data.queue)) {
     const rows = (data.queue as QTrack[]).filter((row) => row?.uri?.startsWith('spotify:track:'));
     if (!rows.length) return { handled: false, error: 'Fandt ingen sange i køen' };
-    void (async () => {
-      startingUri = '';
-      await pauseSpotifyRemote();
-      await releasePodcastForMusic();
-      await commitPlayerState({
-        micQueue: rows,
-        micIndex: 0,
-        playListMode: 'mic',
-        spotifyRadio: false,
-        spotifyAlbumActive: false,
-        savedPlaylistActive: false,
-        savedPlaylistTitle: '',
-        spotifyPlaying: false,
-        activeTransport: 'spotify',
-      });
-      scrollToNowPlaying();
-    })();
+    applyVoiceQueue(rows);
     return {
       handled: true,
       message: typeof data.label === 'string' && data.label ? data.label : rows[0]?.name || 'Fandt sangene',
@@ -1021,6 +1034,9 @@ export async function initPlaylistHub(): Promise<() => void> {
   hydratedFromDoc = false;
   playInFlight = false;
   startingUri = '';
+  pausedThisTrack = false;
+  forceFreshStart = false;
+  voiceApply = null;
   committing = false;
   if (unsub) {
     unsub();

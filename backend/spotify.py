@@ -105,6 +105,32 @@ def _looks_like_m5(device: dict) -> bool:
 _TITLE_ARTIST_SPLIT = re.compile(r"^(?P<title>.+?)\s+(?:by|af|med|with)\s+(?P<artist>.+)$", re.IGNORECASE)
 
 
+def pick_best_track(query: str, tracks: list[dict]) -> dict | None:
+    """Prefer a track whose title/artist actually appear in the spoken query."""
+    q = re.sub(r"\s+", " ", (query or "").lower()).strip()
+    valid = [t for t in tracks if isinstance(t, dict) and t.get("uri")]
+    if not valid:
+        return None
+
+    def score(track: dict) -> int:
+        name = str(track.get("name") or "").lower()
+        artists = " ".join(
+            str(a.get("name") or "") for a in track.get("artists") or [] if isinstance(a, dict)
+        ).lower()
+        points = 0
+        if name and name in q:
+            points += 3
+        if artists and artists in q:
+            points += 3
+        for token in re.findall(r"[a-z0-9']{3,}", artists):
+            if token in q:
+                points += 1
+        return points
+
+    ranked = sorted(valid, key=score, reverse=True)
+    return ranked[0] if score(ranked[0]) > 0 else valid[0]
+
+
 def split_title_artist(query: str) -> tuple[str, str] | None:
     """'keep going by this is the kit' → ('keep going', 'this is the kit').
     First separator wins, so a title containing 'by' still splits on the
@@ -240,15 +266,20 @@ class Spotify:
         h = await self._headers()
         if not h:
             return False
+        # Stop whoever is currently making sound (phone leftover, old Connect
+        # session), then the house speaker. 404 = already idle.
+        codes: list[int] = []
+        active = await self._http.put(f"{API}/me/player/pause", headers=h)
+        codes.append(active.status_code)
         device_id = await self._target_device_id()
-        if not device_id:
-            return False
-        r = await self._http.put(
-            f"{API}/me/player/pause",
-            headers=h,
-            params={"device_id": device_id},
-        )
-        return r.status_code in (200, 204)
+        if device_id:
+            house = await self._http.put(
+                f"{API}/me/player/pause",
+                headers=h,
+                params={"device_id": device_id},
+            )
+            codes.append(house.status_code)
+        return any(code in (200, 204, 404) for code in codes)
 
     async def _post_player_next(self) -> bool:
         h = await self._headers()
@@ -1353,7 +1384,16 @@ class Spotify:
                 if not ((results or {}).get("tracks") or {}).get("items"):
                     results = None
         if results is None:
-            results = await self.search(query, types="track,artist,album,playlist", limit=3)
+            track_first = await self.search(query, types="track", limit=5)
+            tracks_only = [
+                x
+                for x in ((track_first or {}).get("tracks") or {}).get("items") or []
+                if isinstance(x, dict) and x.get("uri")
+            ]
+            if tracks_only and pick_best_track(query, tracks_only):
+                results = track_first
+            else:
+                results = await self.search(query, types="track,artist,album,playlist", limit=3)
         if not results:
             return {"action": "search", "ok": False, "query": query, "error": f"Fandt ikke {query}"}
 
@@ -1396,7 +1436,7 @@ class Spotify:
             }
 
         if tracks and not force_album:
-            track = tracks[0]
+            track = pick_best_track(query, tracks) or tracks[0]
             return {
                 "action": "enqueue",
                 "ok": True,

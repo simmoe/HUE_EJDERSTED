@@ -180,17 +180,20 @@ class PlayUrisQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PauseTargetsHouseTests(unittest.IsolatedAsyncioTestCase):
-    async def test_pause_without_house_speaker_is_false(self):
+    async def test_pause_without_house_speaker_still_stops_active_player(self):
         client = _client()
-        client._http.put = AsyncMock()
+        put = MagicMock()
+        put.status_code = 204
+        client._http.put = AsyncMock(return_value=put)
         with (
             patch.object(client, "_headers", AsyncMock(return_value={"Authorization": "Bearer x"})),
             patch.object(client, "_target_device_id", AsyncMock(return_value=None)),
         ):
-            self.assertFalse(await client.pause())
-        client._http.put.assert_not_called()
+            self.assertTrue(await client.pause())
+        self.assertEqual(client._http.put.call_count, 1)
+        self.assertEqual(client._http.put.call_args.kwargs.get("params"), None)
 
-    async def test_pause_sends_house_device_id(self):
+    async def test_pause_stops_active_player_then_house_speaker(self):
         client = _client()
         put = MagicMock()
         put.status_code = 204
@@ -200,7 +203,25 @@ class PauseTargetsHouseTests(unittest.IsolatedAsyncioTestCase):
             patch.object(client, "_target_device_id", AsyncMock(return_value="m5")),
         ):
             self.assertTrue(await client.pause())
-        self.assertEqual(client._http.put.call_args.kwargs["params"], {"device_id": "m5"})
+        self.assertEqual(client._http.put.call_count, 2)
+        self.assertEqual(client._http.put.call_args_list[1].kwargs["params"], {"device_id": "m5"})
+
+
+class PickBestTrackTests(unittest.TestCase):
+    def test_prefers_title_and_artist_in_the_spoken_query(self):
+        tracks = [
+            {"uri": "spotify:track:wrong", "name": "Keep Going", "artists": [{"name": "Someone Else"}]},
+            {"uri": "spotify:track:right", "name": "Keep Going", "artists": [{"name": "This Is The Kit"}]},
+        ]
+        picked = spotify.pick_best_track("keep going this is the kit", tracks)
+        self.assertEqual(picked["uri"], "spotify:track:right")
+
+    def test_falls_back_to_first_track_when_nothing_matches(self):
+        tracks = [
+            {"uri": "spotify:track:a", "name": "Alpha", "artists": [{"name": "A"}]},
+            {"uri": "spotify:track:b", "name": "Beta", "artists": [{"name": "B"}]},
+        ]
+        self.assertEqual(spotify.pick_best_track("xyz", tracks)["uri"], "spotify:track:a")
 
 
 if __name__ == "__main__":
