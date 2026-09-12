@@ -40,6 +40,11 @@
   let modalVideoEl = $state<HTMLVideoElement | null>(null);
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
+  // Garden battery, read through the home hub's proxy. One line under the feed.
+  type RemoteBattery = { online?: boolean; socPercent?: number | null; acOn?: boolean; solarWatts?: number | null };
+  let battery = $state<RemoteBattery | null>(null);
+  let batteryTimer: ReturnType<typeof setInterval> | null = null;
+  const BATTERY_POLL_MS = 30_000;
   let publishing = false;
   let publisherRunning = false;
   let motionBaseline: Uint8ClampedArray | null = null;
@@ -226,7 +231,32 @@
     }
   }
 
+  async function refreshBattery() {
+    try {
+      const res = await fetch('/api/fossibot/status', { cache: 'no-store' });
+      const data = await res.json();
+      battery = data?.enabled === false ? null : data;
+    } catch {
+      battery = { online: false };
+    }
+  }
+
+  const batteryLine = $derived.by(() => {
+    if (!battery) return '';
+    if (!battery.online) return 'batteri · haven offline';
+    const parts: string[] = [];
+    if (typeof battery.socPercent === 'number') parts.push(`batteri ${Math.round(battery.socPercent)} %`);
+    parts.push(battery.acOn ? '230 v tændt' : '230 v slukket');
+    if ((battery.solarWatts ?? 0) > 0) parts.push(`sol ${Math.round(battery.solarWatts ?? 0)} w`);
+    return parts.join(' · ');
+  });
+
   function startViewer() {
+    // Only the home kiosk needs this; the garden has its own battery card.
+    if (cameraMode() === 'viewer' && !batteryTimer) {
+      void refreshBattery();
+      batteryTimer = setInterval(() => void refreshBattery(), BATTERY_POLL_MS);
+    }
     if (viewerTimer) return;
     void refreshLatestSnapshot();
     viewerTimer = setInterval(() => void refreshLatestSnapshot(), 2000);
@@ -236,6 +266,10 @@
     if (viewerTimer) {
       clearInterval(viewerTimer);
       viewerTimer = null;
+    }
+    if (batteryTimer) {
+      clearInterval(batteryTimer);
+      batteryTimer = null;
     }
   }
 
@@ -378,6 +412,9 @@
       <div class="publish-status">sidst set {formatAge(latestAge)}</div>
     {:else if latestAge != null}
       <div class="publish-status">havekiosk · {Math.round(latestAge)} s siden</div>
+    {/if}
+    {#if batteryLine}
+      <div class="publish-status">{batteryLine}</div>
     {/if}
     {#if !kioskOffline}
       <!-- Presence is read off the live frames; with the kiosk gone it only says "ingen snapshots". -->

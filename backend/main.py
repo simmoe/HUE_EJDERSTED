@@ -1160,6 +1160,14 @@ async def get_solar_status():
 
 @app.get("/api/fossibot/status")
 async def get_fossibot_status():
+    # Home has no battery of its own; in viewer mode it reads the garden's
+    # over the same verified HTTPS hop as the camera. Read-only, like the camera.
+    if fossibot_monitor is None and hub_config.camera_mode() == "viewer" and hub_config.garden_hub_url():
+        payload = await _garden_camera_json("/api/fossibot/status")
+        if isinstance(payload, JSONResponse):
+            return {"enabled": True, "online": False, "remote": True, "error": "haven offline"}
+        payload["remote"] = True
+        return payload
     return _fossibot_status()
 
 
