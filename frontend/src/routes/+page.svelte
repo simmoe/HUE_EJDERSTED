@@ -601,9 +601,32 @@
     return playlist.playListMode === 'radio' && playlist.radioQueue.length > 1;
   }
 
+  function currentPlaylistQueue() {
+    if (playlist.playListMode === 'radio') return playlist.radioQueue;
+    if (playlist.playListMode === 'playlist') return playlist.savedPlaylistQueue;
+    return [];
+  }
+
+  function isCurrentPlaylistInLibrary() {
+    const queue = currentPlaylistQueue();
+    if (queue.length < 2) return false;
+    return radioLibrary.playlists.some((p) => {
+      if (p.name === SAVED_SONGS_PLAYLIST_NAME) return false;
+      if (p.tracks.length !== queue.length) return false;
+      return p.tracks.every((track, i) => track.uri === queue[i]?.uri);
+    });
+  }
+
+  function isBookmarkFilled() {
+    if (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive) return true;
+    if (isRadioPlaylistSaveable() && (radioSaveDone || isCurrentPlaylistInLibrary())) return true;
+    return isCurrentTrackSaved();
+  }
+
   function currentSaveLabel() {
-    if (isRadioPlaylistSaveable()) return radioSaveDone ? 'Playliste gemt' : 'Gem playliste';
-    if (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive) return 'Playliste gemt';
+    if (isRadioPlaylistSaveable() || (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive)) {
+      return isBookmarkFilled() ? 'Playliste gemt' : 'Gem playliste';
+    }
     return isCurrentTrackSaved() ? 'Sang gemt' : 'Gem sang';
   }
 
@@ -1414,15 +1437,15 @@
                 <button
                   type="button"
                   class="np-save-btn"
-                  class:saved={spotifySaved || radioSaveDone}
+                  class:saved={isBookmarkFilled()}
                   class:loading={saveLoading}
                   onclick={saveCurrentSelection}
-                  disabled={saveLoading || !playlist.spotifyTrackUri || (isRadioPlaylistSaveable() && radioSaveDone)}
+                  disabled={saveLoading || !playlist.spotifyTrackUri || isBookmarkFilled()}
                   aria-label={currentSaveLabel()}
                   title={currentSaveLabel()}
                 >
                   <!-- Glyph, not a sentence: filled = saved. The overlay says what was saved. -->
-                  <svg viewBox="0 0 24 24" fill={spotifySaved || radioSaveDone ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill={isBookmarkFilled() ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M6 3h12v18l-6-4.5L6 21z" />
                   </svg>
                 </button>
