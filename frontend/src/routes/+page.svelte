@@ -10,6 +10,7 @@
   import FossibotCard from '$lib/FossibotCard.svelte';
   import SwitchbotCard from '$lib/SwitchbotCard.svelte';
   import LightsCard from '$lib/LightsCard.svelte';
+  import CoverArt from '$lib/CoverArt.svelte';
   import { showFeedback } from '$lib/feedback.svelte';
   import {
     radioLibrary,
@@ -1731,12 +1732,11 @@
                 onclick={() => playSpotifyPlaylist(p)}
                 aria-label={`Spil playlisten ${p.name}`}
               >
-                <div class="podcast-cover playlist-text-cover" aria-hidden="true">
-                  <span class="playlist-cover-title">{p.seedName || p.name}</span>
-                  {#if p.seedArtist}
-                    <span class="playlist-cover-artist">{p.seedArtist}</span>
-                  {/if}
-                </div>
+                <CoverArt
+                  title={p.seedName || p.tracks[0]?.name || p.name}
+                  artist={p.seedArtist || p.tracks[0]?.artist || ''}
+                  src={p.coverUrl || ''}
+                />
                 <div class="podcast-info">
                   <span class="podcast-show">{p.name}</span>
                   <span class="podcast-meta">

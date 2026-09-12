@@ -9,12 +9,14 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import type { QTrack } from '$lib/playlistHub.svelte';
+import { resolveCover } from '$lib/coverArt';
 
 export type RadioPlaylist = {
   id: string;
   name: string;
   seedName: string;
   seedArtist: string;
+  coverUrl?: string;
   tracks: QTrack[];
   createdAt: number;
   updatedAt: number;
@@ -55,6 +57,7 @@ function parsePlaylist(x: unknown): RadioPlaylist | null {
     name: typeof row.name === 'string' && row.name ? row.name : 'Radio',
     seedName: typeof row.seedName === 'string' ? row.seedName : '',
     seedArtist: typeof row.seedArtist === 'string' ? row.seedArtist : '',
+    coverUrl: typeof row.coverUrl === 'string' ? row.coverUrl : '',
     tracks,
     createdAt: typeof row.createdAt === 'number' ? row.createdAt : 0,
     updatedAt: typeof row.updatedAt === 'number' ? row.updatedAt : 0,
@@ -134,11 +137,13 @@ export async function saveRadioPlaylist(seed: QTrack, tracks: QTrack[]): Promise
   if (cleanTracks.length === 0) throw new Error('Ingen tracks at gemme');
 
   const now = Date.now();
+  const coverUrl = await resolveCover(seed.artist, seed.name);
   const saved: RadioPlaylist = {
     id: makeId(),
     name: playlistName(seed.name, seed.artist),
     seedName: seed.name,
     seedArtist: seed.artist,
+    coverUrl,
     tracks: cleanTracks,
     createdAt: now,
     updatedAt: now,
