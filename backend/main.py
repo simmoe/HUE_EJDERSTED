@@ -1673,6 +1673,7 @@ async def spotify_resume():
     if detail:
         return {"ok": False, "detail": detail}
     ok = await spotify.resume()
+    _audio("spotify.resume", ok=ok)
     if ok:
         _mark_garden_audio_active()
     return {

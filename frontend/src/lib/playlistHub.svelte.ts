@@ -613,22 +613,39 @@ export async function togglePlayPause() {
     void commitPlayerState({ spotifyPlaying: false });
     return;
   }
-  try {
-    const r = await fetch('/api/spotify/resume', { method: 'POST' });
-    const data = (await r.json()) as { ok?: boolean };
-    if (data.ok) {
-      playlist.spotifyPlaying = true;
-      playlist.activeTransport = 'spotify';
-      void commitPlayerState({
-        spotifyPlaying: true,
-        activeTransport: 'spotify',
-      });
-      return;
+  // Resume only continues what the speaker already has paused — and only if
+  // that is the track we are showing. Anything else (a fresh voice search, a
+  // stale Connect context from this morning) starts the queued track instead,
+  // so play never revives an unrelated song mid-way.
+  const wanted = seedUriForAlbumBuild();
+  if (wanted && (await speakerIsPausedOn(wanted))) {
+    try {
+      const r = await fetch('/api/spotify/resume', { method: 'POST' });
+      const data = (await r.json()) as { ok?: boolean };
+      if (data.ok) {
+        playlist.spotifyPlaying = true;
+        playlist.activeTransport = 'spotify';
+        void commitPlayerState({
+          spotifyPlaying: true,
+          activeTransport: 'spotify',
+        });
+        return;
+      }
+    } catch {
+      /* fall through to a clean start */
     }
-  } catch {
-    /* no Connect context to resume — start the queued track */
   }
   await playFromCurrentIndex();
+}
+
+async function speakerIsPausedOn(uri: string): Promise<boolean> {
+  try {
+    const r = await fetch('/api/spotify/now-playing', { cache: 'no-store' });
+    const snap = parseSpeakerSnapshot(await r.json());
+    return !!snap && snap.uri === uri && !snap.isPlaying;
+  } catch {
+    return false;
+  }
 }
 
 let onPodcastReleased: (() => void) | null = null;

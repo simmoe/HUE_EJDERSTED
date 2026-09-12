@@ -102,6 +102,23 @@ def _looks_like_m5(device: dict) -> bool:
     return "m5" in name or "beoplay m5" in name
 
 
+_TITLE_ARTIST_SPLIT = re.compile(r"^(?P<title>.+?)\s+(?:by|af|med|with)\s+(?P<artist>.+)$", re.IGNORECASE)
+
+
+def split_title_artist(query: str) -> tuple[str, str] | None:
+    """'keep going by this is the kit' → ('keep going', 'this is the kit').
+    First separator wins, so a title containing 'by' still splits on the
+    earliest one; the caller falls back to the raw query if nothing matches."""
+    m = _TITLE_ARTIST_SPLIT.match(query.strip())
+    if not m:
+        return None
+    title = m.group("title").strip().strip('"')
+    artist = m.group("artist").strip().strip('"')
+    if len(title) < 2 or len(artist) < 2:
+        return None
+    return title, artist
+
+
 class Spotify:
     def __init__(self):
         self._cfg = _load()
@@ -1323,7 +1340,20 @@ class Spotify:
                 force_album = True
                 break
 
-        results = await self.search(query, types="track,artist,album,playlist", limit=3)
+        # "keep going by this is the kit" → track:"keep going" artist:"this is the kit".
+        # Spotify's free-text search guesses badly at the artist otherwise.
+        results = None
+        if not force_artist and not force_album:
+            split = split_title_artist(query)
+            if split:
+                title, artist = split
+                results = await self.search(
+                    f'track:"{title}" artist:"{artist}"', types="track", limit=3
+                )
+                if not ((results or {}).get("tracks") or {}).get("items"):
+                    results = None
+        if results is None:
+            results = await self.search(query, types="track,artist,album,playlist", limit=3)
         if not results:
             return {"action": "search", "ok": False, "query": query, "error": f"Fandt ikke {query}"}
 
