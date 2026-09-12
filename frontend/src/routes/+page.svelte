@@ -177,9 +177,18 @@
     }
   }
 
-  function audioTargetState(target: AudioTargetStatus): string {
-    if (target.online) return 'forbundet';
-    return target.connected ? 'tilsluttet uden lydprofil' : 'ikke forbundet';
+  let wakingSpeaker = $state('');
+
+  async function wakeHouseSpeaker(deviceId: string, name: string, level: number) {
+    if (wakingSpeaker) return;
+    wakingSpeaker = deviceId;
+    store.setVolume(deviceId, level);
+    await new Promise((r) => setTimeout(r, 2200));
+    const online = !!store.volumes[deviceId]?.online;
+    if (!online) {
+      showFeedback(`kunne ikke forbinde ${name}`, { kind: 'error', duration: 6000 });
+    }
+    wakingSpeaker = '';
   }
 
   async function reconnectAudioTarget(targetId: string) {
@@ -1458,8 +1467,8 @@
         {#if enabled('audio')}
           {#if !isGarden() && store.devices.length > 0}
             <Card
-              name="Højttalere"
-              status={`${store.devices.filter((d) => store.volumes[d.id]?.online).length}/${store.devices.length} online`}
+              name=""
+              status=""
               online={store.devices.some((d) => store.volumes[d.id]?.online)}
               pulse={store.devices.some((d) => pulsingDevices[d.id])}
             >
@@ -1475,10 +1484,13 @@
                         max="100"
                         step="1"
                         value={muted ? 0 : vol.level}
-                        disabled={!vol.online}
                         aria-label={`Volumen ${device.name}`}
                         oninput={(e) => {
                           const level = +(e.currentTarget as HTMLInputElement).value;
+                          if (!vol.online) {
+                            void wakeHouseSpeaker(device.id, device.name, level);
+                            return;
+                          }
                           if (muted && level > 0) muteState[device.id] = { muted: false, prev: muteState[device.id]?.prev ?? vol.level };
                           store.setVolume(device.id, level);
                         }}
@@ -1512,15 +1524,10 @@
 
           {#if audioTargets.length > 0}
             {@const single = audioTargets.length === 1 ? audioTargets[0] : null}
-            <!-- One speaker: its name and state live in the card header, and the
-                 state is the reconnect button. Several: the old per-row list. -->
             <Card
-              name={single ? single.name : 'Højttalere'}
-              status={single
-                ? (connectingAudioTarget === single.id ? 'forbinder…' : audioTargetState(single))
-                : `${audioTargets.filter((target) => target.online).length}/${audioTargets.length} online`}
+              name=""
+              status=""
               online={audioTargets.some((target) => target.online)}
-              onstatus={single && !single.online ? () => reconnectAudioTarget(single.id) : undefined}
             >
               <div class="audio-targets">
                 {#each audioTargets as target (target.id)}
@@ -1529,17 +1536,7 @@
                     <div class="audio-target-row">
                       <div class="audio-target-main">
                         <span class="audio-target-name">{target.name}</span>
-                        <span class="audio-target-status">{audioTargetState(target)}</span>
                       </div>
-                      <button
-                        type="button"
-                        class="action-btn audio-target-connect"
-                        class:loading={connectingAudioTarget === target.id}
-                        disabled={!!connectingAudioTarget}
-                        onclick={() => reconnectAudioTarget(target.id)}
-                      >
-                        {connectingAudioTarget === target.id ? 'forbinder' : 'forbind igen'}
-                      </button>
                     </div>
                     {/if}
                     <div class="unified-vol unified-vol--horizontal audio-target-vol">
@@ -1550,15 +1547,19 @@
                         step="1"
                         class="unified-vol-slider"
                         value={readTargetVolume(target)}
-                        disabled={!target.online}
                         oninput={(e) => {
-                          unifiedDragging = true;
                           const level = +(e.currentTarget as HTMLInputElement).value;
                           unifiedVolume = level;
+                          if (!target.online) {
+                            void reconnectAudioTarget(target.id);
+                            return;
+                          }
+                          unifiedDragging = true;
                           queueTargetVolume(target.id, level);
                         }}
                         onchange={(e) => {
                           unifiedDragging = false;
+                          if (!target.online) return;
                           const level = +(e.currentTarget as HTMLInputElement).value;
                           unifiedVolume = level;
                           queueTargetVolume(target.id, level);
@@ -1581,7 +1582,7 @@
         <!-- The card is the input (mic + search). Play mode already shows on the
              player's action row, so the status only carries transient work. -->
         <Card
-          name="Søg"
+          name=""
           status={playlist.spotifyRadioLoading
             ? 'Opbygger playliste…'
             : playlist.spotifyAlbumLoading

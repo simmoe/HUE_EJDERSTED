@@ -259,9 +259,7 @@
       aria-label="Søg musik"
       disabled={textSearching}
     />
-    <button type="submit" disabled={textSearching || !textQuery.trim()}>
-      {textSearching ? 'søger' : 'søg'}
-    </button>
+    <button type="submit" class="visually-hidden" disabled={textSearching || !textQuery.trim()}>søg</button>
   </form>
 </div>
 
@@ -438,6 +436,18 @@
     .desktop-search button:disabled {
       cursor: default;
       opacity: 0.35;
+    }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
   }
 </style>

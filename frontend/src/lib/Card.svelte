@@ -12,15 +12,17 @@
   } = $props();
 </script>
 
-<article class="card" class:pulse>
-  <div class="card-top">
-    <span class="card-name">{name}</span>
-    {#if onstatus}
-      <button type="button" class="card-status card-status-btn" class:online onclick={onstatus}>{status}</button>
-    {:else}
-      <span class="card-status" class:online>{status}</span>
-    {/if}
-  </div>
+<article class="card" class:pulse class:no-header={!name && !status}>
+  {#if name || status}
+    <div class="card-top">
+      <span class="card-name">{name}</span>
+      {#if onstatus}
+        <button type="button" class="card-status card-status-btn" class:online onclick={onstatus}>{status}</button>
+      {:else}
+        <span class="card-status" class:online>{status}</span>
+      {/if}
+    </div>
+  {/if}
   {@render children()}
 </article>
 
@@ -41,6 +43,10 @@
     border: none;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     transition: border-color 1.2s ease;
+  }
+
+  .card.no-header {
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .card-status-btn {
