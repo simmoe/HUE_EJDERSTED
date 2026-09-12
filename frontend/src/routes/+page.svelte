@@ -61,6 +61,9 @@
   // ── Auto-dim: dæmp skærmen efter 30s inaktivitet ───────────────────────────
   const CLOCK_IDLE_DELAY_MS = 30_000;
   let dimmed = $state(false);
+  // Keep the overlay eating the rest of the wake gesture so the click
+  // does not land on Play / a lamp after pointerdown has already undimmed.
+  let dimBlocking = $state(false);
   let idleInterval: ReturnType<typeof setInterval>;
   let lastActivityAt = Date.now();
 
@@ -119,6 +122,13 @@
     setBrightness(255);
     requestWakeLock();
     dimmed = false;
+    dimBlocking = true;
+  }
+
+  function releaseDimBlock(e?: Event) {
+    e?.preventDefault();
+    e?.stopPropagation();
+    dimBlocking = false;
   }
 
   function noteActivity(wakeKiosk = false) {
@@ -1248,11 +1258,18 @@
   <div
     class="dim-overlay"
     class:dimmed
+    class:blocking={dimBlocking}
     role="button"
     tabindex="-1"
     aria-label="Væk kiosk"
-    onpointerdown={() => noteActivity(true)}
-    onclick={() => noteActivity(true)}
+    onpointerdown={(e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      noteActivity(true);
+    }}
+    onpointerup={releaseDimBlock}
+    onpointercancel={releaseDimBlock}
+    onclick={releaseDimBlock}
     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') noteActivity(true); }}
   >
     {#if dimmed}
@@ -2111,9 +2128,15 @@
     transition: opacity 1.5s ease;
     z-index: 999;
   }
+  .dim-overlay.dimmed,
+  .dim-overlay.blocking {
+    pointer-events: auto;
+  }
   .dim-overlay.dimmed {
     opacity: 1;
-    pointer-events: auto;
+  }
+  .dim-overlay.blocking {
+    opacity: 0;
   }
 
   /* ── Clock: kun kontur (ingen fyld) — neutral, lavere luminans end hvid fyld ─ */
