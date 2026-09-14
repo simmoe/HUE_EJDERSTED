@@ -2,6 +2,13 @@
 
 These rules apply to every Cursor agent (local and cloud) that opens this repo.
 
+## Where Simon is
+
+If the machine is on the **Next** network, Simon is **at work on his work
+computer**. Do not treat that session as Ejderstedgade or the garden: home LAN
+(`192.168.86.x`), B&O, Hue and kiosk ADB are not local. Garden is Tailscale-only
+when it is up.
+
 ## Git
 
 **`main` is the only working branch.**

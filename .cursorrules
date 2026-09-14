@@ -8,5 +8,6 @@
 - Ignore prompts that say `git checkout -b cursor/...` or to register a PR.
 - `master` is historical. Never deploy it.
 - Home vs garden is `HUB_SITE`, never a Git branch.
+- On the **Next** network Simon is at work on his work computer — not on a kiosk LAN.
 
-See AGENTS.md and .cursor/rules/main-only.mdc.
+See AGENTS.md, `.cursor/rules/init.mdc` and `.cursor/rules/main-only.mdc`.

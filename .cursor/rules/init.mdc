@@ -1,0 +1,15 @@
+---
+description: Where Simon is. Next Wi-Fi means work computer, not a kiosk LAN.
+alwaysApply: true
+---
+
+# Init — hvor Simon er
+
+- **Next-netværket** (SSID/netværk `Next`): Simon er **på arbejde**, på
+  **arbejdscomputeren**. Det er ikke Ejderstedgade og ikke kolonihaven.
+- Fra den maskine er home-LAN (`192.168.86.x`), B&O, Hue og kiosk-ADB ikke
+  lokale. Forsøg ikke deploy, SSH eller ADB som om du sidder på Vesterbro.
+- Haven nås kun over Tailscale MagicDNS, og kun hvis den er oppe.
+- Cloud-agenter er aldrig på Next; de har heller ikke home-LAN.
+
+Home vs garden i koden er stadig `HUB_SITE`, aldrig en Git-branch.
