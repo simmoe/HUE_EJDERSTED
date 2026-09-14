@@ -4,12 +4,13 @@ These rules apply to every Cursor agent (local and cloud) that opens this repo.
 
 ## Where Simon is
 
-Infer location from the local SSID or LAN at session start. That is where
+Infer location from the Wi-Fi **SSID** at session start. That is where
 **Simon** is sitting — not which kiosk profile is running.
 
-- **Next** network: at **work**, on the **work computer**. No home/garden LAN.
-- `192.168.86.x`: **home** (Ejderstedgade). Hub `192.168.86.16`, B&O, Hue, ADB.
-- `192.168.8.x`: **garden** (kolonihaven). Hub `192.168.8.133` on LAN.
+- **Next**: at **work**, on the **work computer**. No home/garden LAN.
+- **moeberg**: **home** (Ejderstedgade). Hub `192.168.86.16`, B&O, Hue, ADB.
+- **Alohomora**: **garden** (kolonihaven). Hub `192.168.8.133` on LAN.
+- Fallback if SSID is missing: `192.168.86.x` = home, `192.168.8.x` = garden.
 - Cloud or unknown net: assume neither. Do not guess.
 
 Garden over the internet is Tailscale-only when it is up. `HUB_SITE` is the

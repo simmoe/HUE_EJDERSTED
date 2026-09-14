@@ -1,18 +1,21 @@
 ---
-description: Infer whether Simon is at work, home, or the garden from the local network.
+description: Infer whether Simon is at work, home, or the garden from the Wi-Fi SSID.
 alwaysApply: true
 ---
 
 # Init — hvor Simon er
 
-Ved session-start: find lokal SSID eller LAN-subnet. Det fortæller hvor
-**Simon** sidder. Det er ikke det samme som kiosk-profilen `HUB_SITE`.
+Ved session-start: find lokal **SSID**. Det fortæller hvor **Simon** sidder.
+Det er ikke det samme som kiosk-profilen `HUB_SITE`.
 
-| Net | Hvor | Hvad der er lokalt |
+| SSID | Hvor | Hvad der er lokalt |
 |---|---|---|
-| SSID/netværk **Next** | På arbejde, **arbejdscomputer** | Intet kiosk-LAN. Ikke deploy/SSH/ADB som hjemme. |
-| `192.168.86.x` | **Hjemme** (Ejderstedgade) | Home-hub `192.168.86.16`, B&O, Hue, kiosk-ADB. Haven kun via Tailscale. |
-| `192.168.8.x` | **I haven** (kolonihaven) | Garden-hub `192.168.8.133` på LAN. Ejderstedgade er ikke lokalt. |
+| **Next** | På arbejde, **arbejdscomputer** | Intet kiosk-LAN. Ikke deploy/SSH/ADB som hjemme. |
+| **moeberg** | **Hjemme** (Ejderstedgade) | Home-hub `192.168.86.16`, B&O, Hue, kiosk-ADB. Haven kun via Tailscale. |
+| **Alohomora** | **I haven** (kolonihaven) | Garden-hub `192.168.8.133` på LAN. Ejderstedgade er ikke lokalt. |
+
+Hvis SSID mangler, brug LAN som fallback: `192.168.86.x` = hjemme,
+`192.168.8.x` = have.
 
 - Cloud-agenter og ukendt net: antag **ingen** af delene. Gæt ikke.
 - Haven over internet er Tailscale MagicDNS, og kun hvis den er oppe.
