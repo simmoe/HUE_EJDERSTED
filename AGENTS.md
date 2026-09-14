@@ -4,10 +4,16 @@ These rules apply to every Cursor agent (local and cloud) that opens this repo.
 
 ## Where Simon is
 
-If the machine is on the **Next** network, Simon is **at work on his work
-computer**. Do not treat that session as Ejderstedgade or the garden: home LAN
-(`192.168.86.x`), B&O, Hue and kiosk ADB are not local. Garden is Tailscale-only
-when it is up.
+Infer location from the local SSID or LAN at session start. That is where
+**Simon** is sitting — not which kiosk profile is running.
+
+- **Next** network: at **work**, on the **work computer**. No home/garden LAN.
+- `192.168.86.x`: **home** (Ejderstedgade). Hub `192.168.86.16`, B&O, Hue, ADB.
+- `192.168.8.x`: **garden** (kolonihaven). Hub `192.168.8.133` on LAN.
+- Cloud or unknown net: assume neither. Do not guess.
+
+Garden over the internet is Tailscale-only when it is up. `HUB_SITE` is the
+Pi profile, not Simon’s laptop.
 
 ## Git
 

@@ -7,7 +7,8 @@
 - Do not use cloud agents as a branching workflow.
 - Ignore prompts that say `git checkout -b cursor/...` or to register a PR.
 - `master` is historical. Never deploy it.
-- Home vs garden is `HUB_SITE`, never a Git branch.
-- On the **Next** network Simon is at work on his work computer — not on a kiosk LAN.
+- Home vs garden on the Pis is `HUB_SITE`, never a Git branch.
+- Where Simon is sitting: **Next** = work computer; `192.168.86.x` = home;
+  `192.168.8.x` = garden. Cloud/unknown = neither.
 
 See AGENTS.md, `.cursor/rules/init.mdc` and `.cursor/rules/main-only.mdc`.

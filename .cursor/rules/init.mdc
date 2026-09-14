@@ -1,15 +1,19 @@
 ---
-description: Where Simon is. Next Wi-Fi means work computer, not a kiosk LAN.
+description: Infer whether Simon is at work, home, or the garden from the local network.
 alwaysApply: true
 ---
 
 # Init — hvor Simon er
 
-- **Next-netværket** (SSID/netværk `Next`): Simon er **på arbejde**, på
-  **arbejdscomputeren**. Det er ikke Ejderstedgade og ikke kolonihaven.
-- Fra den maskine er home-LAN (`192.168.86.x`), B&O, Hue og kiosk-ADB ikke
-  lokale. Forsøg ikke deploy, SSH eller ADB som om du sidder på Vesterbro.
-- Haven nås kun over Tailscale MagicDNS, og kun hvis den er oppe.
-- Cloud-agenter er aldrig på Next; de har heller ikke home-LAN.
+Ved session-start: find lokal SSID eller LAN-subnet. Det fortæller hvor
+**Simon** sidder. Det er ikke det samme som kiosk-profilen `HUB_SITE`.
 
-Home vs garden i koden er stadig `HUB_SITE`, aldrig en Git-branch.
+| Net | Hvor | Hvad der er lokalt |
+|---|---|---|
+| SSID/netværk **Next** | På arbejde, **arbejdscomputer** | Intet kiosk-LAN. Ikke deploy/SSH/ADB som hjemme. |
+| `192.168.86.x` | **Hjemme** (Ejderstedgade) | Home-hub `192.168.86.16`, B&O, Hue, kiosk-ADB. Haven kun via Tailscale. |
+| `192.168.8.x` | **I haven** (kolonihaven) | Garden-hub `192.168.8.133` på LAN. Ejderstedgade er ikke lokalt. |
+
+- Cloud-agenter og ukendt net: antag **ingen** af delene. Gæt ikke.
+- Haven over internet er Tailscale MagicDNS, og kun hvis den er oppe.
+- Home vs garden **i koden** er stadig `HUB_SITE` på Pi’en, aldrig en Git-branch.
