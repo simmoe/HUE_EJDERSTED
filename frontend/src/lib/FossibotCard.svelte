@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import Card from '$lib/Card.svelte';
   import { store } from '$lib/ws.svelte';
 
@@ -33,6 +34,20 @@
   const tickDelay = (i: number) => -((TICKS - i) / TICKS) * CHASE_S;
 
   const soc = $derived(socParts(store.fossibot.socPercent));
+
+  // Android drops the SVG opacity chase while the dim overlay covers the page
+  // and does not resume it when the overlay fades. Toggling the class restarts it.
+  let chaseOn = $state(true);
+  onMount(() => {
+    const restart = () => {
+      chaseOn = false;
+      requestAnimationFrame(() => {
+        chaseOn = true;
+      });
+    };
+    window.addEventListener('kiosk-wake', restart);
+    return () => window.removeEventListener('kiosk-wake', restart);
+  });
 </script>
 
 <Card name="" status={status()} online={!!store.fossibot.online}>
@@ -46,18 +61,19 @@
         </span>
       </div>
 
-      <div class="fossibot-dial" class:charging={charging()} class:online={!!store.fossibot.online}>
+      <div class="fossibot-dial" class:charging={charging() && chaseOn} class:online={!!store.fossibot.online}>
         <svg class="fossibot-dial-ring" viewBox="0 0 100 100" aria-hidden="true">
           {#each Array.from({ length: TICKS }, (_, i) => i) as i}
-            <line
-              class="fossibot-tick"
-              x1="50"
-              y1="5.5"
-              x2="50"
-              y2="13"
-              transform="rotate({tickAngle(i)} 50 50)"
-              style="animation-delay: {tickDelay(i)}s"
-            />
+            <g transform="rotate({tickAngle(i)} 50 50)">
+              <line
+                class="fossibot-tick"
+                x1="50"
+                y1="5.5"
+                x2="50"
+                y2="13"
+                style="animation-delay: {tickDelay(i)}s"
+              />
+            </g>
           {/each}
         </svg>
         <span class="fossibot-soc" aria-label={soc ? `${soc.whole},${soc.tenth} procent` : 'ukendt'}>
@@ -69,7 +85,17 @@
             </span>
           {/if}
         </span>
-        <div class="fossibot-ports" aria-label="Porte">
+      </div>
+
+      <div class="fossibot-ports" aria-label="Porte">
+          <span class="fossibot-port" class:on={(store.fossibot.solarWatts ?? 0) > 0} title="Sol">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M12 2.6v2.3M12 19.1v2.3M2.6 12h2.3M19.1 12h2.3" />
+              <path d="M5.5 5.5l1.6 1.6M16.9 16.9l1.6 1.6M18.5 5.5l-1.6 1.6M7.1 16.9l-1.6 1.6" />
+            </svg>
+            <span>sol</span>
+          </span>
           <span class="fossibot-port" class:on={store.fossibot.usbOn} title="USB">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M8 7V3h8v4" />
@@ -96,7 +122,6 @@
             </svg>
             <span>230</span>
           </span>
-        </div>
       </div>
 
       <div class="fossibot-col">
@@ -112,21 +137,47 @@
 
 <style>
   .fossibot {
+    container-type: size;
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
     width: 100%;
+    min-height: 0;
     padding: 8px 4px 12px;
   }
 
   .fossibot-io {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
     align-items: center;
+    justify-items: center;
     width: 100%;
-    max-width: 760px;
-    gap: 6px;
+    max-width: 880px;
+    column-gap: clamp(40px, 9cqw, 96px);
+    row-gap: 22px;
+    padding-inline: clamp(8px, 3cqw, 36px);
+  }
+
+  .fossibot-col:first-child {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .fossibot-dial {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .fossibot-col:last-child {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .fossibot-ports {
+    grid-column: 2;
+    grid-row: 2;
   }
 
   .fossibot-col {
@@ -169,8 +220,9 @@
     position: relative;
     display: grid;
     place-items: center;
-    width: min(46vw, 280px);
-    height: min(46vw, 280px);
+    aspect-ratio: 1;
+    width: min(84cqb, 58cqw, 320px);
+    height: min(84cqb, 58cqw, 320px);
   }
 
   .fossibot-soc {
@@ -178,31 +230,31 @@
     display: grid;
     place-items: center;
     z-index: 1;
-    transform: translateY(-24%);
   }
 
   .fossibot-value--soc {
-    font-size: clamp(2.8rem, min(15vw, 22vh), 6.4rem);
+    font-size: clamp(2.6rem, 22cqmin, 5.6rem);
   }
 
   .fossibot-soc-frac {
     position: absolute;
-    top: 100%;
+    top: calc(100% + 0.22em);
     left: 50%;
     display: flex;
     align-items: baseline;
-    gap: 3px;
+    gap: 2px;
     transform: translateX(-50%);
-    margin-top: 0.04em;
     white-space: nowrap;
+    pointer-events: none;
   }
 
   .fossibot-soc-tenth,
   .fossibot-unit--soc {
     color: #9b9b9b;
-    font-size: clamp(0.7rem, 2.1vw, 0.95rem);
+    font-size: 0.62rem;
     font-weight: 300;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
     font-variant-numeric: tabular-nums;
     line-height: 1;
   }
@@ -228,37 +280,29 @@
   }
 
   .fossibot-dial.charging .fossibot-tick {
+    stroke: rgba(0, 128, 200, 0.95);
     animation: fossibot-tick-chase 2.8s linear infinite;
+    will-change: opacity;
   }
 
   @keyframes fossibot-tick-chase {
     0%,
     100% {
-      stroke: rgba(255, 255, 255, 0.12);
+      opacity: 0.18;
     }
-    5% {
-      stroke: rgba(0, 128, 200, 0.95);
+    6% {
+      opacity: 1;
     }
-    16% {
-      stroke: rgba(0, 128, 200, 0.3);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .fossibot-dial.charging .fossibot-tick {
-      animation: none;
-      stroke: rgba(0, 128, 200, 0.45);
+    18% {
+      opacity: 0.22;
     }
   }
 
   .fossibot-ports {
-    position: absolute;
-    left: 50%;
-    bottom: 2%;
-    transform: translate(-50%, 2rem);
+    position: static;
     display: flex;
     gap: 18px;
-    z-index: 1;
+    transform: none;
   }
 
   .fossibot-port {
@@ -287,28 +331,25 @@
       padding: 4px 2px 8px;
     }
     .fossibot-io {
-      gap: 2px;
+      column-gap: clamp(28px, 7cqw, 48px);
+      row-gap: 16px;
       max-width: 100%;
     }
     .fossibot-col {
       gap: 4px;
     }
-    .fossibot-value {
+    .fossibot-value:not(.fossibot-value--soc) {
       font-size: clamp(1.25rem, 5.5vw, 1.9rem);
     }
-    .fossibot-value--soc {
-      font-size: clamp(1.7rem, min(11vw, 14vh), 2.8rem);
-    }
-    .fossibot-dial {
-      width: min(38vw, 34vh, 168px);
-      height: min(38vw, 34vh, 168px);
-    }
     .fossibot-ports {
-      gap: 8px;
-      transform: translate(-50%, 1.1rem);
+      gap: 10px;
     }
+    .fossibot-soc-tenth,
+    .fossibot-unit--soc,
     .fossibot-port {
       font-size: 0.52rem;
+    }
+    .fossibot-port {
       gap: 4px;
     }
     .fossibot-port svg {

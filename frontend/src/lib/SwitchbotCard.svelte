@@ -52,12 +52,14 @@
 
 <style>
   .switchbot {
+    container-type: size;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: space-evenly;
     height: 100%;
     width: 100%;
+    min-height: 0;
     gap: 14px;
     padding: 14px 6px;
   }
@@ -65,8 +67,12 @@
   .switchbot-glow {
     display: grid;
     place-items: center;
+    flex: 0 0 auto;
+    aspect-ratio: 1;
     width: min(28vw, 22vh, 132px);
     height: min(28vw, 22vh, 132px);
+    width: min(46cqb, 28vw, 132px);
+    height: min(46cqb, 28vw, 132px);
     padding: 0;
     border: 1px solid rgba(255, 255, 255, 0.22);
     border-radius: 50%;
@@ -102,6 +108,8 @@
     .switchbot-glow {
       width: min(26vw, 20vh, 104px);
       height: min(26vw, 20vh, 104px);
+      width: min(42cqb, 26vw, 104px);
+      height: min(42cqb, 26vw, 104px);
     }
   }
 </style>

@@ -130,6 +130,9 @@
     dimBlocking = true;
     clearTimeout(dimBlockTimer);
     dimBlockTimer = setTimeout(() => { dimBlocking = false; }, DIM_BLOCK_MS);
+    window.dispatchEvent(new Event('kiosk-wake'));
+    // The overlay fades for 1.5s. Chrome only resumes the chase once it is gone.
+    setTimeout(() => window.dispatchEvent(new Event('kiosk-wake')), 1600);
   }
 
   function eatDimGesture(e: Event) {
