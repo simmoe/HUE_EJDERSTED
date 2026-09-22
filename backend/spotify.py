@@ -154,6 +154,7 @@ class Spotify:
         self._m5_device_id = ""
         self._m5_device_at = 0.0
         self._spotify_user_id_cache = ""
+        self._queue_task: asyncio.Task[None] | None = None
 
     @property
     def configured(self) -> bool:
@@ -447,7 +448,39 @@ class Spotify:
 
         await self._beolink_expand()
         duration_ms = await self._track_duration(uris[off], h)
+        # B&O often plays only the first URI from PUT /play. Queue the rest
+        # after M5 is actually on the track, same pattern as the garden player.
+        self._start_enqueue(h, speaker, uris[off + 1 :])
         return True, "", duration_ms
+
+    def _cancel_enqueue(self) -> None:
+        task = getattr(self, "_queue_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._queue_task = None
+
+    def _start_enqueue(self, headers: dict, device_id: str, uris: list[str]) -> None:
+        self._cancel_enqueue()
+        if not uris or not device_id:
+            return
+        self._queue_task = asyncio.create_task(self._enqueue_remaining(headers, device_id, uris))
+
+    async def _enqueue_remaining(self, headers: dict, device_id: str, uris: list[str]) -> None:
+        for uri in uris:
+            try:
+                r = await self._http.post(
+                    f"{API}/me/player/queue",
+                    headers=headers,
+                    params={"uri": uri, "device_id": device_id},
+                )
+                if r.status_code in (401, 403, 404):
+                    print(f"[Spotify] queue {uri} HTTP {r.status_code}")
+                    break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[Spotify] queue failed: {exc}")
+                break
 
     async def _playback_matches(self, headers: dict, device_id: str, uri: str) -> bool:
         try:
@@ -674,6 +707,7 @@ class Spotify:
                 "is_playing": bool(data.get("is_playing")),
                 "uri": item.get("uri", "") or "",
                 "progress_ms": data.get("progress_ms", 0) or 0,
+                "duration_ms": item.get("duration_ms", 0) or 0,
                 "next_name": "",
                 "next_artist": "",
             }

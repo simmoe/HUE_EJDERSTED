@@ -177,10 +177,15 @@ async function pauseSpotifyRemote() {
 
 function parseSpeakerSnapshot(data: unknown): SpeakerSnapshot | null {
   if (!data || typeof data !== 'object') return null;
-  const row = data as { uri?: unknown; is_playing?: unknown };
+  const row = data as { uri?: unknown; is_playing?: unknown; progress_ms?: unknown; duration_ms?: unknown };
   const uri = typeof row.uri === 'string' ? row.uri : '';
   if (!uri.startsWith('spotify:track:')) return null;
-  return { uri, isPlaying: !!row.is_playing };
+  return {
+    uri,
+    isPlaying: !!row.is_playing,
+    progressMs: typeof row.progress_ms === 'number' ? row.progress_ms : 0,
+    durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : 0,
+  };
 }
 
 function applySpeakerObservation(result: ReturnType<typeof observeSpeaker>) {
@@ -206,6 +211,13 @@ function applySpeakerObservation(result: ReturnType<typeof observeSpeaker>) {
     playlist.spotifyPlaying = false;
     void commitPlayerState({ spotifyPlaying: false });
     return;
+  }
+  if (result.type === 'ended') {
+    const next = activeIndex() + 1;
+    if (!pausedThisTrack && next < activeQueue().length) {
+      void startSpotifyFromIndex(next);
+      return;
+    }
   }
   playlist.spotifyPlaying = false;
   void commitPlayerState({ spotifyPlaying: false });
@@ -952,6 +964,7 @@ export async function playAlbum() {
     playlist.spotifyAlbumActive = true;
     playlist.playListMode = 'album';
     paintNpFromQueues();
+    await playFromCurrentIndex();
   } catch {
     playlist.spotifyAlbumActive = false;
     playlist.spotifyAlbumError = 'Ingen forbindelse til hub';

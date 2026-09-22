@@ -9,6 +9,8 @@ export type TrackRef = { uri: string };
 export type SpeakerSnapshot = {
   uri: string;
   isPlaying: boolean;
+  progressMs?: number;
+  durationMs?: number;
 };
 
 export type ObserveInput = {
@@ -23,8 +25,17 @@ export type ObserveInput = {
 export type ObserveResult =
   | { type: 'ignore' }
   | { type: 'paused'; index?: number }
+  | { type: 'ended' }
   | { type: 'idle' }
   | { type: 'follow'; index: number };
+
+/** True when the speaker stopped because the current track ran out. */
+export function trackHasEnded(speaker: SpeakerSnapshot): boolean {
+  if (speaker.isPlaying) return false;
+  const duration = speaker.durationMs ?? 0;
+  const progress = speaker.progressMs ?? 0;
+  return duration > 0 && progress >= Math.max(0, duration - 2000);
+}
 
 export function remainingUris(queue: TrackRef[], index: number): string[] {
   if (!Array.isArray(queue) || index < 0) return [];
@@ -67,10 +78,14 @@ export function observeSpeaker(input: ObserveInput): ObserveResult {
     return { type: 'ignore' };
   }
 
-  // Paused on the speaker (kiosk, iPhone, or anywhere else). Never auto-start the next track.
+  // Paused on the speaker (kiosk, iPhone, or anywhere else). Mid-track pause
+  // stays paused. A track that ran out can start the next queued URI.
   if (idx < 0) {
     return assumedPlaying ? { type: 'idle' } : { type: 'ignore' };
   }
   if (!assumedPlaying && idx === activeIndex) return { type: 'ignore' };
+  if (idx === activeIndex && assumedPlaying && trackHasEnded(speaker)) {
+    return { type: 'ended' };
+  }
   return idx === activeIndex ? { type: 'paused' } : { type: 'paused', index: idx };
 }

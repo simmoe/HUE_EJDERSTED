@@ -134,6 +134,15 @@ class PlayUrisQueueTests(unittest.IsolatedAsyncioTestCase):
         body = client._http.put.call_args.kwargs["json"]
         self.assertEqual(body["uris"], uris)
         self.assertEqual(body["offset"], {"position": 0})
+        queued = getattr(client, "_queue_task", None)
+        if queued:
+            await queued
+        posts = [c.kwargs for c in client._http.post.await_args_list]
+        self.assertEqual(
+            [p["params"]["uri"] for p in posts],
+            ["spotify:track:bbb", "spotify:track:ccc"],
+        )
+        self.assertTrue(all(p["params"]["device_id"] == "m5" for p in posts))
 
     async def test_home_rebinds_after_device_not_found(self):
         client = _client()

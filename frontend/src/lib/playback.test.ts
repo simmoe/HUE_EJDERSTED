@@ -5,6 +5,7 @@ import {
   observeSpeaker,
   remainingUris,
   startHasLanded,
+  trackHasEnded,
   type TrackRef,
 } from './playback.ts';
 
@@ -121,6 +122,27 @@ describe('observeSpeaker', () => {
       speaker: { uri: 'spotify:track:bbb', isPlaying: false },
     });
     assert.deepEqual(result, { type: 'paused', index: 1 });
+  });
+
+  it('treats a stop near the end of the current track as ended, not pause', () => {
+    const result = observeSpeaker({
+      queue,
+      activeIndex: 0,
+      assumedPlaying: true,
+      startingUri: '',
+      speaker: { uri: 'spotify:track:aaa', isPlaying: false, progressMs: 179500, durationMs: 180000 },
+    });
+    assert.deepEqual(result, { type: 'ended' });
+  });
+});
+
+describe('trackHasEnded', () => {
+  it('is false while the speaker is still playing', () => {
+    assert.equal(trackHasEnded({ uri: 'spotify:track:aaa', isPlaying: true, progressMs: 180000, durationMs: 180000 }), false);
+  });
+
+  it('is true when progress is within two seconds of duration', () => {
+    assert.equal(trackHasEnded({ uri: 'spotify:track:aaa', isPlaying: false, progressMs: 178000, durationMs: 180000 }), true);
   });
 });
 
