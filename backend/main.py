@@ -397,11 +397,10 @@ def _note_ac_edge(status: dict) -> None:
     global _last_ac_on
     online = bool(status.get("online"))
     ac_on = bool(status.get("acOn"))
-    # Only a rule-driven resume (SoC back at 25 %) sweeps the lamps. A hold-on
-    # from the kiosk or a finger on the Fossibot is Simon opening the hut.
+    # Any rising edge, including kiosk tænd and a finger on the Fossibot.
+    # The toilet boots on; sweep only that lamp so the motion sensor owns it.
     by_rule = bool(power_ctrl and power_ctrl.pressed_recently(power.SOURCE_RULE))
     sweep = light_bus.should_force_off_after_ac(
-        by_rule=by_rule,
         ac_was_on=_last_ac_on,
         ac_on=ac_on,
         online=online,
@@ -441,7 +440,10 @@ async def _lights_off_after_ac() -> None:
             await asyncio.to_thread(light_bus.refresh_for_apply)
         except Exception as exc:
             lights_log.log("ac.sweep.lan", ok=False, error=str(exc)[:160])
-        states = await asyncio.to_thread(light_bus.apply_all, light_bus.OFF)
+        states = await asyncio.to_thread(light_bus.apply_toilet_off)
+        if not states:
+            lights_log.log("ac.sweep.done", ok=False, detail="no toilet")
+            return
         for state in states:
             _store_light_state(state)
         await manager.broadcast({"type": "lights", "lights": lights_cache})

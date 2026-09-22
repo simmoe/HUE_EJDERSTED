@@ -165,9 +165,9 @@ switch (that would kill USB and the Pi).
 
 ## Garden lights after mains
 
-Lamps on Fossibot 230 V boot **on**. An unattended SoC-resume used to sweep
-them off; that resume is gone. Tænd on the kiosk or a finger on the Fossibot
-is Simon opening the hut and does not touch the lights.
+Lamps on Fossibot 230 V boot **on**. A rising edge — kiosk tænd or a finger
+on the Fossibot — sweeps the toilet off, so the motion sensor owns it. Seng
+and gårdlys are left as they are.
 
 Every AC edge, kiosk/REST command, Zigbee read/report and sensor bind is
 logged to `backend/var/lights.jsonl` and journal `[lights]`. Lookup:

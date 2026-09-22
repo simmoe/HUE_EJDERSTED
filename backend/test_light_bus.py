@@ -6,31 +6,31 @@ from light_bus import LightCommand
 
 
 class AfterAcPolicyTests(unittest.TestCase):
-    def test_rising_edge_by_rule(self):
+    def test_manual_rising_edge_sweeps(self):
         self.assertTrue(
             light_bus.should_force_off_after_ac(
-                by_rule=True, ac_was_on=False, ac_on=True, online=True
-            )
-        )
-
-    def test_home_manual_ac_leaves_lights(self):
-        self.assertFalse(
-            light_bus.should_force_off_after_ac(
-                by_rule=False, ac_was_on=False, ac_on=True, online=True
+                ac_was_on=False, ac_on=True, online=True
             )
         )
 
     def test_already_on_is_not_a_restore(self):
         self.assertFalse(
             light_bus.should_force_off_after_ac(
-                by_rule=True, ac_was_on=True, ac_on=True, online=True
+                ac_was_on=True, ac_on=True, online=True
             )
         )
 
     def test_offline_fossibot_does_not_fire(self):
         self.assertFalse(
             light_bus.should_force_off_after_ac(
-                by_rule=True, ac_was_on=False, ac_on=True, online=False
+                ac_was_on=False, ac_on=True, online=False
+            )
+        )
+
+    def test_first_sight_of_ac_does_not_sweep(self):
+        self.assertFalse(
+            light_bus.should_force_off_after_ac(
+                ac_was_on=None, ac_on=True, online=True
             )
         )
 
@@ -68,6 +68,18 @@ class ApplyRoutingTests(unittest.TestCase):
         self.assertIn("apply", events)
         self.assertIn("apply.result", events)
         self.assertEqual(log.call_args_list[0].kwargs["source"], "kiosk.brightness")
+
+    def test_toilet_sweep_skips_other_lamps(self):
+        devices = [
+            {"id": "toilet", "protocol": "tuya", "localKey": "k"},
+            {"id": "seng", "protocol": "tuya", "localKey": "k"},
+        ]
+        with patch.object(light_bus.garden_lights, "configured_devices", return_value=devices):
+            with patch.object(light_bus.garden_lights, "set_brightness", return_value={"id": "toilet", "on": False}) as fn:
+                states = light_bus.apply_toilet_off()
+        self.assertEqual(len(states), 1)
+        fn.assert_called_once()
+        self.assertEqual(fn.call_args.args[0]["id"], "toilet")
 
     def test_all_off_and_online(self):
         self.assertTrue(

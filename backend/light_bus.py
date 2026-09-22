@@ -33,13 +33,12 @@ OFF = LightCommand(on=False, brightness=0)
 
 def should_force_off_after_ac(
     *,
-    by_rule: bool,
     ac_was_on: bool | None,
     ac_on: bool,
     online: bool,
 ) -> bool:
-    """Rising edge on Fossibot AC that the power rule caused (SoC back at 25 %)."""
-    return bool(by_rule and online and ac_on and ac_was_on is False)
+    """Rising edge on Fossibot AC. The toilet boots on; the motion sensor should own it."""
+    return bool(online and ac_on and ac_was_on is False)
 
 
 def protocol_of(dev: dict[str, Any]) -> str:
@@ -97,6 +96,15 @@ def apply_all(command: LightCommand, *, source: str = "ac.sweep") -> list[dict[s
         apply(dev, command, source=source)
         for dev in garden_lights.configured_devices()
         if dev.get("id")
+    ]
+
+
+def apply_toilet_off() -> list[dict[str, Any]]:
+    """Only the toilet. Seng and gårdlys stay when Simon turns 230 V on."""
+    return [
+        apply(dev, OFF, source="ac.sweep")
+        for dev in garden_lights.configured_devices()
+        if dev.get("id") == "toilet"
     ]
 
 
