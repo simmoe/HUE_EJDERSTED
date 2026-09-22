@@ -145,41 +145,20 @@ charging cable into the Anderson port) — not a 12 V load socket.
 Garden plan: Pi on a USB-C PD car charger in the cigarette socket; Huawei B535
 on one DC5521 (12 V / 1 A, centre-positive). XT60 is surplus for this hop.
 
-## AC policy (SwitchBot) — mode, floor, home, night
+## AC policy (SwitchBot) — manual tænd / sluk
 
-Always on for the garden hub. After each Fossibot poll (`power.py`), top
-layer wins:
+Always on for the garden hub, and only as a finger. Pi, Huawei and the kiosk
+are on the Fossibot 12 V group, so nothing turns 230 V on or off by itself.
+The card is two buttons. Tænd and sluk stay until Simon changes them. SoC,
+camera presence and sunset do not press.
 
-- **mode** tænd / auto / sluk. Tænd and sluk stay until Simon changes them.
-  Nothing else overrides a manual setting — not the 15 % floor, not home,
-  not night. A press already decided in auto is re-checked after the SwitchBot
-  lock: if tænd/sluk landed in the meantime, that press withdraws.
-- **floor** SoC ≤ off % (default 15) and AC on → press (AC off). **Auto only.**
-  Burns a hold-on so the outlet does not flap at the threshold.
-- **home** camera presence `home` → AC on. Only in auto. 230 V is for people,
-  not for daylight or a high SoC.
-- **night** after **civil sunset** (not the charge-relay cutoff at sunset − 90
-  min) → AC off. Only in auto. Home keeps 230 V on; dark/blind/unknown
-  still cuts.
-- else → no opinion. Sunrise and SoC ≥ 25/55 do **not** turn the inverter on.
+A saved `auto`, or a file with no mode, leaves the outlet as it is. An old
+forever-hold named `manual-on` / `manual-off` is read once as tænd / sluk.
 
-The 230 V card shows the current auto period until the next clock switch:
-day `hjemme – {sunset}` (tænder / slukker), night `{sunset} – {sunrise}`
-(slukkede / tænder). Muted when mode is not auto.
-
-The band is a deploy setting: `HUB_POWER_OFF_PERCENT` / `HUB_POWER_ON_PERCENT`
-(→ `hub_config.power_config()` → `power.Band`). `onPercent` is unused until we
-need a floor-resume again.
-
-WS `set_power_mode {mode}` / REST `POST /api/power/mode`. Timed hold remains
-as `set_power_hold` / `POST /api/power/hold` and only applies in auto. Every
-press the Pi makes lands in Firestore `ejdersted/fossibot_garden/events` with
-`source: floor | hold | home | night`. Five-minute snapshots on
-`ejdersted/fossibot_garden` include `kioskBatteryPercent` and `kioskCharging`.
-
-The kiosk still charges from 230 V. Plan: move it to **Fossibot USB** (own
-button, survives AC off) so a night cut does not kill the phone. Until then a
-night cut is also a battery experiment.
+WS `set_power_mode {mode}` / REST `POST /api/power/mode` accept `on` or `off`.
+Every press the Pi makes lands in Firestore `ejdersted/fossibot_garden/events`.
+Five-minute snapshots on `ejdersted/fossibot_garden` include
+`kioskBatteryPercent` and `kioskCharging`.
 
 The finger belongs on the Fossibot **AC** button, never the main power
 switch (that would kill USB and the Pi).
@@ -188,8 +167,7 @@ switch (that would kill USB and the Pi).
 
 Lamps on Fossibot 230 V boot **on**. An unattended SoC-resume used to sweep
 them off; that resume is gone. Tænd on the kiosk or a finger on the Fossibot
-is Simon opening the hut and does not touch the lights. Camera `home`
-turning AC on is the same — do not sweep.
+is Simon opening the hut and does not touch the lights.
 
 Every AC edge, kiosk/REST command, Zigbee read/report and sensor bind is
 logged to `backend/var/lights.jsonl` and journal `[lights]`. Lookup:

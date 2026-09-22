@@ -161,13 +161,10 @@ Agreed, waiting on hardware:
   cable (12 V / 1 A, check centre-positive). Until then the USB-C port's
   undocumented auto-off can kill the Pi, and any AC-off takes the router with
   it.
-- **Raise the band to 45/55.** Already a deploy setting
-  (`HUB_POWER_OFF_PERCENT=45 HUB_POWER_ON_PERCENT=55`). Flip it the day the
-  cables are in; not before.
-- **Night rule.** AC off after civil sunset unless the camera says someone
-  is home; on when someone is home. Not at sunrise, not at SoC 55 %. Tried
-  2026-09-16 after the router moved to DC. Kiosk still on 230 V until USB.
-- **Kiosk onto Fossibot USB.** So a night cut does not kill the phone.
+- **230 V stays manual.** Pi, router and kiosk are on 12 V (2026-09-22).
+  The card is tænd / sluk. No SoC floor and no night cut.
+- **Kiosk onto Fossibot USB.** Done with the 12 V move. A mains cut does not
+  kill the phone.
 
 ---
 
@@ -182,4 +179,4 @@ Agreed, waiting on hardware:
 | 4 | Site config files, thin deploy | 1 evening | `./deploy.sh garden` |
 | 5 | Routers + AudioEngine | 3–4 evenings, incremental | Every later change is smaller |
 | 6 | Frontend extraction | as touched | — |
-| 7 | DC cables → 45/55 → night rule | hardware first | The actual power policy we want |
+| 7 | DC cables, then manual 230 V | done 2026-09-22 | Pi, router and kiosk stay up without the inverter |

@@ -1,26 +1,16 @@
-"""Garden AC policy: mode, floor, hold, home, night.
+"""Garden AC policy: manual tænd / sluk.
 
 Solar still follows its own sun window (charge relay). This module only decides
-whether the Fossibot AC outlet should be on. It is always active on the garden
-hub. Layers, top wins:
+whether the Fossibot AC outlet should be on. Pi, router and kiosk are on the
+12 V DC group, so 230 V is for lamps and other mains loads. Simon turns it on
+and off. There is no auto mode: SoC, camera presence and sunset do not press
+the button.
 
-  mode    kiosk tænd / auto / sluk. on/off persist until Simon changes them.
-          Nothing else — not the 15 % floor, not home, not night — overrides.
-  floor   SoC <= off %  → AC off. Auto only. Burns a hold-on so the outlet
-                          does not flap at the edge.
-  hold    leftover timed hold (REST/WS). Auto only. Beats home/night.
-  home    camera says someone is home → AC on. Only in auto.
-  night   after sunset, unless the camera says home → AC off. Only in auto.
-          Dark/blind/unknown is night, not an alibi to leave 230 V on.
-  else    no opinion. Daylight and a high SoC do not turn 230 V on.
+A missing mode, or an old file that only said "auto", leaves the finger alone.
+A legacy forever-hold named ``manual-on`` / ``manual-off`` is read once as
+tænd / sluk.
 
-Night uses civil sunset, not the charge-relay cutoff (sunset − 90 min). The
-kiosk still charges from 230 V until it moves to Fossibot USB.
-
-Defaults for the floor are 15/25 (`Band.on` is unused). Raising the floor is
-still a deploy setting.
-
-The SwitchBot finger is a momentary press; Fossibot `acOn` is the source of
+The SwitchBot finger is a momentary press; Fossibot ``acOn`` is the source of
 truth.
 """
 
@@ -42,7 +32,7 @@ PRESS_COOLDOWN_S = 90.0
 HOLD_DURATIONS: dict[str, float] = {"1h": 3600.0, "2h": 7200.0, "5h": 18000.0}
 HOLD_TOMORROW = "tomorrow"
 VALID_DURATIONS = frozenset({*HOLD_DURATIONS, HOLD_TOMORROW})
-VALID_MODES = ("auto", "on", "off")
+VALID_MODES = ("on", "off")
 
 SOURCE_FLOOR = "floor"
 SOURCE_HOLD = "hold"
@@ -107,21 +97,14 @@ def desired_ac(
     band: Band = DEFAULT_BAND,
     sun_up: bool = True,
     someone_home: bool | None = None,
-    mode: str = "auto",
+    mode: str = "",
 ) -> Decision | None:
-    """What the outlet should be right now. None = no opinion."""
+    """What the outlet should be right now. None = leave it until Simon taps."""
+    del soc, hold, wall, band, sun_up, someone_home
     if mode == "on":
         return Decision(True, SOURCE_HOLD)
     if mode == "off":
         return Decision(False, SOURCE_HOLD)
-    if soc is not None and soc <= band.off:
-        return Decision(False, SOURCE_FLOOR, band.off)
-    if hold is not None and hold.active(wall):
-        return Decision(hold.ac_on, SOURCE_HOLD)
-    if someone_home is True:
-        return Decision(True, SOURCE_HOME)
-    if not sun_up:
-        return Decision(False, SOURCE_NIGHT)
     return None
 
 
@@ -138,7 +121,7 @@ def decide_press(
     band: Band = DEFAULT_BAND,
     sun_up: bool = True,
     someone_home: bool | None = None,
-    mode: str = "auto",
+    mode: str = "",
 ) -> Decision | None:
     """The press we should make now, or None to leave the finger alone."""
     if not online:
@@ -175,22 +158,36 @@ class PowerPolicy:
         self._state_path = state_path
         self.band = band
         self._lock = threading.Lock()
-        loaded_hold, loaded_mode = self._load()
+        loaded_hold, loaded_mode, migrated = self._load()
         self.hold: Hold | None = loaded_hold
         self.mode: str = loaded_mode
+        if migrated:
+            self._save()
         self.last_press_at = 0.0
         self.last_press_source: str | None = None
 
     # ── Persistence ──────────────────────────────────────────────────────────
-    def _load(self) -> tuple[Hold | None, str]:
+    def _load(self) -> tuple[Hold | None, str, bool]:
+        """Return hold, mode, and whether a legacy file was translated.
+
+        ``auto``, a missing mode, and the old ``autonomous`` flag do not press.
+        A forever hold named ``manual-on`` / ``manual-off`` becomes tænd / sluk.
+        """
         try:
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
-            mode = data.get("mode")
-            if mode not in VALID_MODES:
-                mode = "auto"
-            return Hold.from_json(data.get("hold")), mode
         except Exception:
-            return None, "auto"
+            return None, "", False
+        if not isinstance(data, dict):
+            return None, "", False
+        mode = data.get("mode")
+        hold = Hold.from_json(data.get("hold"))
+        if mode in VALID_MODES:
+            return hold, mode, False
+        if hold is not None and str(hold.duration).startswith("manual-"):
+            return None, "on" if hold.ac_on else "off", True
+        if mode == "auto" or "autonomous" in data:
+            return None, "", True
+        return hold, "", False
 
     def _save(self) -> None:
         try:
@@ -271,12 +268,6 @@ class PowerPolicy:
         soc = _soc(status)
         wall = wall if wall is not None else time.time()
         hold = self.active_hold(wall)
-        # Floor burns a hold-on in auto so we do not flap at the edge.
-        # Manual tænd/sluk is never touched here.
-        if self.mode == "auto" and soc is not None and soc <= self.band.off:
-            if hold is not None and hold.ac_on:
-                self.clear_hold()
-                hold = None
         return decide_press(
             online=bool(status.get("online")),
             soc=soc,

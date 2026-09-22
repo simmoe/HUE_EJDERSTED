@@ -105,7 +105,7 @@ export interface PowerHold {
   duration: HoldDuration | string;
 }
 
-export type PowerMode = 'auto' | 'on' | 'off';
+export type PowerMode = 'on' | 'off';
 
 export interface PowerStatus {
   hold: PowerHold | null;
@@ -217,7 +217,7 @@ class WSStore {
   config = $state<HubConfig>(defaultHubConfig);
   solar = $state<SolarStatus>({ enabled: false });
   fossibot = $state<FossibotStatus>({ enabled: false });
-  power = $state<PowerStatus>({ hold: null, mode: 'auto' });
+  power = $state<PowerStatus>({ hold: null });
   connected = $state(false);
 
   private ws: WebSocket | null = null;

@@ -218,7 +218,7 @@ def _fossibot_status() -> dict:
 
 def _power_status() -> dict:
     if power_ctrl is None:
-        return {"hold": None, "mode": "auto"}
+        return {"hold": None, "mode": ""}
     return power_ctrl.status(
         _fossibot_status(), sun_up=_sun_up(), someone_home=_someone_home()
     )
@@ -296,7 +296,7 @@ async def _set_power_mode(mode: str) -> tuple[bool, str]:
     if power_ctrl is None:
         return False, "Kun på haven-hubben"
     if mode not in power.VALID_MODES:
-        return False, "mode skal være on, auto eller off"
+        return False, "mode skal være on eller off"
     power_ctrl.set_mode(mode)
     await manager.broadcast({"type": "power_status", **_power_status()})
     await _apply_power_policy(_fossibot_status())
