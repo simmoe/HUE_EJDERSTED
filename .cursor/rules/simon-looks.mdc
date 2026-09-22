@@ -1,0 +1,12 @@
+---
+description: Simon does visual QA — never open the browser to look at the kiosk
+alwaysApply: true
+---
+
+# Simon looks
+
+Do not visually test this app. Simon stands in front of the kiosk.
+
+- No Cursor browser, no screenshots, no click-through, no "I verified the card looks like…".
+- Deploy and reload only when `kiosk-ui-both-hubs` says the **kiosk** will show the change. Then stop.
+- Use the kiosk skill only when Simon reports a bug or asks you to debug a device. Not after a UI change.

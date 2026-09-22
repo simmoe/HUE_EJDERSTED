@@ -91,5 +91,75 @@ class CameraPresenceStateMachineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(second["lastPersonAt"], 2002.0)
 
 
+class EvidenceStillTests(unittest.TestCase):
+    def jpeg(self, width: int, height: int, color: tuple[int, int, int]) -> bytes:
+        from PIL import Image
+
+        buf = __import__("io").BytesIO()
+        Image.new("RGB", (width, height), color).save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+
+    def test_stamp_uses_copenhagen_clock(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        ts = datetime(2026, 9, 15, 9, 47, tzinfo=ZoneInfo("Europe/Copenhagen")).timestamp()
+        self.assertEqual(camera_presence.format_evidence_stamp(ts), "15. sep. 2026  09:47")
+
+    def test_crop_zooms_onto_the_person_block(self):
+        from PIL import Image, ImageDraw
+
+        buf = __import__("io").BytesIO()
+        img = Image.new("RGB", (400, 200), (0, 0, 0))
+        ImageDraw.Draw(img).rectangle((240, 20, 380, 180), fill=(220, 220, 220))
+        img.save(buf, format="JPEG", quality=95)
+        cropped = camera_presence.crop_to_person(buf.getvalue(), [240, 20, 380, 180])
+        with Image.open(__import__("io").BytesIO(cropped)) as out:
+            self.assertEqual(out.size[0], out.size[1])
+            self.assertLess(out.size[0], 400)
+            cx, cy = out.size[0] // 2, out.size[1] // 2
+            self.assertGreater(out.getpixel((cx, cy))[0], 160)
+
+
+class EvidenceCaptureTests(unittest.IsolatedAsyncioTestCase):
+    def jpeg(self, width: int, height: int, color: tuple[int, int, int]) -> bytes:
+        from PIL import Image
+
+        buf = __import__("io").BytesIO()
+        Image.new("RGB", (width, height), color).save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+
+    async def test_keeps_the_larger_person_frame(self):
+        from PIL import Image, ImageDraw
+
+        def frame(person: tuple[int, int, int, int]) -> bytes:
+            buf = __import__("io").BytesIO()
+            img = Image.new("RGB", (400, 200), (0, 0, 0))
+            ImageDraw.Draw(img).rectangle(person, fill=(220, 220, 220))
+            img.save(buf, format="JPEG", quality=95)
+            return buf.getvalue()
+
+        small = frame((10, 10, 40, 50))
+        large = frame((220, 20, 380, 180))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = CameraPresenceStateMachineTests().make_service(root)
+            service.motion = FakeMotionGate()
+            service.detector = FakeDetector([
+                camera_presence.PersonResult(ok=True, confidence=0.9, bbox=[10, 10, 40, 50], status="ready"),
+                camera_presence.PersonResult(ok=True, confidence=0.7, bbox=[220, 20, 380, 180], status="ready"),
+            ])
+            with patch("camera_presence._now", return_value=3000.0):
+                await service.process_snapshot({}, small)
+            with patch("camera_presence._now", return_value=3002.0):
+                second = await service.process_snapshot({}, large)
+            self.assertEqual(second["presence"], "home")
+            snaps = list(root.glob("events/*/snapshot.jpg"))
+            self.assertEqual(len(snaps), 1)
+            with Image.open(snaps[0]) as out:
+                cx, cy = out.size[0] // 2, out.size[1] // 2
+                self.assertGreater(out.getpixel((cx, cy))[0], 160)
+
+
 if __name__ == "__main__":
     unittest.main()

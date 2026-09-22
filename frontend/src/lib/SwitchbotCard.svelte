@@ -1,22 +1,14 @@
 <script lang="ts">
   import Card from '$lib/Card.svelte';
-  import { store, type HoldDuration, type PowerHold } from '$lib/ws.svelte';
+  import { store, type PowerHold, type PowerMode } from '$lib/ws.svelte';
 
-  // Auto is the ground state (floor/resume band from the hub, default 15/25 %). A tap is a hold with an
-  // expiry, chosen on a small wheel. "auto" drops the hold again.
-  const WHEEL: { id: HoldDuration; label: string }[] = [
-    { id: '1h', label: '1 t' },
-    { id: '2h', label: '2 t' },
-    { id: '5h', label: '5 t' },
-    { id: 'tomorrow', label: 'i morgen' }
-  ];
-
-  let picking = $state(false);
   let expectAc = $state<boolean | null>(null);
   let expectTimer: ReturnType<typeof setTimeout> | null = null;
 
   const acOn = $derived(expectAc ?? !!store.fossibot.acOn);
+  const mode = $derived(store.power.mode ?? 'auto');
   const hold = $derived(store.power.hold);
+  const window = $derived(autoWindow(store.solar.sunrise, store.solar.sunset, store.solar.now));
 
   $effect(() => {
     const live = !!store.fossibot.acOn;
@@ -29,6 +21,33 @@
     expectTimer = null;
   }
 
+  function minutes(hm: string | null | undefined): number | null {
+    if (!hm) return null;
+    const parts = hm.split(/[:.]/).map(Number);
+    if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return null;
+    return parts[0] * 60 + parts[1];
+  }
+
+  function clockHm(): string {
+    if (store.solar.now) return store.solar.now;
+    return new Date().toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+
+  function autoWindow(
+    sunrise: string | null | undefined,
+    sunset: string | null | undefined,
+    nowHm?: string | null
+  ): { start: string; end: string; startLabel: string; endLabel: string } {
+    const nowM = minutes(nowHm ?? clockHm());
+    const riseM = minutes(sunrise);
+    const setM = minutes(sunset);
+    const day = nowM != null && riseM != null && setM != null && nowM >= riseM && nowM < setM;
+    if (day) {
+      return { start: 'hjemme', end: sunset ?? '–', startLabel: 'tænder', endLabel: 'slukker' };
+    }
+    return { start: sunset ?? '–', end: sunrise ?? '–', startLabel: 'slukkede', endLabel: 'tænder' };
+  }
+
   function holdLabel(h: PowerHold): string {
     const at = new Date(h.until * 1000);
     const hm = at.toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' });
@@ -36,65 +55,54 @@
     return sameDay ? `til ${hm}` : `til i morgen ${hm}`;
   }
 
-  // The glowing button already says on/off; the header only adds what it cannot.
   const status = () => {
     if (expectAc != null) return 'skifter…';
-    if (picking) return acOn ? 'sluk i…' : 'tænd i…';
     if (!store.fossibot.online) return 'offline';
     return hold ? holdLabel(hold) : '';
   };
 
-  function tap() {
+  function setMode(next: PowerMode) {
     if (expectAc != null) return;
-    picking = !picking;
-  }
-
-  function choose(duration: HoldDuration) {
-    const target = !acOn;
-    picking = false;
-    expectAc = target;
-    store.setPowerHold(target, duration);
-    // The finger may miss or the bot may be off; do not show "skifter…" forever.
+    if (next === 'on') expectAc = true;
+    else if (next === 'off') expectAc = false;
+    else settle();
+    store.setPowerMode(next);
+    if (next === 'auto') return;
     if (expectTimer) clearTimeout(expectTimer);
     expectTimer = setTimeout(settle, 25_000);
-  }
-
-  function backToAuto() {
-    picking = false;
-    store.clearPowerHold();
   }
 </script>
 
 <Card name="230 V" status={status()} online={acOn}>
   <div class="switchbot">
-    <button
-      type="button"
-      class="switchbot-btn"
-      class:on={acOn}
-      class:busy={expectAc != null}
-      class:picking
-      disabled={expectAc != null}
-      onclick={tap}
-      aria-label={acOn ? '230 volt tændt, tryk for at slukke' : '230 volt slukket, tryk for at tænde'}
-      aria-expanded={picking}
+    <div
+      class="power-window"
+      class:muted={mode !== 'auto'}
+      aria-label="{window.startLabel} {window.start}, {window.endLabel} {window.end}"
     >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" aria-hidden="true">
+      <div class="power-side">
+        <span class="power-label">{window.startLabel}</span>
+        <span class="power-sched">{window.start}</span>
+      </div>
+      <span class="power-dash">–</span>
+      <div class="power-side">
+        <span class="power-label">{window.endLabel}</span>
+        <span class="power-sched">{window.end}</span>
+      </div>
+    </div>
+
+    <div class="switchbot-glow" class:on={acOn} class:busy={expectAc != null} aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round">
         <path d="M12 3.2v8.2" />
         <path d="M7.2 6.4a8 8 0 1 0 9.6 0" />
       </svg>
-    </button>
+    </div>
 
-    {#if picking}
-      <div class="switchbot-wheel" role="group" aria-label={acOn ? 'Sluk 230 volt i' : 'Tænd 230 volt i'}>
-        {#each WHEEL as step (step.id)}
-          <button type="button" class="action-btn" onclick={() => choose(step.id)}>{step.label}</button>
-        {/each}
-      </div>
-    {:else if hold}
-      <div class="switchbot-wheel" role="group" aria-label="230 volt-styring">
-        <button type="button" class="action-btn" onclick={backToAuto}>auto</button>
-      </div>
-    {/if}
+    <div class="power-modes" role="group" aria-label="230 volt-styring">
+      <button type="button" class="action-btn" class:active={mode === 'on'} disabled={expectAc != null} onclick={() => setMode('on')}>tænd</button>
+      <button type="button" class="action-btn" class:active={mode === 'auto'} disabled={expectAc != null} onclick={() => setMode('auto')}>auto</button>
+      <button type="button" class="action-btn" class:active={mode === 'off'} disabled={expectAc != null} onclick={() => setMode('off')}>sluk</button>
+    </div>
   </div>
 </Card>
 
@@ -103,13 +111,58 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: space-evenly;
     height: 100%;
     width: 100%;
-    gap: 18px;
+    gap: 14px;
+    padding: 14px 6px;
   }
 
-  .switchbot-btn {
+  .power-window {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    transition: opacity 0.3s ease;
+  }
+
+  .power-window.muted {
+    opacity: 0.35;
+  }
+
+  .power-side {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .power-label {
+    color: #7a7a7a;
+    font-size: 0.62rem;
+    font-weight: 300;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    line-height: 1;
+  }
+
+  .power-sched {
+    color: #f2f2f2;
+    font-size: 2.4rem;
+    font-weight: 200;
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .power-dash {
+    color: #9b9b9b;
+    font-size: 1.4rem;
+    font-weight: 200;
+    line-height: 1;
+    padding-bottom: 0.2em;
+  }
+
+  .switchbot-glow {
     display: grid;
     place-items: center;
     width: min(28vw, 22vh, 132px);
@@ -117,47 +170,49 @@
     padding: 0;
     border: 1px solid rgba(255, 255, 255, 0.22);
     border-radius: 50%;
-    background: transparent;
     color: #555;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
     transition: color 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease, opacity 0.25s ease;
   }
 
-  .switchbot-btn svg {
+  .switchbot-glow svg {
     width: 42%;
     height: 42%;
   }
 
-  .switchbot-btn.on {
+  .switchbot-glow.on {
     color: var(--accent);
     border-color: rgba(0, 128, 200, 0.55);
     box-shadow: 0 0 22px 2px rgba(0, 128, 200, 0.28);
   }
 
-  .switchbot-btn.picking {
-    border-color: rgba(255, 255, 255, 0.6);
-  }
-
-  .switchbot-btn:active:not(:disabled) {
-    opacity: 0.7;
-  }
-
-  .switchbot-btn.busy {
+  .switchbot-glow.busy {
     opacity: 0.45;
   }
 
-  .switchbot-btn:disabled {
-    cursor: default;
-  }
-
-  .switchbot-wheel {
+  .power-modes {
     display: flex;
     gap: 6px;
   }
 
   @media (max-width: 932px) {
-    .switchbot-btn {
+    .switchbot {
+      gap: 8px;
+      padding: 6px 4px;
+    }
+    .power-window {
+      gap: 10px;
+    }
+    .power-label {
+      font-size: 0.52rem;
+      letter-spacing: 0.12em;
+    }
+    .power-sched {
+      font-size: 1.7rem;
+    }
+    .power-dash {
+      font-size: 1rem;
+    }
+    .switchbot-glow {
       width: min(26vw, 20vh, 104px);
       height: min(26vw, 20vh, 104px);
     }

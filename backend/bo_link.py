@@ -89,12 +89,17 @@ async def _nudge_m5_volume() -> None:
 async def expand_to_a9(source_prefix: str) -> None:
     """A9 skal joine M5'en på en specifik kilde (fx 'spotify' eller 'dlna').
 
-    Vi sender ActiveSources-kommando til A9, og giver M5'ens volumen et lille
-    nudge bagefter for at vække audio-streamen til A9'en (gammel B&O-quirk —
-    uden volumen-skubbet falder A9'en undertiden tilbage til lokal kilde).
+    Mozart can sit in standby while the cabinet still looks awake. Wake A9
+    before the join; otherwise ActiveSources returns 2xx and the speaker
+    never becomes a listener. Then nudge M5 volume so the stream actually
+    reaches A9 (old B&O quirk).
     """
     full_source_id = f"{source_prefix}:{BEO_M5_JID}"
     try:
+        await _http.put(
+            f"http://{BEO_A9_IP}:8080/BeoDevice/powerManagement/standby",
+            json={"standby": {"powerState": "on"}},
+        )
         r = await _http.post(
             f"http://{BEO_A9_IP}:8080/BeoZone/Zone/ActiveSources",
             json={

@@ -1,0 +1,11 @@
+---
+description: This repo develops only on main — never a feature branch
+alwaysApply: true
+---
+
+# One branch: main
+
+This repository has **one** development branch: `main`. Work lands there directly. No PRs, no cleanup branches, no Cursor cloud branches.
+
+- If `git branch --show-current` is not `main`, stop. Merge or move the work onto `main` before any other edit.
+- Never `git checkout -b`, never push a side branch, never keep working on `playback-cleanup` or `cursor/*`.

@@ -62,3 +62,19 @@ class EnsureM5SpotifyTests(unittest.IsolatedAsyncioTestCase):
         http.get = AsyncMock(return_value=_resp(payload={"deviceID": "", "spotifyError": 1}))
         with patch.object(bo_link, "_http", http), patch.object(bo_link.asyncio, "sleep", AsyncMock()):
             self.assertIsNone(await bo_link.ensure_m5_spotify())
+
+
+class ExpandToA9Tests(unittest.IsolatedAsyncioTestCase):
+    async def test_wakes_a9_before_joining_m5(self):
+        http = AsyncMock()
+        http.put = AsyncMock(return_value=_resp())
+        http.post = AsyncMock(return_value=_resp())
+        http.get = AsyncMock(return_value=_resp(payload={"volume": {"speaker": {"level": 35}}}))
+        with patch.object(bo_link, "_http", http), patch.object(bo_link.asyncio, "sleep", AsyncMock()):
+            await bo_link.expand_to_a9("dlna")
+        wake = http.put.call_args_list[0]
+        self.assertIn("powerManagement/standby", wake.args[0])
+        self.assertEqual(wake.kwargs["json"], {"standby": {"powerState": "on"}})
+        join = http.post.call_args
+        self.assertIn("ActiveSources", join.args[0])
+        self.assertTrue(join.kwargs["json"]["primaryExperience"]["source"]["id"].startswith("dlna:"))

@@ -293,6 +293,11 @@ def default_audio_target() -> str:
     return str(audio.get("defaultTarget") or "") if isinstance(audio, dict) else ""
 
 
+def garden_player_url() -> str:
+    """Local go-librespot HTTP API on the garden Pi."""
+    return os.environ.get("HUB_GARDEN_PLAYER_URL", "http://127.0.0.1:3678").rstrip("/")
+
+
 def spotify_connect_device() -> str:
     """Preferred Spotify Connect device name to route playback to.
 

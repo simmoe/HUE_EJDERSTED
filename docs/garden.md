@@ -21,15 +21,32 @@ Do **not** keep a self-signed cert on the garden hub. Chrome periodically drops
 trust (`ERR_CERT_AUTHORITY_INVALID`), snapshot uploads stop, and presence flips
 to a stale/blind state even though the phone camera is still running.
 
-Use Tailscale's Let's Encrypt integration instead:
+The cert on the Pi is already a public Let's Encrypt cert for the MagicDNS
+name in `certs/public-url.txt`. Public CAs will not sign `192.168.8.133`
+(free or paid). Opening the LAN IP is therefore always a name mismatch.
 
-1. Enable **HTTPS Certificates** in the Tailscale admin DNS settings.
-2. On the Pi: `./scripts/provision-tls-cert.sh && sudo systemctl restart hue`
-3. Point the Android kiosk at the MagicDNS URL from `certs/public-url.txt`
-   (install Tailscale on the phone, same tailnet, MagicDNS on).
-4. Enable the renew timer: `scripts/hue-tls-renew.service` + `.timer`
+Chrome's `fetch()` / WebSocket still fail with `ERR_CERT_COMMON_NAME_INVALID`
+after "proceed anyway" on the document. The service worker can keep showing a
+cached splash while `/api` is dead. The kiosk URL must be the name on the cert.
 
-`deploy.sh garden` refreshes the cert when Tailscale is available.
+Free ways to make that name resolve (pick one):
+
+1. **Tailscale on the phone**, same tailnet, MagicDNS on — or
+   `./scripts/kiosk-goto-public-url.sh --always-on-vpn` so it stays up.
+   Traffic then comes from the phone's Tailscale IP; keep that in
+   `HUB_CAMERA_PUBLISHER_HOSTS` if snapshots stop.
+2. **LAN DNS** — the garden Pi already runs dnsmasq
+   (`/etc/dnsmasq.d/hue-garden-tls.conf`) answering the MagicDNS name with
+   `192.168.8.133`. Point DHCP DNS at the Pi (Huawei B535: Primary/Secondary
+   `192.168.8.133`). Refresh the existing tab with
+   `./scripts/kiosk-goto-public-url.sh` (DevTools navigate, never a VIEW intent).
+   Re-run `sudo ./scripts/install-garden-lan-dns.sh` only if that snippet is missing.
+
+Do not switch kiosk browser to dodge this. Firefox can store an IP exception;
+Chrome will not, and we already have a trusted cert for the hostname.
+
+`deploy.sh garden` refreshes the cert when Tailscale is available. Renew timer:
+`scripts/hue-tls-renew.service` + `.timer`.
 
 ## Runtime Config
 
@@ -66,9 +83,10 @@ track change in one physical hub must not pause or advance the other hub.
 Garden playback never falls back to an arbitrary Spotify device or to the
 Vesterbro B&O/DLNA routes:
 
-- Spotify tracks and episodes require the exact `Ejdersted Garden` Connect
-  device. If its long-running connection becomes stale, the backend restarts
-  `librespot` once and resolves the exact device again.
+- Spotify tracks and episodes play through the on-Pi `go-librespot` HTTP
+  API to BlueALSA. The kiosk does not depend on the Spotify app seeing a
+  Connect device. A stored session lives in `~/.config/go-librespot`; if
+  the process is down, play starts the `librespot` unit and waits.
 - Before Spotify starts, the backend verifies that the configured garden
   BlueALSA speaker is online. If it cannot connect, the UI receives
   `Gå hen og tænd højttaleren`.
@@ -107,47 +125,80 @@ port if it is free. Relæ 5 V/GND remains on the Pi header.
 The old powerbank/UPS island is optional. USB sleep was the empty-port
 problem, not “USB cannot power a Pi”.
 
-## AC policy (SwitchBot) — floor, hold, resume
+## Fossibot DC group (12 V) — from the F2400 manual
 
-Always on for the garden hub; there is no mode switch. After each Fossibot
-poll (`power.py`), top layer wins:
+Source: `.static/FOSSiBOT-F2400.txt` (OCR of the scanned user manual;
+searchable PDF: `.static/FOSSiBOT-F2400-OCR.pdf`). English pages 6 and 13.
 
-- **floor** SoC ≤ off % (default 15) and AC on → press (AC off). Beats everything and
-  burns a hold-on, so the outlet does not flap at the threshold.
-- **hold** a tap on the kiosk's 230 V card: AC on/off until a wall-clock
-  deadline chosen on the wheel — `1h · 2h · 5h · tomorrow` (tomorrow = next
-  day's solar on-time, 08:00 if solar is off). Persisted in
-  `power_state.json` as `{ "hold": { acOn, until, duration } }`. `auto`
-  drops it.
-- **resume** SoC ≥ on % (default 25) and AC off → press (AC on).
-- between → no opinion.
+One **DC ON/OFF** button switches the whole 12 V group. Short press on, short
+press off. Separate from the USB button and the AC button.
+
+| Port | Manual name | Rating | Count |
+| --- | --- | --- | --- |
+| DC5521 (round 5.5×2.1) | DC 5521 / DC output | 12 V / 3 A | ×2 |
+| Cigarette / cigar lighter | Cigarette port / Car Charging Output | 12 V / 10 A | ×1 |
+| XT60 | XT-60 Output | 12 V / 25 A | ×1 |
+
+Anderson on the side is **input** (solar via Anderson-to-MC4, or the ACC car
+charging cable into the Anderson port) — not a 12 V load socket.
+
+Garden plan: Pi on a USB-C PD car charger in the cigarette socket; Huawei B535
+on one DC5521 (12 V / 1 A, centre-positive). XT60 is surplus for this hop.
+
+## AC policy (SwitchBot) — mode, floor, home, night
+
+Always on for the garden hub. After each Fossibot poll (`power.py`), top
+layer wins:
+
+- **mode** tænd / auto / sluk. Tænd and sluk stay until Simon changes them.
+  Nothing else overrides a manual setting — not the 15 % floor, not home,
+  not night. A press already decided in auto is re-checked after the SwitchBot
+  lock: if tænd/sluk landed in the meantime, that press withdraws.
+- **floor** SoC ≤ off % (default 15) and AC on → press (AC off). **Auto only.**
+  Burns a hold-on so the outlet does not flap at the threshold.
+- **home** camera presence `home` → AC on. Only in auto. 230 V is for people,
+  not for daylight or a high SoC.
+- **night** after **civil sunset** (not the charge-relay cutoff at sunset − 90
+  min) → AC off. Only in auto. Home keeps 230 V on; dark/blind/unknown
+  still cuts.
+- else → no opinion. Sunrise and SoC ≥ 25/55 do **not** turn the inverter on.
+
+The 230 V card shows the current auto period until the next clock switch:
+day `hjemme – {sunset}` (tænder / slukker), night `{sunset} – {sunrise}`
+(slukkede / tænder). Muted when mode is not auto.
 
 The band is a deploy setting: `HUB_POWER_OFF_PERCENT` / `HUB_POWER_ON_PERCENT`
-(→ `hub_config.power_config()` → `power.Band`). Plan: raise to 45/55 to keep a
-reserve through grey days — **but only after the router and Pi are on the
-Fossibot DC group**. While the router is on 230 V, a floor above the current
-SoC takes the whole garden offline until SoC climbs back to the resume level.
+(→ `hub_config.power_config()` → `power.Band`). `onPercent` is unused until we
+need a floor-resume again.
 
-WS `set_power_hold {acOn, duration}` / `clear_power_hold`; REST
-`POST /api/power/hold` with the same body or `{ "clear": true }`. Every press
-the Pi makes lands in Firestore `ejdersted/fossibot_garden/events` with
-`source: floor | rule | hold`.
+WS `set_power_mode {mode}` / REST `POST /api/power/mode`. Timed hold remains
+as `set_power_hold` / `POST /api/power/hold` and only applies in auto. Every
+press the Pi makes lands in Firestore `ejdersted/fossibot_garden/events` with
+`source: floor | hold | home | night`. Five-minute snapshots on
+`ejdersted/fossibot_garden` include `kioskBatteryPercent` and `kioskCharging`.
 
-The night rule (AC off outside the sun window unless someone is home) is
-**not** built: 230 V also feeds the router, so it would cut the Pi's uplink.
-First move the Huawei to 12 V from the Fossibot (USB-C PD trigger cable or a
-DC5521 port), then add the rule.
+The kiosk still charges from 230 V. Plan: move it to **Fossibot USB** (own
+button, survives AC off) so a night cut does not kill the phone. Until then a
+night cut is also a battery experiment.
 
 The finger belongs on the Fossibot **AC** button, never the main power
 switch (that would kill USB and the Pi).
 
 ## Garden lights after mains
 
-Lamps on Fossibot 230 V boot **on**. When the **resume rule** pressed within
-the last 3 min and AC comes back, a sweep starts: wait ~20 s, then send a
-generic `OFF` through `light_bus` (retries for 15 min until each lamp is
-online and off). A hold-on from the kiosk or a finger on the Fossibot is
-Simon opening the hut and does not touch the lights.
+Lamps on Fossibot 230 V boot **on**. An unattended SoC-resume used to sweep
+them off; that resume is gone. Tænd on the kiosk or a finger on the Fossibot
+is Simon opening the hut and does not touch the lights. Camera `home`
+turning AC on is the same — do not sweep.
+
+Every AC edge, kiosk/REST command, Zigbee read/report and sensor bind is
+logged to `backend/var/lights.jsonl` and journal `[lights]`. Lookup:
+`GET /api/lights/log`. Zigbee on/off on the kiosk is a cluster read (or a
+command result), never a default `off`. The toilet motion sensor is bound
+only when it has been heard recently.
+
+Kiosk tablet heartbeat: `GET /api/kiosk/status` and Firestore
+`ejdersted/kiosk_{site}`. Hub helpers: `scripts/hubctl`.
 
 `light_bus` is the only handler (on/off/dim/colour/white). Flare is the
 Tuya adapter. The bed rail is `protocol: zigbee` (Sonoff dongle on the
@@ -157,7 +208,7 @@ not a second policy.
 
 Gårdlys scenes: `kraftig` / `dæmpet` (warm white) and `fest` (slow
 tequila-sunrise wash). Seng is tap on/off, ±, long-press fade. Toilet
-is a TRADFRI bulb plus motion sensor: the sensor binds locally to the
+is a STOFTMOLN plus motion sensor: the sensor binds locally to the
 bulb; the kiosk only speaks to the bulb.
 
 ## Deploy
@@ -265,7 +316,7 @@ but Isc ≈ 31 A against a 20 A input, and nameplate 1000 W against a 500 W
 clip. Same-class pairing only if we ever add more — never mix 12 V / 18 V
 classes with this one.
 
-Fossibot samples (SoC, solar W, out W, `acOn`/`usbOn`) are written to Firestore
+Fossibot samples (SoC, solar / AC-in / total-in W, out W, `acOn`/`dcOn`/`usbOn`) are written to Firestore
 `ejdersted/fossibot_garden` plus `samples/{yyyyMMddTHHmm}` every five minutes,
 and immediately when a port or online/charging flag flips. Intended rules for
 p5-diary-ca5f7. Live rules (fetched 2026-08-30) are still the 2022 test-mode

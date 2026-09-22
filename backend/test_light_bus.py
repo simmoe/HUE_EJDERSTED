@@ -59,6 +59,16 @@ class ApplyRoutingTests(unittest.TestCase):
         self.assertFalse(state["online"])
         self.assertEqual(state["protocol"], "zigbee")
 
+    def test_apply_logs_source(self):
+        dev = {"id": "bf1", "name": "Flare", "protocol": "tuya", "localKey": "k"}
+        with patch.object(light_bus.garden_lights, "set_brightness", return_value={"id": "bf1", "on": False, "online": True, "brightness": 0}):
+            with patch.object(light_bus.lights_log, "log") as log:
+                light_bus.apply(dev, light_bus.OFF, source="kiosk.brightness")
+        events = [call.args[0] for call in log.call_args_list]
+        self.assertIn("apply", events)
+        self.assertIn("apply.result", events)
+        self.assertEqual(log.call_args_list[0].kwargs["source"], "kiosk.brightness")
+
     def test_all_off_and_online(self):
         self.assertTrue(
             light_bus.all_off_and_online(

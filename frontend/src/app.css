@@ -92,20 +92,22 @@ html, body {
 .unified-vol-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
-  margin-top: -7px;
+  width: 20px;
+  height: 20px;
+  margin-top: -8px;
   border-radius: 50%;
-  background: var(--accent);
-  border: none;
+  background: #0080c8;
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 4px rgba(0, 128, 200, 0.18);
   transition: transform 0.15s ease, background-color 0.2s ease;
 }
 .unified-vol-slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  background: var(--accent);
-  border: none;
+  background: #0080c8;
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 4px rgba(0, 128, 200, 0.18);
   transition: transform 0.15s ease, background-color 0.2s ease;
 }
 
@@ -125,19 +127,21 @@ html, body {
 /* ── Shared card header ────────────────────────────────────────────────── */
 .card-top {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  height: 100%;
 }
 
 .card-name {
   font-size: 0.95rem;
   font-weight: 400;
+  line-height: 1;
   color: var(--light);
 }
 
 .card-status {
   font-size: 0.65rem;
+  line-height: 1;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--dark);

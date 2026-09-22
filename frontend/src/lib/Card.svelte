@@ -45,6 +45,10 @@
     transition: border-color 1.2s ease;
   }
 
+  .card:last-child {
+    border-bottom: none;
+  }
+
   .card.no-header {
     grid-template-rows: minmax(0, 1fr);
   }
@@ -54,7 +58,7 @@
     border: none;
     cursor: pointer;
     font-family: inherit;
-    padding: 6px 0 6px 16px;
+    padding: 0 0 0 16px;
     -webkit-tap-highlight-color: transparent;
   }
   .card-status-btn:active {

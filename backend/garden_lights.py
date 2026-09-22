@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import lights_log
+
 CONFIG_FILE = Path(__file__).parent.parent / "garden_lights.json"
 
 # Tuya local TCP (6668) dies if we reconnect every poll tick. tinytuya defaults
@@ -257,6 +259,20 @@ def adopt_scan(found: list[dict[str, str]]) -> None:
             )
 
 
+def _note_tuya_poll(state: dict[str, Any]) -> None:
+    light_id = str(state.get("id") or "")
+    prev = _last_good.get(light_id)
+    if prev and bool(prev.get("on")) == bool(state.get("on")) and prev.get("brightness") == state.get("brightness"):
+        return
+    lights_log.log(
+        "tuya.poll",
+        id=light_id,
+        on=state.get("on"),
+        brightness=state.get("brightness"),
+        was=None if not prev else prev.get("on"),
+    )
+
+
 def _remember(state: dict[str, Any]) -> dict[str, Any]:
     light_id = str(state.get("id") or "")
     if light_id and state.get("online"):
@@ -292,6 +308,7 @@ def read_device(dev: dict[str, str], *, use_grace: bool = True) -> dict[str, Any
         state["on"] = on
         state["any_on"] = on
         state["brightness"] = bri if on else 0
+        _note_tuya_poll(state)
         return _remember(state)
     except Exception as exc:
         failed = public_light(dev, online=False, error=str(exc))

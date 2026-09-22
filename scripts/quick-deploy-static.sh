@@ -64,15 +64,4 @@ echo "-> Building frontend..."
 echo "-> Syncing static build to $PI_HOST..."
 scp_copy backend/static "$PI_HOST:$PI_REPO_DIR/backend/"
 
-echo "-> Restarting $SERVICE_NAME..."
-ssh_run "$SUDO systemctl restart '$SERVICE_NAME'"
-
-echo "-> Checking $SERVICE_NAME..."
-STATUS=$(ssh_run "$SUDO systemctl is-active '$SERVICE_NAME' 2>/dev/null")
-if [[ "$STATUS" != "active" ]]; then
-  echo "Service is not active"
-  ssh_run "$SUDO journalctl -u '$SERVICE_NAME' --no-pager -n 20 2>&1"
-  exit 1
-fi
-
-echo "OK: $SERVICE_NAME active"
+echo "OK: static synced — hue left running. Reload the kiosk tab."

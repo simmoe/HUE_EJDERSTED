@@ -26,13 +26,13 @@ or a rewrite of `main.py`.
   step 4: Pi-owned state and Mac-owned secrets must not share one copy loop.
 - `.np-next-artist` loses its leading space → use `&nbsp;` in `+page.svelte`.
 - `Card.svelte` reserves padding-bottom twice.
-- librespot on garden is crash-looping (restart counter 69, login denied).
-  Re-auth or disable the unit; the restart loop burns CPU and battery.
+- Garden Spotify playback is `go-librespot` + stored device-auth session, not
+  the old rust librespot crash-loop. Play talks to the local HTTP API.
 - Frontend `ws.svelte.ts` ignores the `security_status` and `error` broadcasts.
 - `CAMERA_PRESENCE_WINDOW_SECONDS` is dead; `radio/build`≡`radio` and
   `album/build`≡`album` are duplicate routes; `features.playlists` is never
   checked by the backend. Delete.
-- `fossibot_log.policy_event_fields` docstring still says 15/25.
+- ~~`fossibot_log.policy_event_fields` docstring still says 15/25.~~
 
 ## 1. Loops that survive, one Bluetooth lock, unit in repo
 
@@ -164,10 +164,10 @@ Agreed, waiting on hardware:
 - **Raise the band to 45/55.** Already a deploy setting
   (`HUB_POWER_OFF_PERCENT=45 HUB_POWER_ON_PERCENT=55`). Flip it the day the
   cables are in; not before.
-- **Night rule.** AC off outside the sun window unless the kiosk says someone
-  is home; on only on VALLHORN alarm or kiosk tap. Needs step 3 (kiosk
-  health) and the DC move.
-- **Kiosk power-save before AC off.** Needs step 3.
+- **Night rule.** AC off after civil sunset unless the camera says someone
+  is home; on when someone is home. Not at sunrise, not at SoC 55 %. Tried
+  2026-09-16 after the router moved to DC. Kiosk still on 230 V until USB.
+- **Kiosk onto Fossibot USB.** So a night cut does not kill the phone.
 
 ---
 

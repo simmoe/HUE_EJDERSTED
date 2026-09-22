@@ -179,6 +179,46 @@ class PlayUrisQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(duration, 0)
 
 
+class GardenLocalPlayerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_garden_play_uses_local_player(self):
+        client = _client()
+        local = AsyncMock(return_value=(True, "", 1000))
+        client._http.put = AsyncMock()
+        with (
+            patch.object(spotify.hub_config, "site", return_value="garden"),
+            patch.object(client, "_play_garden_uris", local),
+        ):
+            ok, detail, duration = await client.play_uris_queue(["spotify:track:abc"])
+        local.assert_awaited_once()
+        self.assertTrue(ok)
+        self.assertEqual(detail, "")
+        self.assertEqual(duration, 1000)
+        client._http.put.assert_not_called()
+
+    async def test_garden_player_down_is_silent(self):
+        client = _client()
+        client._http.put = AsyncMock()
+        with (
+            patch.object(spotify.hub_config, "site", return_value="garden"),
+            patch.object(client, "_play_garden_uris", AsyncMock(return_value=(False, "", 0))),
+        ):
+            ok, detail, _ = await client.play_uris_queue(["spotify:track:abc"])
+        self.assertFalse(ok)
+        self.assertEqual(detail, "")
+        self.assertNotIn("offline", detail.lower())
+        client._http.put.assert_not_called()
+
+    async def test_garden_pause_hits_local_player(self):
+        client = _client()
+        post = AsyncMock(return_value=True)
+        with (
+            patch.object(spotify.hub_config, "site", return_value="garden"),
+            patch.object(client, "_garden_player_post", post),
+        ):
+            self.assertTrue(await client.pause())
+        post.assert_awaited_with("/player/pause")
+
+
 class PauseTargetsHouseTests(unittest.IsolatedAsyncioTestCase):
     async def test_pause_without_house_speaker_still_stops_active_player(self):
         client = _client()
@@ -188,6 +228,7 @@ class PauseTargetsHouseTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(client, "_headers", AsyncMock(return_value={"Authorization": "Bearer x"})),
             patch.object(client, "_target_device_id", AsyncMock(return_value=None)),
+            patch.object(spotify.hub_config, "site", return_value="home"),
         ):
             self.assertTrue(await client.pause())
         self.assertEqual(client._http.put.call_count, 1)
@@ -201,6 +242,7 @@ class PauseTargetsHouseTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(client, "_headers", AsyncMock(return_value={"Authorization": "Bearer x"})),
             patch.object(client, "_target_device_id", AsyncMock(return_value="m5")),
+            patch.object(spotify.hub_config, "site", return_value="home"),
         ):
             self.assertTrue(await client.pause())
         self.assertEqual(client._http.put.call_count, 2)

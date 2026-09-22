@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import garden_lights
+import lights_log
 
 AFTER_AC_FIRST_WAIT_S = 20.0
 AFTER_AC_RETRY_S = 20.0
@@ -45,24 +46,58 @@ def protocol_of(dev: dict[str, Any]) -> str:
     return str(dev.get("protocol") or "tuya").strip().lower() or "tuya"
 
 
-def apply(dev: dict[str, Any], command: LightCommand, *, stop_scene: bool = True) -> dict[str, Any]:
+def apply(
+    dev: dict[str, Any],
+    command: LightCommand,
+    *,
+    stop_scene: bool = True,
+    source: str = "unknown",
+) -> dict[str, Any]:
+    light_id = str(dev.get("id") or "")
+    lights_log.log(
+        "apply",
+        id=light_id,
+        protocol=protocol_of(dev),
+        source=source,
+        on=command.on,
+        brightness=command.brightness,
+        hue=command.hue,
+        white=command.white or None,
+    )
     if stop_scene:
         import light_scenes
 
-        light_scenes.stop(str(dev.get("id") or ""))
+        light_scenes.stop(light_id)
     handler = _ADAPTERS.get(protocol_of(dev))
     if handler is None:
-        return garden_lights.public_light(
+        state = garden_lights.public_light(
             dev, online=False, error=f"ukendt protokol: {protocol_of(dev)}"
         )
+        lights_log.log("apply.result", id=light_id, source=source, ok=False, error=state.get("error"))
+        return state
     try:
-        return handler(dev, command)
+        state = handler(dev, command)
+        lights_log.log(
+            "apply.result",
+            id=light_id,
+            source=source,
+            online=state.get("online"),
+            on=state.get("on"),
+            brightness=state.get("brightness"),
+            error=state.get("error"),
+        )
+        return state
     except Exception as exc:
+        lights_log.log("apply.result", id=light_id, source=source, ok=False, error=str(exc)[:160])
         return garden_lights.public_light(dev, online=False, error=str(exc))
 
 
-def apply_all(command: LightCommand) -> list[dict[str, Any]]:
-    return [apply(dev, command) for dev in garden_lights.configured_devices() if dev.get("id")]
+def apply_all(command: LightCommand, *, source: str = "ac.sweep") -> list[dict[str, Any]]:
+    return [
+        apply(dev, command, source=source)
+        for dev in garden_lights.configured_devices()
+        if dev.get("id")
+    ]
 
 
 def refresh_for_apply() -> None:

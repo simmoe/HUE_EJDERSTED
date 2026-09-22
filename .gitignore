@@ -17,6 +17,8 @@ backend/var/
 # Runtime state on the Pi (not credentials, but machine-local)
 solar_state.json
 power_state.json
+fossibot_outbox.json
+podcast_state.json
 zigbee.db
 
 # Local config (contains credentials)

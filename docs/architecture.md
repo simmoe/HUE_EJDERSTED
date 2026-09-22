@@ -86,16 +86,19 @@ Home and garden share playlist library data, but not physical player state.
 - `ejdersted/security_garden` is the garden security/presence state: armed flag,
   presence state, alert flag, camera/model health, timestamps, confidence and
   evidence metadata.
-- `ejdersted/fossibot_garden` is the latest Fossibot snapshot (SoC, solar W,
-  output W, USB/AC, charging). History lives in the `samples` subcollection,
+- `ejdersted/fossibot_garden` is the latest Fossibot snapshot (SoC, solar/AC/total
+  in W, output W, USB/DC/AC, charging). History lives in the `samples` subcollection,
   one document per 5-minute UTC bucket. The garden backend writes these;
-  browsers must not. Garden AC policy (SoC floor/resume band, default 15/25 %, kiosk hold)
+  browsers must not. Garden AC policy (SoC floor, kiosk tænd/auto/sluk, camera home, night after sunset)
   lives on the Pi in `power_state.json`; each SwitchBot press it makes is
-  logged to the `events` subcollection with `source: floor | rule | hold`.
+  logged to the `events` subcollection with `source: floor | hold | home | night`.
 - `ejdersted/audio_home` and `ejdersted/audio_garden` hold playback handoff
   events (`events/{id}`). Each hub also keeps a local JSONL at
   `backend/var/audio.jsonl` and exposes `GET /api/audio/log` for debugging.
   Browsers must not write these documents.
+- Garden lights keep the same local JSONL at `backend/var/lights.jsonl`
+  (`GET /api/lights/log`): AC edges (including skipped sweeps), every
+  `light_bus.apply` with `source`, Zigbee reads/reports and sensor bind.
 
 The legacy `ejdersted/playlists` document is only used as a one-time seed when a
 site-specific player document does not exist yet.

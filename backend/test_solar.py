@@ -30,6 +30,17 @@ class SolarClockFailOpenTests(unittest.TestCase):
             night = datetime(2026, 8, 30, 1, 0, tzinfo=ctrl.tz)
             self.assertFalse(ctrl.desired_on(night, clock_trusted=True))
 
+    def test_daylight_uses_sunset_not_relay_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctrl = _controller(tmp)
+            # 18:30 in late August is after sunset-90 (relay off) but still
+            # before civil sunset — night rule must not fire yet.
+            dusk = datetime(2026, 8, 30, 19, 0, tzinfo=ctrl.tz)
+            self.assertFalse(ctrl.desired_on(dusk, clock_trusted=True))
+            self.assertTrue(ctrl.daylight(dusk))
+            night = datetime(2026, 8, 30, 22, 0, tzinfo=ctrl.tz)
+            self.assertFalse(ctrl.daylight(night))
+
     def test_auto_fail_opens_when_clock_is_untrusted(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctrl = _controller(tmp)

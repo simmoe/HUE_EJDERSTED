@@ -1,4 +1,4 @@
-const CACHE = 'hue-v98';
+const CACHE = 'hue-v107';
 const PRECACHE = ['/', '/manifest.json'];
 
 self.addEventListener('install', (e) => {
@@ -19,6 +19,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   // Skip WebSocket and API calls
   if (url.pathname.startsWith('/ws') || url.pathname.startsWith('/api')) return;
+  if (/\.(png|ico|svg)$/.test(url.pathname)) return;
   e.respondWith(
     fetch(e.request)
       .then((r) => {

@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
 # Deploy HUE_EJDERSTED to a configured Raspberry Pi target.
-# Usage: PI_HOST=simmoe@host HUB_SITE=garden ./deploy.sh <home|garden> [--no-build]
+# Usage: PI_HOST=simmoe@host HUB_SITE=garden ./deploy.sh <home|garden> [--no-build|--static]
 
 set -euo pipefail
 
 TARGET="${1:-}"
-NO_BUILD="${2:-}"
+MODE="${2:-}"
+NO_BUILD=""
+STATIC_ONLY=false
+if [[ "$MODE" == "--no-build" ]]; then
+  NO_BUILD="--no-build"
+elif [[ "$MODE" == "--static" ]]; then
+  STATIC_ONLY=true
+  NO_BUILD="--no-build"
+elif [[ -n "$MODE" ]]; then
+  echo "Unknown option: $MODE" >&2
+  echo "Usage: $0 <home|garden> [--no-build|--static]" >&2
+  exit 2
+fi
 
 if [[ -z "$TARGET" || "$TARGET" == "--help" || "$TARGET" == "-h" ]]; then
-  echo "Usage: $0 <home|garden> [--no-build]"
+  echo "Usage: $0 <home|garden> [--no-build|--static]"
+  echo
+  echo "  --static   sync backend/static only; do not restart hue"
+  echo "  --no-build skip the frontend build; still restarts hue"
   echo
   echo "Configure with environment variables from your global/local secret setup:"
   echo "  PI_HOST=simmoe@host-or-ip"
@@ -23,10 +38,6 @@ fi
 
 if [[ "$TARGET" != "home" && "$TARGET" != "garden" ]]; then
   echo "Target must be home or garden, got: $TARGET" >&2
-  exit 2
-fi
-if [[ -n "$NO_BUILD" && "$NO_BUILD" != "--no-build" ]]; then
-  echo "Unknown option: $NO_BUILD" >&2
   exit 2
 fi
 
@@ -73,6 +84,7 @@ if [[ "$HUB_SITE" == "garden" ]]; then
   HUB_FEATURE_SOLAR="${HUB_FEATURE_SOLAR:-true}"
   HUB_FEATURE_FOSSIBOT="${HUB_FEATURE_FOSSIBOT:-true}"
   HUB_FOSSIBOT_ADDRESS="${HUB_FOSSIBOT_ADDRESS:-F0:9E:9E:A5:D2:E6}"
+  HUB_SWITCHBOT_ADDRESS="${HUB_SWITCHBOT_ADDRESS:-ED:0F:02:06:46:56}"
 elif [[ "${HUB_FEATURE_CAMERA:-true}" == "true" && -z "${HUB_GARDEN_HUB_URL:-}" ]]; then
   echo "Refusing home deploy: HUB_GARDEN_HUB_URL is required for the camera viewer" >&2
   exit 2
@@ -139,6 +151,17 @@ if [[ -n "${PI_PASS:-}" ]]; then
   SUDO="echo '$PI_PASS' | sudo -S"
 fi
 
+if [[ "$STATIC_ONLY" == "true" ]]; then
+  if [[ ! -d backend/static ]]; then
+    echo "No backend/static — build the frontend first" >&2
+    exit 2
+  fi
+  echo "→ Syncing static build to $PI_HOST (hue stays up)..."
+  scp_copy backend/static "$PI_HOST:$PI_REPO_DIR/backend/"
+  echo "✓ Static sync OK — reload the kiosk tab; hue was not restarted"
+  exit 0
+fi
+
 if [[ "$NO_BUILD" != "--no-build" ]]; then
   echo "→ Building frontend for $TARGET..."
   if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
@@ -194,6 +217,11 @@ if [[ "$HUB_SITE" == "garden" ]]; then
   ssh_run "if [[ -x '$PI_REPO_DIR/.venv/bin/pip' ]]; then '$PI_REPO_DIR/.venv/bin/pip' install -q 'tinytuya>=1.13'; else python3 -m pip install -q --user 'tinytuya>=1.13'; fi"
   echo "→ Installing Fossibot BLE client (bleak)..."
   ssh_run "if [[ -x '$PI_REPO_DIR/.venv/bin/pip' ]]; then '$PI_REPO_DIR/.venv/bin/pip' install -q 'bleak>=0.22'; else python3 -m pip install -q --user 'bleak>=0.22'; fi"
+  if [[ -f scripts/librespot.service ]]; then
+    echo "→ Installing garden Spotify player unit..."
+    scp_copy scripts/librespot.service "$PI_HOST:/tmp/librespot.service"
+    ssh_run "$SUDO mv /tmp/librespot.service /etc/systemd/system/librespot.service && $SUDO systemctl daemon-reload && $SUDO systemctl enable librespot"
+  fi
   echo "→ Refreshing Tailscale/Let's Encrypt TLS certificate..."
   ssh_run "command -v tailscale >/dev/null && [[ -x '$PI_REPO_DIR/scripts/provision-tls-cert.sh' ]] && '$PI_REPO_DIR/scripts/provision-tls-cert.sh'"
   if [[ -z "${HUB_PUBLIC_URL:-}" ]]; then

@@ -56,6 +56,11 @@ type SyncPayload = {
   podcastPositionMs: number;
   podcastDurationMs: number;
   podcastUpdatedAt: number;
+  podcastSource: string;
+  podcastShowId: string;
+  podcastEngine: string;
+  podcastEpisodeId: string;
+  podcastEpisodeUri: string;
 };
 
 export const playlist = $state({
@@ -91,6 +96,12 @@ export const playlist = $state({
   podcastPositionMs: 0,
   podcastDurationMs: 0,
   podcastUpdatedAt: 0,
+  podcastSource: '',
+  podcastShowId: '',
+  podcastEngine: '',
+  podcastEpisodeId: '',
+  podcastEpisodeUri: '',
+  playStarting: false,
 });
 
 let scrollToNowPlayingImpl: (() => void) | undefined;
@@ -226,6 +237,7 @@ async function playUris(uris: string[]): Promise<boolean> {
   const first = uris[0];
   if (!first?.startsWith('spotify:track:')) return false;
   playInFlight = true;
+  playlist.playStarting = true;
   startingUri = first;
   if (pushTimer) {
     clearTimeout(pushTimer);
@@ -263,6 +275,7 @@ async function playUris(uris: string[]): Promise<boolean> {
     showFeedback((e as Error).message || 'POST /api/spotify/play-uris fejlede', { kind: 'error' });
   } finally {
     playInFlight = false;
+    playlist.playStarting = false;
   }
   return false;
 }
@@ -348,6 +361,11 @@ function currentSyncPayload(): SyncPayload {
     podcastPositionMs: playlist.podcastPositionMs,
     podcastDurationMs: playlist.podcastDurationMs,
     podcastUpdatedAt: playlist.podcastUpdatedAt,
+    podcastSource: playlist.podcastSource,
+    podcastShowId: playlist.podcastShowId,
+    podcastEngine: playlist.podcastEngine,
+    podcastEpisodeId: playlist.podcastEpisodeId,
+    podcastEpisodeUri: playlist.podcastEpisodeUri,
   };
 }
 
@@ -418,6 +436,31 @@ function normalizeSyncData(d: Record<string, unknown>): SyncPayload {
       : typeof d.podcastUpdatedAt === 'number'
         ? d.podcastUpdatedAt
         : 0,
+    podcastSource: typeof podcasts.source === 'string'
+      ? podcasts.source
+      : typeof d.podcastSource === 'string'
+        ? d.podcastSource
+        : '',
+    podcastShowId: typeof podcasts.showId === 'string'
+      ? podcasts.showId
+      : typeof d.podcastShowId === 'string'
+        ? d.podcastShowId
+        : '',
+    podcastEngine: typeof podcasts.engine === 'string'
+      ? podcasts.engine
+      : typeof d.podcastEngine === 'string'
+        ? d.podcastEngine
+        : '',
+    podcastEpisodeId: typeof podcasts.episodeId === 'string'
+      ? podcasts.episodeId
+      : typeof d.podcastEpisodeId === 'string'
+        ? d.podcastEpisodeId
+        : '',
+    podcastEpisodeUri: typeof podcasts.episodeUri === 'string'
+      ? podcasts.episodeUri
+      : typeof d.podcastEpisodeUri === 'string'
+        ? d.podcastEpisodeUri
+        : '',
   };
 }
 
@@ -472,6 +515,11 @@ function firestoreDocFromPayload(p: SyncPayload) {
       positionMs: p.podcastPositionMs,
       durationMs: p.podcastDurationMs,
       updatedAt: p.podcastUpdatedAt,
+      source: p.podcastSource,
+      showId: p.podcastShowId,
+      engine: p.podcastEngine,
+      episodeId: p.podcastEpisodeId,
+      episodeUri: p.podcastEpisodeUri,
     },
     updatedAt: serverTimestamp(),
   };
@@ -539,6 +587,11 @@ function applyPayload(incoming: SyncPayload) {
   playlist.podcastPositionMs = incoming.podcastPositionMs;
   playlist.podcastDurationMs = incoming.podcastDurationMs;
   playlist.podcastUpdatedAt = incoming.podcastUpdatedAt;
+  playlist.podcastSource = incoming.podcastSource;
+  playlist.podcastShowId = incoming.podcastShowId;
+  playlist.podcastEngine = incoming.podcastEngine;
+  playlist.podcastEpisodeId = incoming.podcastEpisodeId;
+  playlist.podcastEpisodeUri = incoming.podcastEpisodeUri;
   paintNpFromQueues();
 }
 
@@ -628,6 +681,7 @@ export async function togglePlayPause() {
   if (!forceFreshStart && pausedThisTrack) {
     const wanted = seedUriForAlbumBuild();
     if (wanted && (await speakerIsPausedOn(wanted))) {
+      playlist.playStarting = true;
       try {
         const r = await fetch('/api/spotify/resume', { method: 'POST' });
         const data = (await r.json()) as { ok?: boolean };
@@ -643,6 +697,8 @@ export async function togglePlayPause() {
         }
       } catch {
         /* fall through to a clean start */
+      } finally {
+        playlist.playStarting = false;
       }
     }
   }
@@ -705,6 +761,11 @@ export function setPodcastTransportFromPlayer(player: Record<string, unknown>, p
   playlist.podcastPositionMs = typeof player.positionMs === 'number' ? player.positionMs : 0;
   playlist.podcastDurationMs = typeof player.durationMs === 'number' ? player.durationMs : 0;
   playlist.podcastUpdatedAt = Date.now();
+  playlist.podcastSource = String(player.source ?? '');
+  playlist.podcastShowId = String(player.showId ?? '');
+  playlist.podcastEngine = String(player.engine ?? '');
+  playlist.podcastEpisodeId = String(player.episodeId ?? '');
+  playlist.podcastEpisodeUri = String(player.episodeUri ?? '');
   if (!player.active) {
     playlist.podcastQueue = [];
     playlist.podcastIndex = 0;
@@ -713,6 +774,11 @@ export function setPodcastTransportFromPlayer(player: Record<string, unknown>, p
     playlist.podcastPlaying = false;
     playlist.podcastPositionMs = 0;
     playlist.podcastDurationMs = 0;
+    playlist.podcastSource = '';
+    playlist.podcastShowId = '';
+    playlist.podcastEngine = '';
+    playlist.podcastEpisodeId = '';
+    playlist.podcastEpisodeUri = '';
   }
   if (push) schedulePush();
 }
@@ -727,6 +793,11 @@ export function clearPodcastTransport(push = true) {
   playlist.podcastPositionMs = 0;
   playlist.podcastDurationMs = 0;
   playlist.podcastUpdatedAt = Date.now();
+  playlist.podcastSource = '';
+  playlist.podcastShowId = '';
+  playlist.podcastEngine = '';
+  playlist.podcastEpisodeId = '';
+  playlist.podcastEpisodeUri = '';
   if (push) schedulePush();
 }
 
@@ -1033,6 +1104,7 @@ export async function initPlaylistHub(): Promise<() => void> {
   docRef = null;
   hydratedFromDoc = false;
   playInFlight = false;
+  playlist.playStarting = false;
   startingUri = '';
   pausedThisTrack = false;
   forceFreshStart = false;

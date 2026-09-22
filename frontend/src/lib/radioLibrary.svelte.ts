@@ -106,6 +106,7 @@ export async function initRadioLibrary(): Promise<() => void> {
       radioLibrary.playlists = parseItems(snap.exists() ? snap.data().items : []);
       radioLibrary.loading = false;
       radioLibrary.error = '';
+      void fillMissingCovers(radioLibrary.playlists);
     }, (err) => {
       radioLibrary.loading = false;
       radioLibrary.error = err.message || 'Kunne ikke hente radio-playlister';
@@ -121,6 +122,36 @@ export async function initRadioLibrary(): Promise<() => void> {
       unsub = null;
     }
   };
+}
+
+let fillingCovers = false;
+
+async function patchPlaylistCover(id: string, coverUrl: string): Promise<void> {
+  const ref = await ensureDocRef();
+  await runTransaction(getFirestore(ref.firestore.app), async (tx) => {
+    const snap = await tx.get(ref);
+    const items = parseItems(snap.exists() ? snap.data().items : []);
+    const next = items.map((p) => (p.id === id && !p.coverUrl ? { ...p, coverUrl } : p));
+    tx.set(ref, { items: next, updatedAt: serverTimestamp() }, { merge: true });
+  });
+}
+
+async function fillMissingCovers(items: RadioPlaylist[]): Promise<void> {
+  if (fillingCovers) return;
+  const missing = items.filter((p) => !p.coverUrl);
+  if (!missing.length) return;
+  fillingCovers = true;
+  try {
+    for (const p of missing) {
+      const artist = p.seedArtist || p.tracks[0]?.artist || '';
+      const title = p.seedName || p.tracks[0]?.name || '';
+      const coverUrl = await resolveCover(artist, title);
+      if (!coverUrl) continue;
+      await patchPlaylistCover(p.id, coverUrl);
+    }
+  } finally {
+    fillingCovers = false;
+  }
 }
 
 export async function saveRadioPlaylist(seed: QTrack, tracks: QTrack[]): Promise<RadioPlaylist> {

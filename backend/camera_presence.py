@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
+import math
 import os
 import time
 import urllib.request
@@ -11,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 try:
     import numpy as np
@@ -67,6 +70,103 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+_MONTHS_DA = ("jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt", "nov", "dec")
+_STAMP_FONTS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+)
+
+
+def format_evidence_stamp(ts: float) -> str:
+    dt = datetime.fromtimestamp(ts, tz=ZoneInfo("Europe/Copenhagen"))
+    return f"{dt.day}. {_MONTHS_DA[dt.month - 1]}. {dt.year}  {dt:%H:%M}"
+
+
+def _bbox_area(bbox: list[float] | None) -> float:
+    if not bbox or len(bbox) < 4:
+        return 0.0
+    return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
+
+
+def person_frame_score(confidence: float, bbox: list[float] | None) -> float:
+    return max(0.0, confidence) * math.sqrt(_bbox_area(bbox) + 1.0)
+
+
+def crop_to_person(body: bytes, bbox: list[float] | None) -> bytes:
+    """Zoom the evidence still onto the detected person instead of the whole room."""
+    if Image is None or not bbox or len(bbox) < 4:
+        return body
+    try:
+        with Image.open(io.BytesIO(body)) as img:
+            frame = img.convert("RGB")
+            width, height = frame.size
+            x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+            bw = max(1.0, x2 - x1)
+            bh = max(1.0, y2 - y1)
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+            # Tight box around the person. Cap on the short side so a landscape
+            # room shot cannot collapse back into the full frame.
+            side = max(bw, bh) * 1.8
+            side = max(side, 160.0)
+            side = min(side, float(min(width, height)))
+            crop = int(round(side))
+            left = int(round(cx - crop / 2.0))
+            top = int(round(cy - crop / 2.0))
+            left = max(0, min(left, width - crop))
+            top = max(0, min(top, height - crop))
+            right = left + crop
+            bottom = top + crop
+            if right - left < 32 or bottom - top < 32:
+                return body
+            cropped = frame.crop((left, top, right, bottom))
+            out = io.BytesIO()
+            cropped.save(out, format="JPEG", quality=88)
+            return out.getvalue()
+    except Exception:
+        return body
+
+
+def _stamp_font(size: int):
+    from PIL import ImageFont
+
+    for path in _STAMP_FONTS:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def stamp_evidence(body: bytes, ts: float) -> bytes:
+    if Image is None:
+        return body
+    try:
+        from PIL import ImageDraw
+
+        with Image.open(io.BytesIO(body)) as img:
+            frame = img.convert("RGB")
+            draw = ImageDraw.Draw(frame)
+            label = format_evidence_stamp(ts)
+            font_size = max(22, frame.width // 16)
+            font = _stamp_font(font_size)
+            pad_x = max(14, font_size)
+            pad_y = max(10, font_size // 3)
+            text_box = draw.textbbox((0, 0), label, font=font)
+            text_h = text_box[3] - text_box[1]
+            bar_h = text_h + pad_y * 2
+            y0 = frame.height - bar_h
+            draw.rectangle((0, y0, frame.width, frame.height), fill=(0, 0, 0))
+            draw.text((pad_x, y0 + pad_y - text_box[1]), label, font=font, fill=(255, 255, 255))
+            out = io.BytesIO()
+            frame.save(out, format="JPEG", quality=88)
+            return out.getvalue()
+    except Exception:
+        return body
 
 
 def _as_bool(value: Any) -> bool:
@@ -380,6 +480,7 @@ class CameraPresenceService:
         self.required_confirmations = required_confirmations
         self.detector_health_interval_seconds = detector_health_interval_seconds
         self.evidence_cooldown_seconds = evidence_cooldown_seconds
+        self._best_person: dict[str, Any] | None = None
         self.motion = MotionGate(
             baseline_file=baseline_file,
             candidate_threshold=_as_float(os.getenv("HUB_CAMERA_MOTION_THRESHOLD"), 0.035),
@@ -422,6 +523,7 @@ class CameraPresenceService:
             state["presence"] = presence
             state["alert"] = False
             state["confirmations"] = []
+            self._best_person = None
             self._write_state(state)
 
         return {
@@ -440,6 +542,7 @@ class CameraPresenceService:
             "lastSnapshotAtIso": _iso(last_snapshot),
             "lastPersonAge": max(0, now - last_person) if last_person else None,
             "lastSnapshotAge": max(0, now - last_snapshot) if last_snapshot else None,
+            "lastEvidenceAtIso": _iso(_as_float(state.get("lastEvidenceAt")) or None),
         }
 
     async def set_armed(self, armed: bool, *, firebase_config: dict[str, Any] | None = None, http_client: Any = None) -> dict[str, Any]:
@@ -491,6 +594,7 @@ class CameraPresenceService:
             state["personBbox"] = person.bbox if person.ok else None
             if person.ok:
                 confirmations.append(now)
+                self._note_person_frame(body, person, now)
         if len(confirmations) >= self.required_confirmations:
             state["lastPersonAt"] = now
 
@@ -538,6 +642,7 @@ class CameraPresenceService:
                 state["score"] = 0.0
                 state["motionScore"] = 0.0
                 state["backendScore"] = 0.0
+                self._best_person = None
         elif _as_float(state.get("lastPersonAt")) and now - _as_float(state.get("lastPersonAt")) < self.home_timeout_seconds:
             state["presence"] = "home"
             state["checkingSince"] = None
@@ -545,23 +650,25 @@ class CameraPresenceService:
             state["presence"] = "empty"
             state["alert"] = False
             state["checkingSince"] = None
+            self._best_person = None
 
         transitioned_home = old_presence != "home" and state["presence"] == "home"
         if transitioned_home:
             await self._capture_evidence(
                 state,
-                body,
+                self._evidence_still(body, person, now),
                 prefix="person",
                 firebase_config=firebase_config,
                 http_client=http_client,
             )
+            self._best_person = None
 
         if state.get("armed") and state["presence"] == "home":
             state["alert"] = True
             if not state.get("alertEventId"):
                 await self._capture_evidence(
                     state,
-                    body,
+                    self._evidence_still(body, person, now),
                     prefix="alert",
                     firebase_config=firebase_config,
                     http_client=http_client,
@@ -572,6 +679,28 @@ class CameraPresenceService:
         public = self.public_state()
         await self.sync_firestore(public, firebase_config=firebase_config, http_client=http_client)
         return public
+
+    def _note_person_frame(self, body: bytes, person: PersonResult, now: float) -> None:
+        if not person.ok or not person.bbox:
+            return
+        score = person_frame_score(person.confidence, person.bbox)
+        current = self._best_person
+        if current and score <= float(current.get("score") or 0):
+            return
+        self._best_person = {
+            "body": body,
+            "bbox": list(person.bbox),
+            "confidence": person.confidence,
+            "score": score,
+            "at": now,
+        }
+
+    def _evidence_still(self, body: bytes, person: PersonResult, now: float) -> bytes:
+        frame = self._best_person
+        src = frame["body"] if frame and frame.get("body") else body
+        bbox = frame.get("bbox") if frame else (person.bbox if person.ok else None)
+        at = float(frame.get("at") or now) if frame else now
+        return stamp_evidence(crop_to_person(src, bbox), at)
 
     async def _capture_evidence(
         self,

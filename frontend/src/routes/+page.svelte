@@ -64,7 +64,11 @@
   let dimmed = $state(false);
   // Keep the overlay eating the rest of the wake gesture so the click
   // does not land on Play / a lamp after pointerdown has already undimmed.
+  // Mouse and touch both fire click after pointerup; releasing on pointerup
+  // lets that click hit the UI behind the (now transparent) overlay.
   let dimBlocking = $state(false);
+  let dimBlockTimer: ReturnType<typeof setTimeout> | undefined;
+  const DIM_BLOCK_MS = 450;
   let idleInterval: ReturnType<typeof setInterval>;
   let lastActivityAt = Date.now();
 
@@ -124,12 +128,13 @@
     requestWakeLock();
     dimmed = false;
     dimBlocking = true;
+    clearTimeout(dimBlockTimer);
+    dimBlockTimer = setTimeout(() => { dimBlocking = false; }, DIM_BLOCK_MS);
   }
 
-  function releaseDimBlock(e?: Event) {
-    e?.preventDefault();
-    e?.stopPropagation();
-    dimBlocking = false;
+  function eatDimGesture(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   function noteActivity(wakeKiosk = false) {
@@ -193,6 +198,7 @@
   async function wakeHouseSpeaker(deviceId: string, name: string, level: number) {
     if (wakingSpeaker) return;
     wakingSpeaker = deviceId;
+    showFeedback(`forsøger at forbinde til ${name}`, { duration: 5000 });
     store.setVolume(deviceId, level);
     await new Promise((r) => setTimeout(r, 2200));
     const online = !!store.volumes[deviceId]?.online;
@@ -202,9 +208,22 @@
     wakingSpeaker = '';
   }
 
+  function audioTargetTitle(target: AudioTargetStatus): string {
+    const blob = `${target.id} ${target.name ?? ''}`.toLowerCase();
+    if (blob.includes('storm') || blob.includes('nowgo')) return 'storm';
+    return (target.name || target.id).replace(/[_-]+/g, ' ').trim().split(/\s+/)[0]?.toLowerCase() || 'højttaler';
+  }
+
+  function audioTargetStatus(target: AudioTargetStatus): string {
+    if (connectingAudioTarget === target.id) return 'forbinder…';
+    return target.online ? 'forbundet' : 'forbind';
+  }
+
   async function reconnectAudioTarget(targetId: string) {
     if (connectingAudioTarget) return;
     connectingAudioTarget = targetId;
+    const target = audioTargets.find((item) => item.id === targetId);
+    showFeedback(`forsøger at forbinde til ${target ? audioTargetTitle(target) : 'højttaler'}`, { duration: 5000 });
     try {
       const result = await store.connectAudioTarget(targetId);
       audioTargets = [
@@ -339,7 +358,9 @@
 
   /** Step a whole screen (all visible columns) in either direction. The
    *  carousel is a ring: pages are rotated in the DOM so scroll is always 0
-   *  when idle, and stepping wraps around. */
+   *  when idle, and stepping wraps around. Left and right use the same
+   *  smooth-scroll; going left only prepends first, then slides from the
+   *  parked offset back to 0. */
   function advance(direction: 1 | -1 = 1) {
     if (advancing || !pagesEl || pagesEl.children.length < 2) return;
     normalizeCarousel();
@@ -347,28 +368,33 @@
     const step = Math.min(visiblePageCount(), pagesEl.children.length - 1);
     if (width <= 0 || step < 1) return;
     advancing = true;
+    const from = direction > 0 ? 0 : width * step;
+    const to = direction > 0 ? width * step : 0;
+    let armed = false;
 
     function finish() {
+      if (!armed) return;
+      armed = false;
       pagesEl.removeEventListener('scrollend', finish);
       if (direction > 0) {
-        // Forward: the pages we scrolled past go to the back of the ring.
         for (let i = 0; i < step; i++) pagesEl.appendChild(pagesEl.firstElementChild as HTMLElement);
       }
-      pagesEl.scrollTo({ left: 0, behavior: 'instant' });
+      pagesEl.scrollLeft = 0;
       advancing = false;
     }
 
-    if (direction > 0) {
-      pagesEl.scrollTo({ left: width * step, behavior: 'smooth' });
-    } else {
-      // Backward: pull the last pages to the front, jump onto the current
-      // screen instantly, then glide back to 0 where the new pages sit.
+    if (direction < 0) {
       for (let i = 0; i < step; i++) pagesEl.prepend(pagesEl.lastElementChild as HTMLElement);
-      pagesEl.scrollTo({ left: width * step, behavior: 'instant' });
-      requestAnimationFrame(() => pagesEl.scrollTo({ left: 0, behavior: 'smooth' }));
+      pagesEl.scrollLeft = from;
     }
-    pagesEl.addEventListener('scrollend', finish, { once: true });
-    // Fallback if scrollend doesn't fire (older browsers)
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        armed = true;
+        pagesEl.addEventListener('scrollend', finish, { once: true });
+        pagesEl.scrollTo({ left: to, behavior: 'smooth' });
+      });
+    });
     setTimeout(() => { if (advancing) finish(); }, 700);
   }
 
@@ -738,26 +764,33 @@
   let loadingPodcastId = $state('');
   let loadingEpisodeId = $state('');
   let podcastInner = $state<HTMLDivElement>();
+  let podcastStarting = $state(false);
+  let playStartHint = $state('');
+  let connectHintShown = false;
   let showPodcastQueue = $state(false);
 
-  // Lists step two rows per arrow tap. The row nearest the top is "current";
-  // we land exactly on a row edge so the list never sits half a row off.
-  const LIST_STEP_ROWS = 2;
+  // One row per arrow tap so a nearly-visible row is not skipped.
+  // Top/bottom always land on the true edges (padding is not a stop).
+  const LIST_STEP_ROWS = 1;
 
   function scrollListRows(el: HTMLDivElement | undefined, selector: string, direction: 1 | -1) {
     if (!el) return;
     const rows = [...el.querySelectorAll<HTMLElement>(selector)];
     if (!rows.length) return;
     const currentTop = el.scrollTop;
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
     let current = rows.findIndex((row) => row.offsetTop >= currentTop - 12);
     if (current < 0) current = rows.length - 1;
-    const maxTop = el.scrollHeight - el.clientHeight;
     const targetIndex = current + direction * LIST_STEP_ROWS;
-    if (targetIndex >= rows.length || (direction > 0 && rows[targetIndex].offsetTop >= maxTop)) {
+    if (direction < 0 && targetIndex <= 0) {
+      el.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (direction > 0 && targetIndex >= rows.length - 1) {
       el.scrollTo({ top: maxTop, behavior: 'smooth' });
       return;
     }
-    el.scrollTo({ top: rows[Math.max(0, targetIndex)].offsetTop, behavior: 'smooth' });
+    el.scrollTo({ top: Math.min(rows[targetIndex].offsetTop, maxTop), behavior: 'smooth' });
   }
 
   function scrollPodcastPage(direction: 1 | -1) {
@@ -791,7 +824,8 @@
     if (!pagesEl) return;
     for (let i = 0; i < pagesEl.children.length; i++) {
       const first = pagesEl.firstElementChild as HTMLElement | null;
-      if (first?.dataset.page === 'podcast') break;
+      const second = pagesEl.children[1] as HTMLElement | undefined;
+      if (second?.dataset.page === 'podcast' || (!second && first?.dataset.page === 'podcast')) break;
       if (first) pagesEl.appendChild(first);
     }
     pagesEl.scrollTo({ left: 0, behavior: 'instant' });
@@ -800,6 +834,7 @@
   function openPodcastQueue() {
     if (!activePodcastPlayer.active && playlist.podcastQueue.length === 0) return;
     closeDrill();
+    libraryTab = 'podcasts';
     showPodcastQueue = true;
     requestAnimationFrame(() => podcastInner?.scrollTo({ top: 0, behavior: 'smooth' }));
   }
@@ -848,11 +883,13 @@
       setPodcastTransportFromPlayer(next as unknown as Record<string, unknown>, push);
       return;
     }
-    const wasPodcast = activePodcastPlayer.active || playlist.activeTransport === 'podcast';
+    const wasLiveBackend = activePodcastPlayer.active;
     activePodcastPlayer = next;
-    activePodcastId = '';
-    activeEpisodeId = '';
-    if (wasPodcast) clearPodcastTransport(push);
+    if (wasLiveBackend) {
+      activePodcastId = '';
+      activeEpisodeId = '';
+      clearPodcastTransport(push);
+    }
   }
 
   async function refreshPodcastPlayer(push = true) {
@@ -883,12 +920,20 @@
   }
 
   async function togglePodcastPlayPause() {
+    if (!activePodcastPlayer.active && playlist.activeTransport === 'podcast') {
+      await refreshPodcastPlayer();
+    }
     if (!activePodcastPlayer.active) return;
-    await postPodcastControl(activePodcastPlayer.playing ? 'pause' : 'resume');
-  }
-
-  async function clearPodcastQueue() {
-    await postPodcastControl('clear');
+    if (activePodcastPlayer.playing) {
+      await postPodcastControl('pause');
+      return;
+    }
+    podcastStarting = true;
+    try {
+      await postPodcastControl('resume');
+    } finally {
+      podcastStarting = false;
+    }
   }
 
   async function seekPodcast(offsetSeconds: number) {
@@ -930,6 +975,7 @@
       return;
     }
     loadingPodcastId = showId;
+    podcastStarting = true;
     try {
       await releaseSpotifyForPodcast();
       const ctrl = new AbortController();
@@ -947,6 +993,7 @@
           activePodcastId = showId;
           activeEpisodeId = (data.episode?.id as string) || '';
         }
+        await refreshPodcastPlayer();
         openPodcastQueue();
       } else {
         const detail = String(data.detail || data.error || '').trim();
@@ -956,6 +1003,7 @@
       showFeedback((e as Error).message || 'POST /api/podcasts/play-latest fejlede', { kind: 'error' });
     } finally {
       loadingPodcastId = '';
+      podcastStarting = false;
     }
   }
 
@@ -1022,6 +1070,7 @@
       return;
     }
     loadingEpisodeId = ep.id;
+    podcastStarting = true;
     try {
       await releaseSpotifyForPodcast();
       const ctrl = new AbortController();
@@ -1043,6 +1092,7 @@
           activeEpisodeId = ep.id;
           activePodcastId = drilledShow?.show_id ?? '';
         }
+        await refreshPodcastPlayer();
         openPodcastQueue();
       } else {
         const detail = String(data.detail || data.error || '').trim();
@@ -1052,6 +1102,7 @@
       showFeedback((e as Error).message || 'POST /api/podcasts/play fejlede', { kind: 'error' });
     } finally {
       loadingEpisodeId = '';
+      podcastStarting = false;
     }
   }
 
@@ -1084,32 +1135,22 @@
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
-  function isPodcastTransport(): boolean {
-    // The physical backend is authoritative. Firestore can briefly retain a
-    // completed podcast transport and must not turn the music Play button into
-    // a no-op after the backend has marked that podcast inactive.
-    return activePodcastPlayer.active;
+  function livePodcastPositionMs() {
+    return activePodcastPlayer.active ? activePodcastPlayer.positionMs : playlist.podcastPositionMs;
   }
 
-  function speakerNowPlaying() {
-    const m5 = store.devices.find((d) => /m5/i.test(d.name || ''));
-    if (m5 && store.nowPlaying[m5.id]?.name) return store.nowPlaying[m5.id];
-    for (const np of Object.values(store.nowPlaying)) {
-      if (np.name) return np;
-    }
-    return null;
+  function livePodcastDurationMs() {
+    return activePodcastPlayer.active ? activePodcastPlayer.durationMs : playlist.podcastDurationMs;
+  }
+
+  function isPodcastTransport(): boolean {
+    return activePodcastPlayer.active
+      || (playlist.activeTransport === 'podcast'
+        && !!(playlist.podcastEpisodeTitle || playlist.podcastShowTitle));
   }
 
   function liveNowPlaying() {
     if (isPodcastTransport()) {
-      const speaker = speakerNowPlaying();
-      if (speaker?.name) {
-        return {
-          title: speaker.name,
-          artist: speaker.artist || activePodcastPlayer.showTitle || playlist.podcastShowTitle || '',
-          fromSpeaker: true,
-        };
-      }
       return {
         title: activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast',
         artist: activePodcastPlayer.showTitle || playlist.podcastShowTitle || '',
@@ -1123,7 +1164,9 @@
   }
 
   function liveIsPlaying() {
-    if (isPodcastTransport()) return activePodcastPlayer.playing;
+    if (isPodcastTransport()) {
+      return activePodcastPlayer.active ? activePodcastPlayer.playing : playlist.podcastPlaying;
+    }
     return playlist.spotifyPlaying;
   }
 
@@ -1137,6 +1180,40 @@
 
   const liveNp = $derived.by(() => liveNowPlaying());
   const npPlaying = $derived.by(() => liveIsPlaying());
+  const playBusy = $derived(
+    playlist.playStarting || podcastStarting || !!loadingPodcastId || !!loadingEpisodeId
+  );
+
+  function speakerWaitingName(): string {
+    if (isGarden()) {
+      const target = audioTargets.find((item) => item.default) ?? audioTargets[0];
+      if (target && !target.online) return audioTargetTitle(target);
+      return '';
+    }
+    const devices = store.devices;
+    if (!devices.length) return '';
+    if (devices.every((device) => !store.volumes[device.id]?.online)) {
+      return (devices[0].name || 'højttaler').toLowerCase();
+    }
+    return '';
+  }
+
+  $effect(() => {
+    const busy = playlist.playStarting || podcastStarting;
+    if (!busy) {
+      playStartHint = '';
+      connectHintShown = false;
+      return;
+    }
+    const name = speakerWaitingName();
+    if (!name) return;
+    const hint = `forsøger at forbinde til ${name}`;
+    playStartHint = hint;
+    if (!connectHintShown) {
+      connectHintShown = true;
+      showFeedback(hint, { duration: 5000 });
+    }
+  });
 
   // ── Cached radio playlists ───────────────────────────────────────────────
   let loadingPlaylistId = $state('');
@@ -1287,13 +1364,12 @@
     tabindex="-1"
     aria-label="Væk kiosk"
     onpointerdown={(e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      eatDimGesture(e);
       noteActivity(true);
     }}
-    onpointerup={releaseDimBlock}
-    onpointercancel={releaseDimBlock}
-    onclick={releaseDimBlock}
+    onpointerup={eatDimGesture}
+    onpointercancel={eatDimGesture}
+    onclick={eatDimGesture}
     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') noteActivity(true); }}
   >
     {#if dimmed}
@@ -1301,7 +1377,7 @@
     {/if}
   </div>
 
-  <!-- Song streamer (above dim) -->
+  <!-- Song streamer (below dim overlay so a wake tap is never stolen) -->
   {#if streamer}
     <div class="streamer">
       <span class="streamer-title">{streamer.title}</span>
@@ -1345,8 +1421,7 @@
       </section>
     {/if}
 
-    <!-- PAGE · SOL (Fossibot + garden solar charge relay) ───────────────── -->
-    {#if enabled('solar') || enabled('fossibot')}
+    {#snippet solPage()}
     <section class="page">
       <div class="col-header" aria-hidden="true"></div>
       <div class="scroll-inner" bind:this={solInner}>
@@ -1388,15 +1463,17 @@
       </button>
       {/if}
     </section>
+    {/snippet}
+
+    {#if (enabled('solar') || enabled('fossibot')) && store.config.site === 'garden'}
+      {@render solPage()}
     {/if}
 
-    <!-- PAGE 0 · LYD ─────────────────────────────────────────────────────── -->
+    <!-- PAGE · LYD ──────────────────────────────────────────────────────── -->
     {#if enabled('audio') || enabled('spotify')}
     <section class="page">
       <div class="col-header" aria-hidden="true"></div>
       <div class="scroll-inner" bind:this={lydInner}>
-
-        <!-- Now Playing (default card, always visible) -->
         {#if enabled('spotify')}
         <div class="np-card" data-name="Afspiller">
           <div class="np-info">
@@ -1418,9 +1495,9 @@
               </div>
               {/if}
               <button type="button" class="np-podcast-progress" onclick={openPodcastSeek} aria-label="Spol i podcast">
-                {formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}
-                {#if activePodcastPlayer.durationMs || playlist.podcastDurationMs}
-                  / {formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
+                {formatProgress(livePodcastPositionMs())}
+                {#if livePodcastDurationMs()}
+                  / {formatProgress(livePodcastDurationMs())}
                 {/if}
               </button>
             {:else if liveNp.title}
@@ -1469,6 +1546,9 @@
               <span class="np-card-title np-card-title--muted">Ingen valgt sang</span>
               <span class="np-card-artist">Brug mikrofonen nedenfor for at tilføje til køen</span>
             {/if}
+            {#if playStartHint}
+              <span class="np-status">{playStartHint}</span>
+            {/if}
           </div>
           <div class="unified-vol unified-vol--horizontal np-volume" aria-label="Afspiller-volumen">
             <input
@@ -1487,8 +1567,8 @@
             <span class="unified-vol-value">{unifiedVolume}</span>
           </div>
           <div class="action-row np-actions">
-            <button type="button" class="action-btn" onclick={toggleNpPlayback}>
-              {npPlaying ? 'pause' : 'play'}
+            <button type="button" class="action-btn" class:loading={playBusy} disabled={playBusy} onclick={toggleNpPlayback}>
+              {playBusy ? '· · ·' : npPlaying ? 'pause' : 'play'}
             </button>
             {#if isPodcastTransport()}
               <button type="button" class="action-btn" onclick={openPodcastSeek}>spol</button>
@@ -1566,18 +1646,25 @@
           {#if audioTargets.length > 0}
             {@const single = audioTargets.length === 1 ? audioTargets[0] : null}
             <Card
-              name=""
-              status=""
+              name={single ? audioTargetTitle(single) : ''}
+              status={single ? audioTargetStatus(single) : ''}
               online={audioTargets.some((target) => target.online)}
+              onstatus={single ? () => void reconnectAudioTarget(single.id) : undefined}
             >
               <div class="audio-targets">
                 {#each audioTargets as target (target.id)}
                   <div class="audio-target" class:offline={!target.online}>
                     {#if !single}
                     <div class="audio-target-row">
-                      <div class="audio-target-main">
-                        <span class="audio-target-name">{target.name}</span>
-                      </div>
+                      <span class="audio-target-name">{audioTargetTitle(target)}</span>
+                      <button
+                        type="button"
+                        class="card-status card-status-btn"
+                        class:online={target.online}
+                        onclick={() => void reconnectAudioTarget(target.id)}
+                      >
+                        {audioTargetStatus(target)}
+                      </button>
                     </div>
                     {/if}
                     <div class="unified-vol unified-vol--horizontal audio-target-vol">
@@ -1588,13 +1675,11 @@
                         step="1"
                         class="unified-vol-slider"
                         value={readTargetVolume(target)}
+                        disabled={!target.online}
                         oninput={(e) => {
+                          if (!target.online) return;
                           const level = +(e.currentTarget as HTMLInputElement).value;
                           unifiedVolume = level;
-                          if (!target.online) {
-                            void reconnectAudioTarget(target.id);
-                            return;
-                          }
                           unifiedDragging = true;
                           queueTargetVolume(target.id, level);
                         }}
@@ -1643,7 +1728,7 @@
     </section>
     {/if}
 
-    <!-- PAGE 1 · BIBLIOTEK (playlister · podcast) ───────────────────────── -->
+    <!-- PAGE · BIBLIOTEK (playlister · podcast) ─────────────────────────── -->
     {#if enabled('playlists') || enabled('podcasts')}
     <section class="page" data-page="podcast">
       {#if libraryView === 'playlists' && drilledPlaylist}
@@ -1652,7 +1737,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="15 6 9 12 15 18" />
             </svg>
-            <span class="drill-back-label">{drilledPlaylist.name}</span>
+            <span class="drill-back-label">playlister</span>
           </button>
         </div>
       {:else if libraryView === 'podcasts' && showPodcastQueue}
@@ -1801,51 +1886,52 @@
         </button>
       {/if}
       {:else}
-      <div class="scroll-inner list-scroll" bind:this={podcastInner}>
+      <div
+        class="scroll-inner"
+        class:list-scroll={!showPodcastQueue}
+        class:podcast-queue-scroll={showPodcastQueue}
+        bind:this={podcastInner}
+      >
         {#if showPodcastQueue}
           <div class="podcast-queue-view" data-podcast-current="true">
-            <div class="podcast-queue-now">
-              <span class="podcast-show">Spiller nu</span>
-              <span class="podcast-episode">{activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast'}</span>
-              <span class="podcast-meta">
-                {activePodcastPlayer.showTitle || playlist.podcastShowTitle || 'Podcast'}
-                · {formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}
-                {#if activePodcastPlayer.durationMs || playlist.podcastDurationMs}
-                  / {formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
+            <div class="np-info">
+              <span class="np-card-title">{activePodcastPlayer.episodeTitle || playlist.podcastEpisodeTitle || 'Podcast'}</span>
+              {#if activePodcastPlayer.showTitle || playlist.podcastShowTitle}
+                <span class="np-card-artist">{activePodcastPlayer.showTitle || playlist.podcastShowTitle}</span>
+              {/if}
+              <span class="np-podcast-progress">
+                {formatProgress(livePodcastPositionMs())}
+                {#if livePodcastDurationMs()}
+                  / {formatProgress(livePodcastDurationMs())}
                 {/if}
               </span>
+              {#if playStartHint}
+                <span class="np-status">{playStartHint}</span>
+              {/if}
             </div>
-            <div class="podcast-player-panel podcast-player-panel--queue">
-              <div class="podcast-progress-row">
-                <span>{formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}</span>
-                <input
-                  type="range"
-                  min="0"
-                  max={Math.max(1, activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
-                  step="1000"
-                  value={activePodcastPlayer.positionMs || playlist.podcastPositionMs}
-                  oninput={(e) => {
-                    seekingPodcast = true;
-                    activePodcastPlayer.positionMs = +(e.currentTarget as HTMLInputElement).value;
-                  }}
-                  onchange={(e) => seekPodcastTo(+(e.currentTarget as HTMLInputElement).value)}
-                  aria-label="Spol i podcast-afsnit"
-                />
-                <span>{formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}</span>
-              </div>
-              <div class="podcast-controls">
-                <button type="button" class="action-btn" onclick={() => seekPodcast(-30)}>-30s</button>
-                <button type="button" class="action-btn" onclick={togglePodcastPlayPause}>
-                  {activePodcastPlayer.playing || playlist.podcastPlaying ? 'pause' : 'play'}
-                </button>
-                <button type="button" class="action-btn" onclick={() => seekPodcast(30)}>+30s</button>
-              </div>
-              <div class="podcast-queue-actions podcast-queue-actions--detail">
-                <button type="button" class="action-btn" onclick={() => void refreshPodcastPlayer()}>fortsæt</button>
-                <button type="button" class="action-btn" onclick={clearPodcastQueue}>ryd kø</button>
-              </div>
+            <div class="unified-vol unified-vol--horizontal np-volume">
+              <input
+                type="range"
+                min="0"
+                max={Math.max(1, livePodcastDurationMs())}
+                step="1000"
+                class="unified-vol-slider"
+                value={livePodcastPositionMs()}
+                oninput={(e) => {
+                  seekingPodcast = true;
+                  activePodcastPlayer.positionMs = +(e.currentTarget as HTMLInputElement).value;
+                }}
+                onchange={(e) => seekPodcastTo(+(e.currentTarget as HTMLInputElement).value)}
+                aria-label="Spol i podcast-afsnit"
+              />
             </div>
-
+            <div class="action-row np-actions">
+              <button type="button" class="action-btn" onclick={() => seekPodcast(-30)}>-30s</button>
+              <button type="button" class="action-btn" class:loading={playBusy} disabled={playBusy} onclick={togglePodcastPlayPause}>
+                {playBusy ? '· · ·' : activePodcastPlayer.playing || playlist.podcastPlaying ? 'pause' : 'play'}
+              </button>
+              <button type="button" class="action-btn" onclick={() => seekPodcast(30)}>+30s</button>
+            </div>
           </div>
         {:else if drilledShow}
           {#if drilledLoading && drilledEpisodes.length === 0}
@@ -1896,7 +1982,15 @@
           {#if activePodcastPlayer.active}
             <div class="podcast-card podcast-now" data-name="Afspiller nu" data-podcast-current="true">
               <button type="button" class="podcast-card-main" onclick={openPodcastQueue}>
-                <div class="podcast-cover podcast-cover--now"></div>
+                <div class="podcast-cover podcast-cover--now" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <ellipse cx="6.4" cy="18.4" rx="3.2" ry="2.3" transform="rotate(-20 6.4 18.4)" />
+                    <ellipse cx="16.1" cy="16.6" rx="3.2" ry="2.3" transform="rotate(-20 16.1 16.6)" />
+                    <path d="M9.2 17.5V6.1h1.7v11.4z" />
+                    <path d="M18.9 15.7V4.4h1.7v11.3z" />
+                    <path d="M9.2 6.1h11.4v2.15H9.2z" />
+                  </svg>
+                </div>
                 <div class="podcast-info">
                   <span class="podcast-show">Afspiller nu</span>
                   <span class="podcast-episode">{activePodcastPlayer.episodeTitle}</span>
@@ -1965,7 +2059,7 @@
         {/if}
       </div>
 
-      {#if !drilledShow}
+      {#if !drilledShow && !showPodcastQueue}
         <button type="button" class="card-arrow list-arrow list-arrow--up" onclick={() => scrollPodcastPage(-1)} aria-label="Forrige podcast">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="18 15 12 9 6 15" />
@@ -1982,7 +2076,7 @@
     </section>
     {/if}
 
-    <!-- PAGE 2 · LYS ─────────────────────────────────────────────────────── -->
+    <!-- PAGE · LYS ───────────────────────────────────────────────────────── -->
     {#if enabled('hue') || enabled('lights')}
     <section class="page">
       <div class="col-header" aria-hidden="true"></div>
@@ -2070,6 +2164,10 @@
     </section>
     {/if}
 
+    {#if (enabled('solar') || enabled('fossibot')) && store.config.site !== 'garden'}
+      {@render solPage()}
+    {/if}
+
   </div>
 
   {#if podcastSeekOpen && isPodcastTransport()}
@@ -2086,13 +2184,13 @@
           <span class="seek-show">{activePodcastPlayer.showTitle || liveNp.artist}</span>
         {/if}
         <div class="podcast-progress-row seek-slider">
-          <span>{formatProgress(activePodcastPlayer.positionMs || playlist.podcastPositionMs)}</span>
+          <span>{formatProgress(livePodcastPositionMs())}</span>
           <input
             type="range"
             min="0"
-            max={Math.max(1, activePodcastPlayer.durationMs || playlist.podcastDurationMs)}
+            max={Math.max(1, livePodcastDurationMs())}
             step="1000"
-            value={activePodcastPlayer.positionMs || playlist.podcastPositionMs}
+            value={livePodcastPositionMs()}
             oninput={(e) => {
               seekingPodcast = true;
               activePodcastPlayer.positionMs = +(e.currentTarget as HTMLInputElement).value;
@@ -2100,7 +2198,7 @@
             onchange={(e) => seekPodcastTo(+(e.currentTarget as HTMLInputElement).value)}
             aria-label="Spol i podcast-afsnit"
           />
-          <span>{formatProgress(activePodcastPlayer.durationMs || playlist.podcastDurationMs)}</span>
+          <span>{formatProgress(livePodcastDurationMs())}</span>
         </div>
         <div class="seek-skips">
           <button type="button" class="action-btn" onclick={() => seekPodcast(-30)}>-30s</button>
@@ -2149,7 +2247,7 @@
     pointer-events: none;
     touch-action: manipulation;
     transition: opacity 1.5s ease;
-    z-index: 999;
+    z-index: 1100;
   }
   .dim-overlay.dimmed,
   .dim-overlay.blocking {
@@ -2340,6 +2438,9 @@
     right: 0;
     z-index: 10;
     display: flex;
+  }
+  :global(body.camera-modal-open) .page-nav {
+    pointer-events: none;
   }
   .advance-arrow {
     height: 48px;
@@ -2561,13 +2662,13 @@
   .speaker-fader input::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 28px;
-    height: 28px;
-    margin-top: -12.5px;
+    width: 20px;
+    height: 20px;
+    margin-top: -9.5px;
     border-radius: 999px;
     border: 2px solid rgba(255, 255, 255, 0.72);
     background: #0080c8;
-    box-shadow: 0 0 0 6px rgba(0, 128, 200, 0.18);
+    box-shadow: 0 0 0 4px rgba(0, 128, 200, 0.18);
   }
 
   .speaker-fader input::-moz-range-track {
@@ -2576,12 +2677,12 @@
   }
 
   .speaker-fader input::-moz-range-thumb {
-    width: 22px;
-    height: 22px;
+    width: 20px;
+    height: 20px;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.28);
-    background: #111;
-    box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.035);
+    border: 2px solid rgba(255, 255, 255, 0.72);
+    background: #0080c8;
+    box-shadow: 0 0 0 4px rgba(0, 128, 200, 0.18);
   }
 
   .speaker-label {
@@ -2704,7 +2805,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 24px 32px;
+    padding: 8px 20px 12px;
+  }
+
+  .camera-page :global(article.card) {
+    padding: 10px 16px 16px;
   }
 
   /* ── Solcelle-kort ───────────────────────────────────────────────────────── */
@@ -2785,6 +2890,10 @@
     padding: 8px 24px 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     position: relative;
+  }
+
+  .np-card:last-child {
+    border-bottom: none;
   }
 
   .np-track-nav {
@@ -3227,8 +3336,8 @@
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 16px;
-    padding: 14px 8px 14px 24px;
+    gap: 12px;
+    padding: 10px 8px 10px 24px;
     background: none;
     border: none;
     color: inherit;
@@ -3303,9 +3412,18 @@
     background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
   }
   .podcast-cover--now {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0080c8;
     background:
       radial-gradient(circle at 50% 50%, rgba(0, 128, 200, 0.34), transparent 55%),
       linear-gradient(135deg, #1a1a1a, #2a2a2a);
+  }
+  .podcast-cover--now svg {
+    width: 42px;
+    height: 42px;
+    display: block;
   }
   .playlist-text-cover {
     display: flex;
@@ -3384,55 +3502,31 @@
     text-overflow: ellipsis;
   }
 
-  .podcast-queue-actions {
-    display: flex;
-    justify-content: center;
-    gap: 10px;
-    padding: 10px 20px 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .podcast-queue-actions--detail {
-    padding: 2px 0 0;
-    border-bottom: none;
+  .podcast-queue-scroll {
+    overflow: hidden;
   }
 
   .podcast-queue-view {
-    display: flex;
-    flex-direction: column;
-    min-height: calc(100dvh - 48px - 56px);
+    flex: 0 0 100%;
+    height: 100%;
+    min-height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) 42px 34px;
+    align-items: center;
+    justify-items: center;
+    gap: 14px;
+    padding: 8px 24px 14px;
   }
 
-  .podcast-queue-now {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 22px 24px 14px;
-    background: rgba(0, 128, 200, 0.08);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .podcast-queue-now .podcast-episode {
-    font-size: 1.02rem;
-    -webkit-line-clamp: 2;
-  }
-
-  .podcast-player-panel--queue {
-    padding-top: 14px;
+  .podcast-queue-view .np-podcast-progress {
+    cursor: default;
   }
 
   .empty--compact {
     min-height: 80px;
     padding: 18px 24px;
-  }
-
-  .podcast-player-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 10px 24px 16px;
-    background: rgba(0, 128, 200, 0.055);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   .podcast-progress-row {
@@ -3448,18 +3542,6 @@
   .podcast-progress-row input {
     width: 100%;
     accent-color: #0080c8;
-  }
-
-  .podcast-controls {
-    display: flex;
-    justify-content: center;
-    gap: 10px;
-  }
-
-  .podcast-controls .action-btn,
-  .podcast-queue-actions .action-btn {
-    padding: 7px 10px;
-    font-size: 0.6rem;
   }
 
   .seek-backdrop {
@@ -3571,7 +3653,7 @@
   .drill-header {
     padding: 0 0 10px;
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: space-between;
   }
 
@@ -3596,7 +3678,8 @@
     width: 18px;
     height: 18px;
     flex-shrink: 0;
-    transform: translateY(-2px);
+    display: block;
+    transform: translateY(2px);
     color: #c2c2c2;
   }
   .drill-back-label {
@@ -3614,7 +3697,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 14px 24px;
+    padding: 10px 24px;
     margin: 0;
     background: none;
     border: none;

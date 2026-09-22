@@ -1,0 +1,14 @@
+[Unit]
+Description=go-librespot - Spotify playback (Ejdersted Garden -> BlueALSA)
+After=network-online.target bluetooth.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=simmoe
+ExecStart=/home/simmoe/.local/bin/go-librespot
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

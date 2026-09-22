@@ -13,7 +13,7 @@
 
   const charging = () =>
     !!store.fossibot.online &&
-    (!!store.fossibot.charging || (store.fossibot.solarWatts ?? 0) > 0);
+    (!!store.fossibot.charging || (store.fossibot.inWatts ?? store.fossibot.solarWatts ?? 0) > 0);
 
   // The readings prove it is online; the header only says what the battery is doing.
   const status = () => {
@@ -35,13 +35,13 @@
   const soc = $derived(socParts(store.fossibot.socPercent));
 </script>
 
-<Card name="Fossibot" status={status()} online={!!store.fossibot.online}>
+<Card name="" status={status()} online={!!store.fossibot.online}>
   <div class="fossibot">
     <div class="fossibot-io">
       <div class="fossibot-col">
         <span class="fossibot-label">ind</span>
         <span class="fossibot-reading">
-          <span class="fossibot-value">{watts(store.fossibot.solarWatts)}</span>
+          <span class="fossibot-value">{watts(store.fossibot.inWatts ?? store.fossibot.solarWatts)}</span>
           <span class="fossibot-unit">W</span>
         </span>
       </div>
@@ -78,6 +78,14 @@
               <path d="M9 19h6" />
             </svg>
             <span>usb</span>
+          </span>
+          <span class="fossibot-port" class:on={store.fossibot.dcOn} title="12 V">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="8" y="4" width="8" height="11" rx="1.4" />
+              <path d="M12 15v4" />
+              <path d="M9 19h6" />
+            </svg>
+            <span>12</span>
           </span>
           <span class="fossibot-port" class:on={store.fossibot.acOn} title="230 V">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -296,7 +304,7 @@
       height: min(38vw, 34vh, 168px);
     }
     .fossibot-ports {
-      gap: 10px;
+      gap: 8px;
       transform: translate(-50%, 1.1rem);
     }
     .fossibot-port {

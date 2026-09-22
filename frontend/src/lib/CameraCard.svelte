@@ -17,6 +17,8 @@
   let latestImageUrl = $state('/api/camera/latest.jpg');
   let latestAge = $state<number | null>(null);
   let latestAvailable = $state(false);
+  let gardenUnreachable = $state(false);
+  let viewerReady = $state(false);
   type PresenceStatus = {
     presence?: string;
     state?: string;
@@ -26,6 +28,8 @@
     lastPersonAt?: number | null;
     lastPersonAtIso?: string | null;
     lastPersonAge?: number | null;
+    lastEvidenceAt?: number | null;
+    lastEvidenceAtIso?: string | null;
     lastEvidenceUrl?: string;
     evidenceUrl?: string;
     motionScore?: number;
@@ -41,7 +45,15 @@
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
   // Garden battery, read through the home hub's proxy. One line under the feed.
-  type RemoteBattery = { online?: boolean; socPercent?: number | null; acOn?: boolean; solarWatts?: number | null };
+  type RemoteBattery = {
+    online?: boolean;
+    socPercent?: number | null;
+    acOn?: boolean;
+    dcOn?: boolean;
+    solarWatts?: number | null;
+    inWatts?: number | null;
+    outWatts?: number | null;
+  };
   let battery = $state<RemoteBattery | null>(null);
   let batteryTimer: ReturnType<typeof setInterval> | null = null;
   const BATTERY_POLL_MS = 30_000;
@@ -106,10 +118,30 @@
     return `${Math.round(seconds / 86400)} dage siden`;
   }
 
+  function formatEvidenceStamp(): string {
+    const iso = latestPresence.lastEvidenceAtIso || latestPresence.lastPersonAtIso;
+    const unix = latestPresence.lastEvidenceAt || latestPresence.lastPersonAt;
+    const date = iso ? new Date(iso) : unix ? new Date(unix * 1000) : null;
+    if (!date || Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString('da-DK', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
   // The kiosk posts every 2 s. Two minutes without a frame means it has left
   // Wi-Fi or died; the card then says so instead of ageing a stale frame.
   const KIOSK_STALE_S = 120;
   const kioskOffline = $derived(!canPublish && latestAvailable && (latestAge == null || latestAge > KIOSK_STALE_S));
+  const gardenOffline = $derived(
+    cameraMode() === 'viewer'
+    && viewerReady
+    && !canPublish
+    && (gardenUnreachable || !latestAvailable || kioskOffline)
+  );
 
   const headerStatus = () => {
     if (canPublish) return cameraOn ? 'live' : error ? 'fejl' : 'slukket';
@@ -217,7 +249,8 @@
   async function refreshLatestSnapshot() {
     try {
       const res = await fetch('/api/camera/status', { cache: 'no-store' });
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      gardenUnreachable = !res.ok;
       latestAvailable = !!data?.available;
       latestAge = typeof data?.age === 'number' ? data.age : null;
       latestPresence = normalizePresence(data?.presence);
@@ -225,10 +258,17 @@
         latestImageUrl = `/api/camera/latest.jpg?t=${Date.now()}`;
       }
     } catch {
+      gardenUnreachable = true;
       latestAvailable = false;
       latestAge = null;
       latestPresence = { presence: 'unknown', label: 'Ukendt' };
+    } finally {
+      viewerReady = true;
     }
+  }
+
+  async function retryGarden() {
+    await Promise.all([refreshLatestSnapshot(), refreshBattery()]);
   }
 
   async function refreshBattery() {
@@ -247,7 +287,10 @@
     const parts: string[] = [];
     if (typeof battery.socPercent === 'number') parts.push(`batteri ${Math.round(battery.socPercent)} %`);
     parts.push(battery.acOn ? '230 v tændt' : '230 v slukket');
-    if ((battery.solarWatts ?? 0) > 0) parts.push(`sol ${Math.round(battery.solarWatts ?? 0)} w`);
+    if (battery.dcOn) parts.push('12 v tændt');
+    const incoming = battery.inWatts ?? battery.solarWatts;
+    if ((incoming ?? 0) > 0) parts.push(`ind ${Math.round(incoming ?? 0)} w`);
+    if ((battery.outWatts ?? 0) > 0) parts.push(`ud ${Math.round(battery.outWatts ?? 0)} w`);
     return parts.join(' · ');
   });
 
@@ -369,14 +412,30 @@
     }
   });
 
+  $effect(() => {
+    const open = evidenceOpen || previewOpen;
+    document.body.classList.toggle('camera-modal-open', open);
+    return () => document.body.classList.remove('camera-modal-open');
+  });
+
   onDestroy(() => {
     stopCamera();
     stopViewer();
   });
 </script>
 
-<Card name="Kamera" status={headerStatus()} online={cameraOn || (latestAvailable && !kioskOffline)}>
-  <div class="cam-stack">
+<Card
+  name={gardenOffline ? '' : 'Kamera'}
+  status={gardenOffline ? '' : headerStatus()}
+  online={!gardenOffline && (cameraOn || (latestAvailable && !kioskOffline))}
+>
+  <div class="cam-stack" class:offline={gardenOffline}>
+    {#if gardenOffline}
+    <button type="button" class="garden-offline" onclick={retryGarden}>
+      haven offline
+    </button>
+    {:else}
+    <div class="camera-frame">
     <button
       type="button"
       class="camera-viewport"
@@ -399,6 +458,32 @@
         <div class="camera-placeholder">venter på havekiosken</div>
       {/if}
     </button>
+    {#if !kioskOffline}
+      <div class="presence-bar">
+        <div class="presence-left">
+          {#if evidenceUrl()}
+            <button
+              type="button"
+              class="presence-evidence"
+              onclick={() => {
+                evidenceOpen = true;
+                previewOpen = false;
+              }}
+            >sidst hjemme</button>
+          {/if}
+        </div>
+        <span
+          class="presence-status"
+          class:home={!!latestPresence.home}
+          class:alert={!!latestPresence.alert}
+          class:blind={presenceState() === 'camera_blind' || presenceState() === 'unknown'}
+        >
+          {presenceState() === 'checking' ? 'tjekker' : (latestPresence.label ?? 'Ukendt')}
+        </span>
+      </div>
+    {/if}
+    </div>
+    <div class="cam-meta">
     {#if canPublish}
       <div class="action-row">
         <button class="action-btn" onclick={toggleCamera}>
@@ -411,30 +496,15 @@
     {:else if kioskOffline}
       <div class="publish-status">sidst set {formatAge(latestAge)}</div>
     {:else if latestAge != null}
-      <div class="publish-status">havekiosk · {Math.round(latestAge)} s siden</div>
+      <div class="publish-status cam-age">havekiosk · {Math.round(latestAge)} s siden</div>
     {/if}
     {#if batteryLine}
       <div class="publish-status">{batteryLine}</div>
     {/if}
-    {#if !kioskOffline}
-      <!-- Presence is read off the live frames; with the kiosk gone it only says "ingen snapshots". -->
-      <div
-        class="presence-status"
-        class:home={!!latestPresence.home}
-        class:alert={!!latestPresence.alert}
-        class:blind={presenceState() === 'camera_blind' || presenceState() === 'unknown'}
-      >
-        {latestPresence.label ?? 'Ukendt'}
-      </div>
-    {/if}
-    <div class="presence-detail">
-      Sidst hjemme: {formatAge(latestPresence.lastPersonAge)}
-    </div>
-    {#if evidenceUrl()}
-      <button class="evidence-link" onclick={() => (evidenceOpen = true)}>vis billede</button>
-    {/if}
     {#if canPublish && publishStatus}
       <div class="publish-status">{publishStatus}</div>
+    {/if}
+    </div>
     {/if}
   </div>
 </Card>
@@ -456,8 +526,13 @@
   <div class="modal-backdrop">
     <button class="modal-underlay" aria-label="Luk evidence" onclick={() => (evidenceOpen = false)}></button>
     <div class="evidence-modal" role="dialog" aria-modal="true">
-      <button class="modal-close" onclick={() => (evidenceOpen = false)}>luk</button>
-      <img src={evidenceUrl()} alt="Evidence fra seneste person-detektion" />
+      <div class="evidence-frame">
+        <img src={evidenceUrl()} alt="Evidence fra seneste person-detektion" />
+        {#if formatEvidenceStamp()}
+          <div class="evidence-stamp">{formatEvidenceStamp()}</div>
+        {/if}
+      </div>
+      <button type="button" class="modal-close" onclick={() => (evidenceOpen = false)}>luk</button>
     </div>
   </div>
 {/if}
@@ -467,8 +542,58 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 16px;
-    align-self: center;
+    justify-content: flex-start;
+    align-self: stretch;
+    height: 100%;
+    min-height: 0;
+    width: 100%;
+    gap: 10px;
+  }
+
+  .cam-stack.offline {
+    width: 100%;
+  }
+
+  .garden-offline {
+    appearance: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    min-height: 160px;
+    flex: 1;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.5);
+    font: inherit;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .garden-offline:active {
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .camera-frame {
+    position: relative;
+    width: 100%;
+    max-width: 320px;
+    border-radius: 16px;
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+
+  .cam-meta {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
   }
 
   .camera-viewport {
@@ -476,7 +601,7 @@
     border: 0;
     padding: 0;
     width: 100%;
-    max-width: 320px;
+    max-width: none;
     aspect-ratio: 19 / 9;
     display: flex;
     align-items: center;
@@ -525,17 +650,62 @@
   }
 
   .publish-status {
-    font-size: 0.68rem;
-    letter-spacing: 0.12em;
+    max-width: 100%;
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    line-height: 1.45;
+    text-align: center;
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.45);
   }
 
-  .presence-status {
-    font-size: 0.72rem;
-    letter-spacing: 0.14em;
+  .presence-bar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: baseline;
+    column-gap: 12px;
+    padding: 10px 8px 7px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.62));
+    pointer-events: none;
+  }
+
+  .presence-left {
+    min-width: 0;
+    text-align: right;
+  }
+
+  .presence-evidence {
+    appearance: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    color: #9ee0ff;
+    font: inherit;
+    font-size: 0.58rem;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.58);
+    pointer-events: auto;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  }
+
+  .presence-evidence:active {
+    color: #fff;
+  }
+
+  .presence-status {
+    min-width: 0;
+    text-align: left;
+    font-size: 0.58rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.88);
   }
 
   .presence-status.home {
@@ -547,18 +717,27 @@
   }
 
   .presence-status.blind {
-    color: rgba(255, 255, 255, 0.74);
+    color: rgba(255, 255, 255, 0.88);
   }
 
-  .presence-detail {
-    margin-top: -4px;
-    color: rgba(255, 255, 255, 0.54);
-    font-size: 0.7rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+  @media (orientation: landscape) and (max-height: 500px) {
+    .cam-age {
+      display: none;
+    }
+    .cam-meta {
+      gap: 4px;
+    }
+    .presence-bar {
+      column-gap: 8px;
+      padding: 8px 6px 5px;
+    }
+    .presence-evidence,
+    .presence-status {
+      font-size: 0.52rem;
+      letter-spacing: 0.06em;
+    }
   }
 
-  .evidence-link,
   .modal-close {
     appearance: none;
     border: 1px solid rgba(255, 255, 255, 0.18);
@@ -606,6 +785,7 @@
   .modal-underlay {
     position: absolute;
     inset: 0;
+    z-index: 0;
     border: 0;
     background: transparent;
     cursor: default;
@@ -622,17 +802,40 @@
     background: #090909;
   }
 
+  .evidence-frame {
+    position: relative;
+    overflow: hidden;
+    border-radius: 16px;
+  }
+
   .evidence-modal img {
     width: 100%;
     max-height: 78vh;
     object-fit: contain;
+    display: block;
     border-radius: 16px;
+  }
+
+  .evidence-stamp {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 14px 16px 12px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
+    color: #f7f7f7;
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    pointer-events: none;
   }
 
   .modal-close {
     position: absolute;
     right: 24px;
     top: 24px;
+    z-index: 2;
     background: rgba(0, 0, 0, 0.72);
+    pointer-events: auto;
   }
 </style>

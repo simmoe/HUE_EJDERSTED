@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""Vault-aware hub helpers. Passwords never printed.
+
+  scripts/hubctl status
+  scripts/hubctl static garden|home|both
+  scripts/hubctl backend garden|home|both
+  scripts/hubctl reload garden|home
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+VAULT = Path.home() / "Documents/Git/cursor-global-setup/.cursor-local/vault/secrets.payload.json"
+SITES = {
+    "home": {
+        "lan": "192.168.86.16",
+        "adb": "192.168.86.15:5555",
+        "url": "https://192.168.86.16:8443",
+        "ssh_auth": "password",
+    },
+    "garden": {
+        "lan": "192.168.8.133",
+        "ts": "100.111.167.54",
+        "adb": "192.168.8.135:5555",
+        "url": "https://100.111.167.54:8443",
+        "ssh_auth": "key",
+    },
+}
+
+
+def _die(msg: str, code: int = 2) -> None:
+    print(msg, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _vault() -> dict:
+    if not VAULT.is_file():
+        _die("Vault payload missing. In cursor-global-setup: npm run vault:decrypt")
+    return json.loads(VAULT.read_text(encoding="utf-8"))
+
+
+def _pass(site: str) -> str:
+    data = _vault()
+    if site == "home":
+        return str(data["devices"]["ejderstedHomeHub"]["password"])
+    return str(data["devices"]["kolonihavePi"]["password"])
+
+
+def _lan() -> tuple[str, str]:
+    ssid = subprocess.run(
+        ["networksetup", "-getairportnetwork", "en0"], capture_output=True, text=True
+    ).stdout
+    ip = subprocess.run(["ipconfig", "getifaddr", "en0"], capture_output=True, text=True).stdout.strip()
+    return ssid, ip
+
+
+def _host(site: str) -> str:
+    _, ip = _lan()
+    cfg = SITES[site]
+    if site == "home" and ip.startswith("192.168.86."):
+        return f"simmoe@{cfg['lan']}"
+    if site == "garden" and ip.startswith("192.168.8."):
+        return f"simmoe@{cfg['lan']}"
+    if site == "garden":
+        return f"simmoe@{cfg['ts']}"
+    return f"simmoe@{cfg['lan']}"
+
+
+def _ssh(site: str, remote: str, *, check: bool = True) -> subprocess.CompletedProcess:
+    host = _host(site)
+    if SITES[site]["ssh_auth"] == "password":
+        if not shutil.which("sshpass"):
+            _die("sshpass missing")
+        cmd = [
+            "sshpass",
+            "-p",
+            _pass(site),
+            "ssh",
+            "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=8",
+            host,
+            remote,
+        ]
+    else:
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote]
+    return subprocess.run(cmd, check=check)
+
+
+def _scp(site: str, source: Path, dest: str) -> None:
+    host = _host(site)
+    remote = f"{host}:{dest}"
+    if SITES[site]["ssh_auth"] == "password":
+        cmd = [
+            "sshpass",
+            "-p",
+            _pass(site),
+            "scp",
+            "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-r",
+            str(source),
+            remote,
+        ]
+    else:
+        cmd = ["scp", "-o", "BatchMode=yes", "-r", str(source), remote]
+    subprocess.run(cmd, check=True)
+
+
+def _purge_stale_icons(site: str) -> None:
+    _ssh(
+        site,
+        "rm -f /home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon.png "
+        "/home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon-precomposed.png "
+        "/home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon-180x180.png "
+        "/home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon-v3.png",
+    )
+
+
+def _sudo(site: str, remote: str) -> None:
+    if SITES[site]["ssh_auth"] == "password":
+        pw = _pass(site).replace("'", "'\\''")
+        _ssh(site, f"echo '{pw}' | sudo -S {remote}")
+    else:
+        _ssh(site, f"sudo {remote}")
+
+
+def _sites(arg: str) -> list[str]:
+    if arg == "both":
+        return ["home", "garden"]
+    if arg in SITES:
+        return [arg]
+    _die("site must be home, garden or both")
+
+
+def cmd_status(_: list[str]) -> None:
+    ssid, ip = _lan()
+    print(f"mac {ssid.strip()} {ip}")
+    ctx = ssl_insecure()
+    for site, cfg in SITES.items():
+        url = cfg["url"]
+        if site == "garden" and ip.startswith("192.168.8."):
+            url = f"https://{cfg['lan']}:8443"
+        health = _http(f"{url}/api/health", ctx)
+        kiosk = _http(f"{url}/api/kiosk/status", ctx)
+        print(f"{site} {url}")
+        print(f"  health {health}")
+        print(f"  kiosk  {kiosk}")
+
+
+def ssl_insecure():
+    import ssl
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _http(url: str, ctx) -> str:
+    try:
+        with urllib.request.urlopen(url, context=ctx, timeout=8) as res:
+            return res.read().decode()[:400]
+    except Exception as exc:
+        return f"FAIL {exc}"
+
+
+def cmd_static(args: list[str]) -> None:
+    if not args:
+        _die("hubctl static garden|home|both")
+    static = ROOT / "backend" / "static"
+    if not static.is_dir():
+        _die("backend/static missing — build frontend first")
+    for site in _sites(args[0]):
+        print(f"→ static {site} {_host(site)}")
+        _scp(site, static, "/home/simmoe/HUE_EJDERSTED/backend/")
+        _purge_stale_icons(site)
+        print(f"✓ static {site}")
+
+
+def cmd_backend(args: list[str]) -> None:
+    if not args:
+        _die("hubctl backend garden|home|both")
+    backend = ROOT / "backend"
+    for site in _sites(args[0]):
+        print(f"→ backend {site} {_host(site)}")
+        _scp(site, backend, "/home/simmoe/HUE_EJDERSTED/")
+        _purge_stale_icons(site)
+        _sudo(site, "systemctl restart hue")
+        print(f"✓ backend {site} (hue restart)")
+
+
+def cmd_reload(args: list[str]) -> None:
+    if not args or args[0] not in SITES:
+        _die("hubctl reload home|garden")
+    site = args[0]
+    kiosk = _http(f"{SITES[site]['url']}/api/kiosk/status", ssl_insecure())
+    if '"adb": false' in kiosk or kiosk.startswith("FAIL"):
+        print(f"{site} kiosk not on ADB — skip reload")
+        print(kiosk)
+        raise SystemExit(1)
+    adb = SITES[site]["adb"]
+    if site == "home":
+        subprocess.run(["adb", "connect", adb], check=False, capture_output=True)
+        subprocess.run(["adb", "-s", adb, "forward", "--remove", "tcp:9222"], check=False)
+        subprocess.run(
+            ["adb", "-s", adb, "forward", "tcp:9222", "localabstract:chrome_devtools_remote"],
+            check=True,
+        )
+        _cdp_reload(9222, site)
+        return
+    remote_adb = (
+        f"adb connect {adb} >/dev/null; "
+        f"adb -s {adb} forward --remove tcp:9222 >/dev/null 2>&1 || true; "
+        f"adb -s {adb} forward tcp:9222 localabstract:chrome_devtools_remote"
+    )
+    ok = _ssh(site, remote_adb, check=False)
+    if ok.returncode != 0:
+        print(ok.stderr.decode() if ok.stderr else "adb forward failed")
+        raise SystemExit(1)
+    tunnel = subprocess.Popen(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-N",
+            "-L",
+            "9334:127.0.0.1:9222",
+            _host(site),
+        ]
+    )
+    try:
+        time.sleep(1)
+        _cdp_reload(9334, site)
+    finally:
+        tunnel.terminate()
+        tunnel.wait(timeout=3)
+
+
+def _cdp_reload(port: int, label: str) -> None:
+    env = os.environ.copy()
+    env["HUBCTL_CDP_PORT"] = str(port)
+    env["HUBCTL_CDP_LABEL"] = label
+    subprocess.run(
+        [
+            "node",
+            "-e",
+            r"""
+const port = process.env.HUBCTL_CDP_PORT;
+const label = process.env.HUBCTL_CDP_LABEL;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+(async () => {
+  let pages = [];
+  for (let i = 0; i < 16; i++) {
+    try {
+      const res = await fetch('http://127.0.0.1:' + port + '/json/list');
+      pages = (await res.json()).filter((t) => t.type === 'page');
+      if (pages.length) break;
+    } catch {}
+    await sleep(250);
+  }
+  if (!pages.length) { console.error(label + ': no Chrome page'); process.exit(1); }
+  const keep = pages.find((t) => /8443|hue|ejdersted|kolonihave|192\.168/i.test(t.url || '')) || pages[0];
+  let wsUrl = keep.webSocketDebuggerUrl.replace(/:[0-9]+\//, ':' + port + '/');
+  console.log(label, 'reload', keep.url);
+  const ws = new WebSocket(wsUrl);
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), 8000);
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ id: 1, method: 'Page.reload', params: { ignoreCache: true } }));
+    });
+    ws.addEventListener('message', (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.id === 1) { clearTimeout(t); ws.close(); resolve(); }
+    });
+    ws.addEventListener('error', reject);
+  });
+})();
+""",
+        ],
+        check=True,
+        env=env,
+    )
+
+
+def main() -> None:
+    if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
+        print(__doc__.strip())
+        raise SystemExit(0)
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
+    if cmd == "status":
+        cmd_status(args)
+    elif cmd == "static":
+        cmd_static(args)
+    elif cmd == "backend":
+        cmd_backend(args)
+    elif cmd == "reload":
+        cmd_reload(args)
+    else:
+        _die(f"unknown command {cmd}")
+
+
+if __name__ == "__main__":
+    main()

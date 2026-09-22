@@ -87,8 +87,11 @@ export interface FossibotStatus {
   online?: boolean;
   socPercent?: number | null;
   solarWatts?: number | null;
+  acInWatts?: number | null;
+  inWatts?: number | null;
   outWatts?: number | null;
   usbOn?: boolean;
+  dcOn?: boolean;
   acOn?: boolean;
   charging?: boolean;
   error?: string | null;
@@ -102,12 +105,15 @@ export interface PowerHold {
   duration: HoldDuration | string;
 }
 
+export type PowerMode = 'auto' | 'on' | 'off';
+
 export interface PowerStatus {
   hold: PowerHold | null;
+  mode?: PowerMode;
   onPercent?: number;
   offPercent?: number;
   wantAc?: boolean | null;
-  wantSource?: 'floor' | 'rule' | 'hold' | null;
+  wantSource?: 'floor' | 'rule' | 'hold' | 'home' | 'night' | null;
 }
 
 export interface HubConfig {
@@ -211,7 +217,7 @@ class WSStore {
   config = $state<HubConfig>(defaultHubConfig);
   solar = $state<SolarStatus>({ enabled: false });
   fossibot = $state<FossibotStatus>({ enabled: false });
-  power = $state<PowerStatus>({ hold: null });
+  power = $state<PowerStatus>({ hold: null, mode: 'auto' });
   connected = $state(false);
 
   private ws: WebSocket | null = null;
@@ -442,8 +448,12 @@ class WSStore {
     this.ws?.send(JSON.stringify({ type: 'set_solar_mode', mode }));
   }
 
-  /** A tap on the 230 V card: hold the outlet on/off until the wheel choice runs out.
-   *  The backend resolves `until` (tomorrow = next solar on-time) and presses. */
+  setPowerMode(mode: PowerMode) {
+    this.power = { ...this.power, mode, hold: null };
+    this.ws?.send(JSON.stringify({ type: 'set_power_mode', mode }));
+  }
+
+  /** Timed hold (REST/WS leftover). The card uses setPowerMode. */
   setPowerHold(acOn: boolean, duration: HoldDuration) {
     this.ws?.send(JSON.stringify({ type: 'set_power_hold', acOn, duration }));
   }

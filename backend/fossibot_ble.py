@@ -60,8 +60,11 @@ class FossibotStatus:
             "online": online,
             "socPercent": round(self.soc_percent, 1),
             "solarWatts": self.solar_watts,
+            "acInWatts": self.ac_in_watts,
+            "inWatts": self.total_in_watts,
             "outWatts": self.total_out_watts,
             "usbOn": self.usb_on,
+            "dcOn": self.dc_on,
             "acOn": self.ac_on,
             "charging": self.charging,
             "error": error,
@@ -147,8 +150,11 @@ def idle_status() -> dict[str, Any]:
         "online": False,
         "socPercent": None,
         "solarWatts": None,
+        "acInWatts": None,
+        "inWatts": None,
         "outWatts": None,
         "usbOn": False,
+        "dcOn": False,
         "acOn": False,
         "charging": False,
         "error": None,
@@ -210,6 +216,30 @@ async def discover_station(timeout: float = 12.0) -> tuple[str, str]:
     return device.address, device.name or device.address
 
 
+def bluez_device_path(adapter: str, address: str) -> str:
+    return f"{adapter}/dev_{address.replace(':', '_')}"
+
+
+async def _known_bluez_target(address: str):
+    """Reuse a BlueZ-known device so we can talk without a live advertisement.
+
+    A connected F2400 often stops advertising. Bleak 3 then raises
+    ``Device with address … was not found`` if we pass only the MAC.
+    """
+    try:
+        from bleak.backends.bluezdbus.manager import get_global_bluez_manager
+        from bleak.backends.device import BLEDevice
+    except ImportError:
+        return None
+    try:
+        manager = await get_global_bluez_manager()
+        path = bluez_device_path(manager.get_default_adapter(), address)
+        name = manager.get_device_name(path)
+    except Exception:
+        return None
+    return BLEDevice(address, name or address, {"path": path})
+
+
 async def read_status(
     address: str | None = None,
     timeout: float = 20.0,
@@ -218,11 +248,19 @@ async def read_status(
     from bleak import BleakClient
 
     name = address or ""
+    target: Any = address
     if not address:
         address, name = await discover_station(timeout=scan_timeout)
+        target = address
     elif looks_like_station(address):
         found_address, name = await discover_station(timeout=scan_timeout)
         address = found_address
+        target = address
+    else:
+        known = await _known_bluez_target(address)
+        if known is not None:
+            target = known
+            name = known.name or address
 
     got: asyncio.Future[FossibotStatus] = asyncio.get_running_loop().create_future()
     buf = bytearray()
@@ -235,7 +273,7 @@ async def read_status(
         if status is not None:
             got.set_result(status)
 
-    async with BleakClient(address, timeout=timeout) as client:
+    async with BleakClient(target, timeout=timeout) as client:
         write_uuid, notify_uuid = _pick_chars(client)
         await client.start_notify(notify_uuid, on_notify)
         await client.write_gatt_char(write_uuid, STATUS_POLL, response=False)

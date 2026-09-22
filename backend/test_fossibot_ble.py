@@ -41,9 +41,9 @@ class FossibotBleParseTests(unittest.TestCase):
             offset = 6 + index * 2
             frame[offset : offset + 2] = value.to_bytes(2, "big")
 
-        put(3, 0)
+        put(3, 410)
         put(4, 187)
-        put(6, 187)
+        put(6, 597)
         put(20, 42)
         put(24, 1)
         put(25, 0)
@@ -56,6 +56,8 @@ class FossibotBleParseTests(unittest.TestCase):
         status = fossibot_ble.parse_status(bytes(frame), address="AA", name="POWER-0084")
         assert status is not None
         self.assertEqual(status.solar_watts, 187)
+        self.assertEqual(status.ac_in_watts, 410)
+        self.assertEqual(status.total_in_watts, 597)
         self.assertEqual(status.soc_percent, 83.0)
         self.assertTrue(status.usb_on)
         self.assertFalse(status.dc_on)
@@ -65,6 +67,9 @@ class FossibotBleParseTests(unittest.TestCase):
         public = status.to_public()
         self.assertEqual(public["socPercent"], 83.0)
         self.assertEqual(public["solarWatts"], 187)
+        self.assertEqual(public["acInWatts"], 410)
+        self.assertEqual(public["inWatts"], 597)
+        self.assertFalse(public["dcOn"])
         self.assertTrue(public["online"])
 
     def test_ac_on_from_capability_bit_when_toggle_is_zero(self):
@@ -87,6 +92,12 @@ class FossibotBleParseTests(unittest.TestCase):
         status = fossibot_ble.parse_status(bytes(frame))
         assert status is not None
         self.assertTrue(status.charging)
+
+    def test_bluez_device_path_uses_adapter_and_mac(self):
+        self.assertEqual(
+            fossibot_ble.bluez_device_path("/org/bluez/hci0", "F0:9E:9E:A5:D2:E6"),
+            "/org/bluez/hci0/dev_F0_9E_9E_A5_D2_E6",
+        )
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ from zeroconf import ServiceBrowser, Zeroconf
 import audio_log
 import bo_dlna
 import bo_link
+import player_state
 import sr
 import audio_targets
 import camera_presence
@@ -42,8 +43,11 @@ import fossibot_ble
 import fossibot_log
 import garden_lights
 import hub_config
+import kiosk_battery
+import kiosk_status
 import light_bus
 import light_scenes
+import lights_log
 import power
 import zigbee_lights
 import solar
@@ -188,6 +192,7 @@ _notify_tasks: dict[str, asyncio.Task] = {}
 # ─── Solar charge relay ───────────────────────────────────────────────────────
 SOLAR_STATE_FILE = REPO_ROOT / "solar_state.json"
 POWER_STATE_FILE = REPO_ROOT / "power_state.json"
+FOSSIBOT_OUTBOX_FILE = REPO_ROOT / "fossibot_outbox.json"
 solar_ctrl: solar.SolarController | None = None
 solar_status_cache: dict = {}
 power_ctrl: power.PowerPolicy | None = None
@@ -213,8 +218,43 @@ def _fossibot_status() -> dict:
 
 def _power_status() -> dict:
     if power_ctrl is None:
-        return {"hold": None}
-    return power_ctrl.status(_fossibot_status())
+        return {"hold": None, "mode": "auto"}
+    return power_ctrl.status(
+        _fossibot_status(), sun_up=_sun_up(), someone_home=_someone_home()
+    )
+
+
+def _sun_up() -> bool:
+    """Civil daylight. Untrusted clock fail-opens (treat as day → no night cut)."""
+    if solar_ctrl is None or not solar.clock_is_trusted():
+        return True
+    return solar_ctrl.daylight()
+
+
+def _someone_home() -> bool | None:
+    """True only when the camera says home. None/empty still night-cuts."""
+    if not hub_config.feature_enabled("camera"):
+        return None
+    presence = str(camera_security.public_state().get("presence") or "")
+    if presence == "home":
+        return True
+    if presence in ("empty", "checking"):
+        return False
+    return None
+
+
+async def _attach_kiosk_battery(status: dict) -> dict:
+    serial = await _get_adb_serial()
+    if not serial:
+        return status
+    bat = await asyncio.to_thread(kiosk_battery.read_via_adb, serial)
+    if not bat:
+        return status
+    return {
+        **status,
+        "kioskBatteryPercent": bat["percent"],
+        "kioskCharging": bat["charging"],
+    }
 
 
 def _hold_until(duration: str) -> float | None:
@@ -252,6 +292,17 @@ async def _clear_power_hold() -> None:
     await _apply_power_policy(_fossibot_status())
 
 
+async def _set_power_mode(mode: str) -> tuple[bool, str]:
+    if power_ctrl is None:
+        return False, "Kun på haven-hubben"
+    if mode not in power.VALID_MODES:
+        return False, "mode skal være on, auto eller off"
+    power_ctrl.set_mode(mode)
+    await manager.broadcast({"type": "power_status", **_power_status()})
+    await _apply_power_policy(_fossibot_status())
+    return True, ""
+
+
 def _fossibot_broadcast_key(status: dict) -> dict:
     return {key: value for key, value in status.items() if key != "error"}
 
@@ -272,7 +323,9 @@ async def _fossibot_loop() -> None:
             if compare != fossibot_status_cache:
                 fossibot_status_cache = compare
                 await manager.broadcast({"type": "fossibot_status", **status})
+            status = await _attach_kiosk_battery(status)
             now = time.time()
+            firebase = _load_firebase_config()
             if fossibot_log.should_log(
                 status,
                 last_at=_fossibot_log_at,
@@ -280,14 +333,19 @@ async def _fossibot_loop() -> None:
                 now=now,
                 interval_sec=log_sec,
             ):
-                wrote = await fossibot_log.persist(
+                await fossibot_log.persist(
                     status,
-                    firebase_config=_load_firebase_config(),
+                    firebase_config=firebase,
                     http_client=_http,
+                    outbox_path=FOSSIBOT_OUTBOX_FILE,
                 )
-                if wrote:
-                    _fossibot_log_at = now
-                    _fossibot_log_key = fossibot_log.event_key(status)
+                _fossibot_log_at = now
+                _fossibot_log_key = fossibot_log.event_key(status)
+            await fossibot_log.flush_outbox(
+                FOSSIBOT_OUTBOX_FILE,
+                firebase_config=firebase,
+                http_client=_http,
+            )
             await _apply_power_policy(status)
             _note_ac_edge(status)
         except asyncio.CancelledError:
@@ -322,6 +380,19 @@ def _store_light_state(state: dict) -> None:
         lights_cache = [*lights_cache, state]
 
 
+def _light_apply(dev: dict, command: light_bus.LightCommand, source: str, stop_scene: bool = True) -> dict:
+    return light_bus.apply(dev, command, stop_scene=stop_scene, source=source)
+
+
+def _zigbee_light_state(state: dict) -> None:
+    _store_light_state(state)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(manager.broadcast({"type": "lights", "lights": lights_cache}))
+
+
 def _note_ac_edge(status: dict) -> None:
     global _last_ac_on
     online = bool(status.get("online"))
@@ -329,12 +400,21 @@ def _note_ac_edge(status: dict) -> None:
     # Only a rule-driven resume (SoC back at 25 %) sweeps the lamps. A hold-on
     # from the kiosk or a finger on the Fossibot is Simon opening the hut.
     by_rule = bool(power_ctrl and power_ctrl.pressed_recently(power.SOURCE_RULE))
-    if light_bus.should_force_off_after_ac(
+    sweep = light_bus.should_force_off_after_ac(
         by_rule=by_rule,
         ac_was_on=_last_ac_on,
         ac_on=ac_on,
         online=online,
-    ):
+    )
+    if online and ac_on != _last_ac_on:
+        lights_log.log(
+            "ac.edge",
+            was="unknown" if _last_ac_on is None else _last_ac_on,
+            now=ac_on,
+            by_rule=by_rule,
+            sweep=sweep,
+        )
+    if sweep:
         _start_lights_after_ac()
     if online:
         _last_ac_on = ac_on
@@ -350,7 +430,7 @@ def _start_lights_after_ac() -> None:
 
 
 async def _lights_off_after_ac() -> None:
-    print("[lights] 230 V back by rule — waiting for lamps, then off")
+    lights_log.log("ac.sweep.start")
     await asyncio.sleep(light_bus.AFTER_AC_FIRST_WAIT_S)
     deadline = time.monotonic() + light_bus.AFTER_AC_GIVE_UP_S
     while time.monotonic() < deadline:
@@ -360,17 +440,17 @@ async def _lights_off_after_ac() -> None:
         try:
             await asyncio.to_thread(light_bus.refresh_for_apply)
         except Exception as exc:
-            print(f"[lights] after-ac: LAN not ready ({exc})")
+            lights_log.log("ac.sweep.lan", ok=False, error=str(exc)[:160])
         states = await asyncio.to_thread(light_bus.apply_all, light_bus.OFF)
         for state in states:
             _store_light_state(state)
         await manager.broadcast({"type": "lights", "lights": lights_cache})
         if light_bus.all_off_and_online(states):
-            print("[lights] after-ac: all off")
+            lights_log.log("ac.sweep.done", ok=True, n=len(states))
             return
-        print(f"[lights] after-ac retry ({len(states)} lamps)")
+        lights_log.log("ac.sweep.retry", n=len(states))
         await asyncio.sleep(light_bus.AFTER_AC_RETRY_S)
-    print("[lights] after-ac gave up — lamp(s) never came online")
+    lights_log.log("ac.sweep.done", ok=False, detail="gave up")
 
 
 # ─── Spotify ───────────────────────────────────────────────────────────────
@@ -652,10 +732,10 @@ async def _podcast_player_tick() -> None:
         else:
             await _stop_rss_player()
             _allow_garden_idle_keepalive_pulses()
-            _set_podcast_state(active=False, playing=False, positionMs=duration)
+            _set_podcast_state(active=False, playing=False, positionMs=0)
     else:
         _allow_garden_idle_keepalive_pulses()
-        _set_podcast_state(playing=False, positionMs=duration)
+        _set_podcast_state(playing=False, positionMs=0)
 
 
 # ─── Background volume polling ────────────────────────────────────────────────
@@ -705,7 +785,7 @@ async def poll_loop():
 
         if hub_config.site() == "garden":
             await _garden_audio_keepalive_tick()
-            await _podcast_player_tick()
+        await _podcast_player_tick()
 
         # ── Garden WiFi lights (LEDVANCE / Tuya) ─────────────────────────────
         global lights_cache
@@ -787,6 +867,7 @@ async def lifespan(app: FastAPI):
     global hue_bridge
     loop = asyncio.get_event_loop()
     audio_log.configure(BASE_DIR / "var" / "audio.jsonl", site=hub_config.site())
+    lights_log.configure(BASE_DIR / "var" / "lights.jsonl", site=hub_config.site())
 
     # Force Android kiosk settings on startup (reuses /api/kiosk logic)
     if hub_config.feature_enabled("adbKiosk"):
@@ -827,7 +908,10 @@ async def lifespan(app: FastAPI):
             on=float(power_cfg.get("onPercent", power.ON_PERCENT)),
         )
         power_ctrl = power.PowerPolicy(POWER_STATE_FILE, band=band)
-        print(f"[power] policy ready (band={band.off:g}/{band.on:g} %, hold={power_ctrl.hold})")
+        print(f"[power] policy ready (band={band.off:g}/{band.on:g} %, mode={power_ctrl.mode}, hold={power_ctrl.hold})")
+
+    if hub_config.feature_enabled("podcasts"):
+        await _hydrate_podcast_from_firestore()
 
     hue_bridge = HueBridge()
     global lights_cache
@@ -837,16 +921,18 @@ async def lifespan(app: FastAPI):
             return garden_lights.snapshot()
         try:
             lights_cache = await asyncio.to_thread(_boot_lights)
-            print(f"[lights] {len(lights_cache)} configured")
+            lights_log.log("boot", n=len(lights_cache))
         except Exception as exc:
-            print(f"[lights] boot scan failed: {exc}")
+            lights_log.log("boot", ok=False, error=str(exc)[:160])
         try:
+            zigbee_lights.set_state_hook(_zigbee_light_state)
             await zigbee_lights.start()
             lights_cache = await asyncio.to_thread(garden_lights.snapshot)
         except Exception as exc:
-            print(f"[zigbee] {exc}")
+            lights_log.log("zigbee.up", ok=False, error=str(exc)[:160])
     poll_task = asyncio.create_task(poll_loop())
     fossibot_task = asyncio.create_task(_fossibot_loop()) if fossibot_monitor else None
+    kiosk_task = asyncio.create_task(_kiosk_status_loop())
 
     zc = Zeroconf()
     if hub_config.bo_speakers_enabled():
@@ -864,6 +950,7 @@ async def lifespan(app: FastAPI):
     poll_task.cancel()
     if fossibot_task is not None:
         fossibot_task.cancel()
+    kiosk_task.cancel()
     if _lights_after_ac_task is not None:
         _lights_after_ac_task.cancel()
     light_scenes.stop_all()
@@ -964,6 +1051,10 @@ async def websocket_endpoint(ws: WebSocket):
                     print(f"[power] hold rejected: {error}")
             elif msg.get("type") == "clear_power_hold":
                 await _clear_power_hold()
+            elif msg.get("type") == "set_power_mode":
+                ok, error = await _set_power_mode(str(msg.get("mode") or ""))
+                if not ok:
+                    print(f"[power] mode rejected: {error}")
             elif msg.get("type") == "set_hue_brightness":
                 if not hub_config.feature_enabled("hue"):
                     continue
@@ -995,7 +1086,10 @@ async def websocket_endpoint(ws: WebSocket):
                 if not dev:
                     continue
                 state = await asyncio.to_thread(
-                    light_bus.apply, dev, light_bus.LightCommand(on=brightness > 0, brightness=brightness)
+                    _light_apply,
+                    dev,
+                    light_bus.LightCommand(on=brightness > 0, brightness=brightness),
+                    "kiosk.brightness",
                 )
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
@@ -1014,9 +1108,10 @@ async def websocket_endpoint(ws: WebSocket):
                 current = next((r for r in lights_cache if r.get("id") == light_id), None)
                 brightness = max(1, int((current or {}).get("brightness") or 80))
                 state = await asyncio.to_thread(
-                    light_bus.apply,
+                    _light_apply,
                     dev,
                     light_bus.LightCommand(on=True, hue=hue, sat=sat, brightness=brightness),
+                    "kiosk.color",
                 )
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
@@ -1033,9 +1128,10 @@ async def websocket_endpoint(ws: WebSocket):
                 except (KeyError, ValueError, TypeError):
                     brightness = max(1, int((current or {}).get("brightness") or 80))
                 state = await asyncio.to_thread(
-                    light_bus.apply,
+                    _light_apply,
                     dev,
                     light_bus.LightCommand(on=True, white=True, brightness=brightness),
+                    "kiosk.white",
                 )
                 state["scene"] = "white"
                 _store_light_state(state)
@@ -1051,7 +1147,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if scene == "fest":
                     async def _fest_apply(device, command):
                         return await asyncio.to_thread(
-                            light_bus.apply, device, command, stop_scene=False
+                            _light_apply, device, command, "kiosk.fest", False
                         )
 
                     async def _fest_state(state):
@@ -1063,7 +1159,7 @@ async def websocket_endpoint(ws: WebSocket):
                 command = light_scenes.command_for(scene)
                 if command is None:
                     continue
-                state = await asyncio.to_thread(light_bus.apply, dev, command)
+                state = await asyncio.to_thread(_light_apply, dev, command, f"kiosk.scene.{scene}")
                 state["scene"] = scene
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
@@ -1083,13 +1179,14 @@ async def websocket_endpoint(ws: WebSocket):
                 except (TypeError, ValueError):
                     transition_s = 4.0
                 state = await asyncio.to_thread(
-                    light_bus.apply,
+                    _light_apply,
                     dev,
                     light_bus.LightCommand(
                         on=brightness > 0,
                         brightness=brightness,
                         transition_s=transition_s,
                     ),
+                    "kiosk.fade",
                 )
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
@@ -1097,6 +1194,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if not hub_config.feature_enabled("lights"):
                     continue
                 light_id = str(msg.get("light_id", ""))
+                lights_log.log("connect", id=light_id, source="kiosk")
                 state = await asyncio.to_thread(garden_lights.reconnect, light_id)
                 _store_light_state(state)
                 await manager.broadcast({"type": "lights", "lights": lights_cache})
@@ -1175,17 +1273,22 @@ _switchbot_lock = asyncio.Lock()
 _switchbot_last: dict = {"ok": False, "action": "", "error": ""}
 
 
-async def _switchbot_run(action: str) -> tuple[bool, str]:
-    """Send a SwitchBot command. Returns (ok, error)."""
+async def _switchbot_run(action: str, *, proceed=None) -> tuple[bool, str]:
+    """Send a SwitchBot command. Returns (ok, error).
+
+    `proceed` is checked again after we hold the bot lock — a stale night/home
+    press must withdraw if Simon has switched to tænd/sluk in the meantime.
+    Waiters queue; they re-check instead of skipping as 'optaget'.
+    """
     global _switchbot_last
     if action not in switchbot_bot.COMMANDS:
         return False, "Ukendt kommando"
     address = hub_config.switchbot_address()
     if not address:
         return False, "SwitchBot er ikke konfigureret"
-    if _switchbot_lock.locked():
-        return False, "SwitchBot er optaget"
     async with _switchbot_lock:
+        if proceed is not None and not proceed():
+            return False, "trukket"
         try:
             await switchbot_bot.send_command(address, action)
         except Exception as exc:
@@ -1198,18 +1301,30 @@ async def _switchbot_run(action: str) -> tuple[bool, str]:
 async def _apply_power_policy(status: dict) -> None:
     if power_ctrl is None or not hub_config.switchbot_address():
         return
-    decision = power_ctrl.decide(status)
+    decision = power_ctrl.decide(
+        status, sun_up=_sun_up(), someone_home=_someone_home()
+    )
     if decision is None:
         return
     want_ac_on = decision.ac_on
-    ok, error = await _switchbot_run("press")
+
+    def still() -> bool:
+        again = power_ctrl.decide(
+            _fossibot_status(), sun_up=_sun_up(), someone_home=_someone_home()
+        )
+        return power.still_wants(decision, again)
+
+    ok, error = await _switchbot_run("press", proceed=still)
+    if not ok and error == "trukket":
+        print(f"[power] {decision.source} press withdrawn (condition changed)")
+        return
     if ok:
         power_ctrl.note_press(decision.source)
         print(f"[power] {decision.source} SwitchBot press → AC {'on' if want_ac_on else 'off'}")
     else:
         print(f"[power] {decision.source} press skipped: {error}")
-    # Firestore row so a dark hut can be explained afterwards
-    # (ejdersted/fossibot_garden/events). Failure to log must not stop the policy.
+    # Disk first, then Firestore — a floor cut kills the router before the
+    # HTTP call returns. Failure to reach Firebase must not stop the policy.
     try:
         await fossibot_log.persist_policy_event(
             status,
@@ -1220,6 +1335,7 @@ async def _apply_power_policy(status: dict) -> None:
             error=error,
             firebase_config=_load_firebase_config(),
             http_client=_http,
+            outbox_path=FOSSIBOT_OUTBOX_FILE,
         )
     except Exception as exc:
         print(f"[power] event log failed: {exc}")
@@ -1262,6 +1378,16 @@ async def set_power_hold(data: dict = Body(default_factory=dict)):
     if not isinstance(ac_on, bool):
         return JSONResponse({"ok": False, "error": "acOn skal være true eller false"}, status_code=400)
     ok, error = await _set_power_hold(ac_on, str(data.get("duration") or ""))
+    if not ok:
+        return JSONResponse({"ok": False, "error": error}, status_code=400)
+    return {"ok": True, **_power_status()}
+
+
+@app.post("/api/power/mode")
+async def set_power_mode(data: dict = Body(default_factory=dict)):
+    if power_ctrl is None:
+        return JSONResponse({"ok": False, "error": "Kun på haven-hubben"}, status_code=404)
+    ok, error = await _set_power_mode(str(data.get("mode") or ""))
     if not ok:
         return JSONResponse({"ok": False, "error": error}, status_code=400)
     return {"ok": True, **_power_status()}
@@ -1359,6 +1485,11 @@ async def get_lights():
     return {"ok": True, "lights": lights_cache}
 
 
+@app.get("/api/lights/log")
+async def lights_event_log(limit: int = 80):
+    return {"ok": True, "site": hub_config.site(), "events": lights_log.recent(limit)}
+
+
 @app.post("/api/lights/scan")
 async def scan_lights():
     if not hub_config.feature_enabled("lights"):
@@ -1442,6 +1573,33 @@ async def _get_adb_serial() -> str | None:
     except Exception:
         pass
     return None
+
+
+async def _kiosk_status_loop() -> None:
+    if not hub_config.feature_enabled("adbKiosk"):
+        return
+    serial = ADB_SERIAL or ""
+    while True:
+        try:
+            row = await asyncio.to_thread(kiosk_status.probe, serial)
+            row["site"] = hub_config.site()
+            kiosk_status.remember(row)
+            await kiosk_status.persist(
+                row,
+                site=hub_config.site(),
+                firebase_config=_load_firebase_config(),
+                http_client=_http,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[kiosk] heartbeat failed: {exc}")
+        await asyncio.sleep(kiosk_status.INTERVAL_S)
+
+
+@app.get("/api/kiosk/status")
+async def get_kiosk_status():
+    return {"ok": True, "site": hub_config.site(), **kiosk_status.cached()}
 
 
 @app.put("/api/brightness/{level}")
@@ -1676,14 +1834,7 @@ async def spotify_resume():
     _audio("spotify.resume", ok=ok)
     if ok:
         _mark_garden_audio_active()
-    return {
-        "ok": ok,
-        **(
-            {"detail": "Spotify Connect på have-Pi'en er offline"}
-            if not ok and hub_config.site() == "garden"
-            else {}
-        ),
-    }
+    return {"ok": ok}
 
 @app.post("/api/spotify/play-uris")
 async def spotify_play_uris(data: dict = Body(default_factory=dict)):
@@ -1975,21 +2126,108 @@ async def _rss_feed(sh: dict) -> tuple[dict, list[dict]]:
 
 def _public_podcast_state() -> dict:
     state = dict(podcast_player_state)
+    state["engine"] = _active_podcast_engine
+    duration = max(0, int(state.get("durationMs") or 0))
+    position = max(0, int(state.get("positionMs") or 0))
     if state.get("active") and state.get("playing"):
         elapsed = int((time.time() - float(state.get("updatedAt") or time.time())) * 1000)
-        position = max(0, int(state.get("positionMs") or 0) + elapsed)
-        duration = max(0, int(state.get("durationMs") or 0))
         state["positionMs"] = min(
-            position,
+            position + elapsed,
             duration or 24 * 60 * 60 * 1000,
         )
+    elif state.get("active") and duration > 0 and position >= duration - 1500:
+        state["positionMs"] = 0
+        if int(podcast_player_state.get("positionMs") or 0) != 0:
+            podcast_player_state["positionMs"] = 0
+            _schedule_podcast_firestore_sync()
     return state
+
+
+def _schedule_podcast_firestore_sync() -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_persist_podcast_to_firestore())
+
+
+async def _persist_podcast_to_firestore() -> None:
+    await player_state.persist_player_patch(
+        player_state.player_patch(podcast_player_state, _active_podcast_engine),
+        firebase_config=_load_firebase_config(),
+        http_client=_http,
+        site=hub_config.site(),
+    )
+
+
+async def _hydrate_podcast_from_firestore() -> None:
+    global _active_podcast_engine
+    doc = await player_state.fetch_player_doc(
+        firebase_config=_load_firebase_config(),
+        http_client=_http,
+        site=hub_config.site(),
+    )
+    restored = player_state.state_from_doc(doc, hub_config.site())
+    if not restored:
+        return
+    state, engine = restored
+    podcast_player_state.update(state)
+    _fill_podcast_identity_from_catalog()
+    if engine:
+        _active_podcast_engine = engine
+    if not _active_podcast_engine:
+        _active_podcast_engine = _podcast_transport()
+    title = podcast_player_state.get("episodeTitle") or ""
+    print(f"[player] restored podcast from firestore ({title})", flush=True)
+    if (
+        podcast_player_state.get("playing")
+        and _podcast_transport() == "garden_sr"
+        and not _garden_sr_alive()
+    ):
+        # ffmpeg died with the old process; the card should show play, not pause.
+        podcast_player_state["playing"] = False
+    _schedule_podcast_firestore_sync()
+
+
+def _set_podcast_engine(name: str) -> None:
+    global _active_podcast_engine
+    _active_podcast_engine = name
+    _schedule_podcast_firestore_sync()
 
 
 def _set_podcast_state(**updates) -> dict:
     podcast_player_state.update(updates)
     podcast_player_state["updatedAt"] = time.time()
+    _schedule_podcast_firestore_sync()
     return _public_podcast_state()
+
+
+def _fill_podcast_identity_from_catalog() -> None:
+    title = str(podcast_player_state.get("showTitle") or "").strip().lower()
+    if not title:
+        return
+    for sh in PODCAST_SHOWS:
+        if str(sh.get("fallback_name") or "").strip().lower() != title:
+            continue
+        if not podcast_player_state.get("source"):
+            podcast_player_state["source"] = sh["source"]
+        if not podcast_player_state.get("showId"):
+            podcast_player_state["showId"] = _show_key(sh)
+        return
+
+
+def _podcast_transport() -> str:
+    engine = _active_podcast_engine or str(podcast_player_state.get("engine") or "")
+    if engine in ("rss", "dlna", "garden_sr", "spotify"):
+        return engine
+    source = str(podcast_player_state.get("source") or "")
+    if source == "rss":
+        return "rss" if hub_config.site() == "garden" else "dlna"
+    if source == "sr":
+        return "garden_sr" if hub_config.site() == "garden" else "dlna"
+    if source == "spotify":
+        return "spotify"
+    return "dlna" if hub_config.site() != "garden" else ""
 
 
 def _episode_public(ep: dict) -> dict:
@@ -2130,7 +2368,7 @@ async def _watch_rss_player(proc: asyncio.subprocess.Process) -> None:
                     return
                 _set_podcast_state(playing=False, positionMs=position, error=f"mpg123 restart fejlede: {detail}")
                 return
-        _set_podcast_state(playing=False, positionMs=position, error=f"mpg123 stoppede ({code}) {err}".strip())
+        _set_podcast_state(playing=False, positionMs=0, error="")
 
 
 async def _stop_garden_sr_player() -> None:
@@ -2173,9 +2411,39 @@ async def _watch_garden_sr_player(proc: asyncio.subprocess.Process) -> None:
         finished = duration > 0 and position >= duration - 10_000
         _set_podcast_state(
             playing=False,
-            positionMs=duration if finished else position,
+            positionMs=0 if finished else position,
             error="" if finished else f"SR-afspilleren stoppede ({code}) {err}".strip(),
         )
+
+
+def _garden_sr_alive() -> bool:
+    return bool(garden_sr_player and garden_sr_player.returncode is None)
+
+
+def _sr_episode_id_from_state(state: dict) -> str:
+    raw_id = str(state.get("episodeId") or "").strip()
+    uri = str(state.get("episodeUri") or "")
+    if uri.startswith("sr:episode:"):
+        raw_id = uri.split(":", 2)[2].strip() or raw_id
+    return raw_id
+
+
+async def _sr_media_for_state(state: dict) -> tuple[str, str]:
+    """URL + title for the current SR episode. Memory first, then SR API."""
+    url = garden_sr_stream_url
+    title = garden_sr_stream_title or str(state.get("episodeTitle") or "Sveriges Radio")
+    if url:
+        return url, title
+    episode_id = _sr_episode_id_from_state(state)
+    if not episode_id:
+        raise RuntimeError("SR-afsnit mangler")
+    ep_raw = await sr.get_episode(episode_id)
+    if not ep_raw:
+        raise RuntimeError(f"sr episode {episode_id} not found")
+    url = sr.episode_media_url(ep_raw)
+    if not url:
+        raise RuntimeError("no media url")
+    return url, str(ep_raw.get("title") or title)
 
 
 async def _play_garden_sr_url(
@@ -2332,21 +2600,45 @@ async def _play_rss_url(url: str, title: str = "Podcast") -> tuple[bool, str]:
     return True, f"spiller {title}"
 
 
+def _catalog_prev() -> dict[str, dict]:
+    return {
+        str(row.get("show_id")): row
+        for row in _podcast_cache
+        if isinstance(row, dict) and row.get("show_id")
+    }
+
+
 async def _build_podcast_list() -> list[dict]:
     out: list[dict] = []
+    prev_rows = _catalog_prev()
     for sh in PODCAST_SHOWS:
+        key = _show_key(sh)
+        prev = prev_rows.get(key)
         if sh["source"] == "spotify":
-            meta = await spotify.get_show(sh["id"])
             ep = await spotify.get_show_latest_episode(sh["id"])
-            if not meta or not ep:
-                print(f"[Podcast] skip spotify {sh['id']} — meta={bool(meta)} ep={bool(ep)}")
+            if not ep:
+                if prev:
+                    out.append(prev)
+                else:
+                    print(f"[Podcast] skip spotify {sh['id']} — no episode")
                 continue
-            images = meta.get("images") or []
-            cover = images[0].get("url", "") if images else ""
+            name = (prev or {}).get("show_name") or sh["fallback_name"]
+            cover = (prev or {}).get("show_image") or ""
+            if not cover:
+                meta = await spotify.get_show(sh["id"])
+                if not meta:
+                    if prev:
+                        out.append(prev)
+                    else:
+                        print(f"[Podcast] skip spotify {sh['id']} — no show")
+                    continue
+                name = meta.get("name") or name
+                images = meta.get("images") or []
+                cover = images[0].get("url", "") if images else ""
             out.append({
-                "show_id": _show_key(sh),
+                "show_id": key,
                 "source": "spotify",
-                "show_name": meta.get("name") or sh["fallback_name"],
+                "show_name": name,
                 "show_image": cover,
                 "episode_id": ep.get("id"),
                 "episode_uri": ep.get("uri"),
@@ -2359,17 +2651,29 @@ async def _build_podcast_list() -> list[dict]:
                 pid = int(sh["id"])
             except ValueError:
                 continue
-            prog = await sr.get_program(pid)
             ep_raw = await sr.get_latest_episode(pid)
-            if not prog or not ep_raw:
-                print(f"[Podcast] skip sr {sh['id']} — prog={bool(prog)} ep={bool(ep_raw)}")
+            if not ep_raw:
+                if prev:
+                    out.append(prev)
+                else:
+                    print(f"[Podcast] skip sr {sh['id']} — no episode")
                 continue
             ep = sr.normalize_episode(ep_raw)
+            name = (prev or {}).get("show_name") or sh["fallback_name"]
+            image = (prev or {}).get("show_image") or ""
+            if not image or not (prev or {}).get("show_name"):
+                prog = await sr.get_program(pid)
+                if prog:
+                    name = prog.get("name") or name
+                    image = prog.get("programimage") or image
+                elif not prev:
+                    print(f"[Podcast] skip sr {sh['id']} — no program")
+                    continue
             out.append({
-                "show_id": _show_key(sh),
+                "show_id": key,
                 "source": "sr",
-                "show_name": prog.get("name") or sh["fallback_name"],
-                "show_image": prog.get("programimage") or "",
+                "show_name": name,
+                "show_image": image,
                 "episode_id": ep["id"],
                 "episode_uri": ep["uri"],
                 "episode_name": ep["name"],
@@ -2381,14 +2685,17 @@ async def _build_podcast_list() -> list[dict]:
                 meta, episodes = await _rss_feed(sh)
             except Exception as exc:
                 print(f"[Podcast] rss {sh['id']} feed error — {exc}")
+                if prev:
+                    out.append(prev)
+                    continue
                 meta, episodes = {"title": sh["fallback_name"], "image": ""}, []
             if not episodes:
                 print(f"[Podcast] rss {sh['id']} has no episodes yet")
                 out.append({
-                    "show_id": _show_key(sh),
+                    "show_id": key,
                     "source": "rss",
-                    "show_name": meta.get("title") or sh["fallback_name"],
-                    "show_image": meta.get("image") or "",
+                    "show_name": (meta.get("title") if meta else None) or (prev or {}).get("show_name") or sh["fallback_name"],
+                    "show_image": (meta.get("image") if meta else None) or (prev or {}).get("show_image") or "",
                     "episode_id": "",
                     "episode_uri": "",
                     "episode_name": "",
@@ -2398,10 +2705,10 @@ async def _build_podcast_list() -> list[dict]:
                 continue
             ep = episodes[0]
             out.append({
-                "show_id": _show_key(sh),
+                "show_id": key,
                 "source": "rss",
-                "show_name": meta.get("title") or sh["fallback_name"],
-                "show_image": meta.get("image") or "",
+                "show_name": meta.get("title") or (prev or {}).get("show_name") or sh["fallback_name"],
+                "show_image": meta.get("image") or (prev or {}).get("show_image") or "",
                 "episode_id": ep["id"],
                 "episode_uri": ep["uri"],
                 "episode_name": ep["name"],
@@ -2516,7 +2823,6 @@ async def play_latest_podcast(data: dict = Body(default_factory=dict)):
     """Spil seneste afsnit af et show på B&O M5. Dispatcher per source."""
     if not hub_config.feature_enabled("podcasts"):
         return JSONResponse({"ok": False, "error": "Podcasts disabled"}, status_code=404)
-    global _active_podcast_engine
     show_id = (data.get("show_id") or "").strip()
     if not show_id:
         return JSONResponse({"ok": False, "error": "no show_id"}, status_code=400)
@@ -2527,20 +2833,20 @@ async def play_latest_podcast(data: dict = Body(default_factory=dict)):
     if sh["source"] == "spotify":
         ok, detail, ep = await _play_latest_spotify(sh)
         if ok:
-            _active_podcast_engine = "spotify"
+            _set_podcast_engine("spotify")
         return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
     if sh["source"] == "sr":
         ok, detail, ep = await _play_latest_sr(sh)
         if ok:
-            _active_podcast_engine = "garden_sr" if hub_config.site() == "garden" else "dlna"
+            _set_podcast_engine("garden_sr" if hub_config.site() == "garden" else "dlna")
         _audio("podcast.play", source="sr", ok=ok, title=(ep or {}).get("name"), detail=detail)
         return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
     if sh["source"] == "rss":
         ok, detail, ep = await _play_latest_rss(sh)
         if ok:
-            _active_podcast_engine = "rss"
+            _set_podcast_engine("rss")
         _audio("podcast.play", source="rss", ok=ok, title=(ep or {}).get("name"), detail=detail)
         return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
@@ -2677,7 +2983,6 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
     """Spil et specifikt afsnit. Dispatcher per URI-prefix."""
     if not hub_config.feature_enabled("podcasts"):
         return JSONResponse({"ok": False, "error": "Podcasts disabled"}, status_code=404)
-    global _active_podcast_engine
     uri = (data.get("episode_uri") or "").strip()
     if not uri:
         return JSONResponse({"ok": False, "error": "no episode_uri"}, status_code=400)
@@ -2691,7 +2996,7 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
         if remapped is not None:
             ok, detail, ep = remapped
             if ok:
-                _active_podcast_engine = "rss"
+                _set_podcast_engine("rss")
             _audio("podcast.play", source="rss", ok=ok, title=(ep or {}).get("name"), detail=detail)
             return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
         _audio("podcast.play", source="rss", ok=False, detail="ingen RSS-match for spotify:episode URI")
@@ -2708,20 +3013,21 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
         if not url:
             return JSONResponse({"ok": False, "error": "no media url"}, status_code=502)
         title = ep_raw.get("title") or "Sveriges Radio"
+        sh = _find_show(str(data.get("show_id") or ""))
         if hub_config.site() == "garden":
             ok, detail = await _play_garden_sr_url(url, title)
         else:
             ok, detail = await bo_dlna.play_url(url, title=title)
         if ok:
-            _active_podcast_engine = "garden_sr" if hub_config.site() == "garden" else "dlna"
+            _set_podcast_engine("garden_sr" if hub_config.site() == "garden" else "dlna")
             if hub_config.site() != "garden":
                 await bo_link.expand_to_a9("dlna")
             ep = sr.normalize_episode(ep_raw)
             _set_podcast_state(
                 active=True,
                 source="sr",
-                showId="",
-                showTitle="Sveriges Radio",
+                showId=_show_key(sh) if sh else "",
+                showTitle=(sh["fallback_name"] if sh else "Sveriges Radio"),
                 episodeId=ep.get("id") or "",
                 episodeUri=ep.get("uri") or uri,
                 episodeTitle=title,
@@ -2733,7 +3039,7 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
                 error="",
             )
         _audio("podcast.play", source="sr", ok=ok, title=title, detail=detail)
-        return {"ok": ok, "detail": detail}
+        return {"ok": ok, "detail": detail, "player": _public_podcast_state()}
 
     if uri.startswith("rss:"):
         try:
@@ -2750,7 +3056,7 @@ async def play_specific_episode(data: dict = Body(default_factory=dict)):
             return JSONResponse({"ok": False, "error": f"rss episode {idx} not found"}, status_code=404)
         ok, detail, ep = await _play_rss_index(sh, queue_idx)
         if ok:
-            _active_podcast_engine = "rss"
+            _set_podcast_engine("rss")
         _audio("podcast.play", source="rss", ok=ok, title=(ep or {}).get("name"), detail=detail)
         return {"ok": ok, "detail": detail, "episode": ep, "player": _public_podcast_state()}
 
@@ -2793,19 +3099,26 @@ async def podcast_player_pause():
     state = _public_podcast_state()
     if not state.get("active"):
         return {"ok": True, "player": state}
-    if state.get("source") == "rss" and state.get("playing"):
+    kind = _podcast_transport()
+    if kind == "rss":
         if hub_config.site() == "garden":
             await _send_rss_command("PAUSE")
         else:
-            await bo_dlna.pause()
-    elif state.get("source") == "spotify":
-        await spotify.pause()
-    elif state.get("source") == "sr":
-        if hub_config.site() == "garden":
-            if garden_sr_player and garden_sr_player.returncode is None:
-                garden_sr_player.send_signal(signal.SIGSTOP)
-        else:
-            await bo_dlna.pause()
+            ok, detail = await bo_dlna.pause()
+            if not ok:
+                return {"ok": False, "error": detail or "pause fejlede", "player": state}
+    elif kind == "spotify":
+        if not await spotify.pause():
+            return {"ok": False, "error": "spotify pause fejlede", "player": state}
+    elif kind == "garden_sr":
+        if _garden_sr_alive():
+            garden_sr_player.send_signal(signal.SIGSTOP)
+    elif kind == "dlna":
+        ok, detail = await bo_dlna.pause()
+        if not ok:
+            return {"ok": False, "error": detail or "pause fejlede", "player": state}
+    else:
+        return {"ok": False, "error": "ingen aktiv podcast-engine", "player": state}
     _allow_garden_idle_keepalive_pulses()
     updated = _set_podcast_state(playing=False, positionMs=state.get("positionMs") or 0)
     _mark_garden_audio_active()
@@ -2817,7 +3130,8 @@ async def podcast_player_resume():
     state = _public_podcast_state()
     if not state.get("active"):
         return {"ok": False, "error": "no active podcast", "player": state}
-    if state.get("source") == "rss" and not state.get("playing"):
+    kind = _podcast_transport()
+    if kind == "rss":
         if hub_config.site() == "garden":
             if not garden_rss_player or garden_rss_player.returncode is not None:
                 sh = _find_show(str(state.get("showId") or ""))
@@ -2833,20 +3147,31 @@ async def podcast_player_resume():
             else:
                 await _send_rss_command("PAUSE")
         else:
-            await bo_dlna.resume()
-    elif state.get("source") == "spotify":
-        await spotify.resume()
-    elif state.get("source") == "sr":
-        if hub_config.site() == "garden":
-            if not garden_sr_player or garden_sr_player.returncode is not None:
-                return {
-                    "ok": False,
-                    "error": "SR-afspilleren er ikke aktiv",
-                    "player": state,
-                }
+            ok, detail = await bo_dlna.resume()
+            if not ok:
+                return {"ok": False, "error": detail or "resume fejlede", "player": state}
+    elif kind == "spotify":
+        if not await spotify.resume():
+            return {"ok": False, "error": "spotify resume fejlede", "player": state}
+    elif kind == "garden_sr":
+        if _garden_sr_alive():
             garden_sr_player.send_signal(signal.SIGCONT)
         else:
-            await bo_dlna.resume()
+            try:
+                url, title = await _sr_media_for_state(state)
+            except RuntimeError as exc:
+                return {"ok": False, "error": str(exc), "player": state}
+            ok, detail = await _play_garden_sr_url(
+                url, title, int(state.get("positionMs") or 0)
+            )
+            if not ok:
+                return {"ok": False, "error": detail, "player": state}
+    elif kind == "dlna":
+        ok, detail = await bo_dlna.resume()
+        if not ok:
+            return {"ok": False, "error": detail or "resume fejlede", "player": state}
+    else:
+        return {"ok": False, "error": "ingen aktiv podcast-engine", "player": state}
     updated = _set_podcast_state(playing=True, positionMs=state.get("positionMs") or 0)
     _mark_garden_audio_active()
     return {"ok": True, "player": updated}
@@ -2866,26 +3191,26 @@ async def podcast_player_seek(data: dict = Body(default_factory=dict)):
     if duration > 0:
         target_ms = min(duration, target_ms)
     target_ms = max(0, target_ms)
-    if state.get("source") == "rss":
+    kind = _podcast_transport()
+    if kind == "rss":
         if hub_config.site() == "garden":
             await _send_rss_command(f"JUMP {target_ms // 1000}s")
         else:
             ok, detail = await bo_dlna.seek(target_ms)
             if not ok:
                 return {"ok": False, "error": detail or "spoling fejlede", "player": state}
-    elif state.get("source") == "sr":
-        if hub_config.site() == "garden":
-            if not garden_sr_stream_url:
-                return {"ok": False, "error": "SR-stream mangler", "player": state}
-            ok, detail = await _play_garden_sr_url(
-                garden_sr_stream_url, garden_sr_stream_title or state.get("episodeTitle") or "Sveriges Radio", target_ms
-            )
-            if not ok:
-                return {"ok": False, "error": detail, "player": state}
-        else:
-            ok, detail = await bo_dlna.seek(target_ms)
-            if not ok:
-                return {"ok": False, "error": detail or "spoling fejlede", "player": state}
+    elif kind == "garden_sr":
+        try:
+            url, title = await _sr_media_for_state(state)
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc), "player": state}
+        ok, detail = await _play_garden_sr_url(url, title, target_ms)
+        if not ok:
+            return {"ok": False, "error": detail, "player": state}
+    elif kind == "dlna":
+        ok, detail = await bo_dlna.seek(target_ms)
+        if not ok:
+            return {"ok": False, "error": detail or "spoling fejlede", "player": state}
     updated = _set_podcast_state(positionMs=target_ms)
     _mark_garden_audio_active()
     return {"ok": True, "player": updated}
@@ -3201,6 +3526,58 @@ async def dashboard_page():
         return FileResponse(dashboard_file, media_type="text/html")
     return JSONResponse({"ok": False, "error": "Dashboard not built"}, status_code=404)
 
+
+_ICON_NO_CACHE = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
+# iOS Safari caches /apple-touch-icon.png by origin. 404 those names so it
+# has to follow the uniquely named <link rel="apple-touch-icon">.
+_STALE_ICON_PATHS = {
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+    "/apple-touch-icon-180x180.png",
+    "/apple-touch-icon-v3.png",
+}
+_ICON_FILES = (
+    ("favicon.ico", "image/x-icon"),
+    ("favicon-32x32.png", "image/png"),
+    ("favicon-96x96.png", "image/png"),
+    ("haven-icon-v4.png", "image/png"),
+    ("web-app-manifest-192x192.png", "image/png"),
+    ("web-app-manifest-512x512.png", "image/png"),
+)
+
+
+def _register_icon_routes() -> None:
+    def _make(filename: str, media: str):
+        async def handler():
+            target = STATIC_DIR / filename
+            if not target.is_file():
+                return JSONResponse({"ok": False}, status_code=404)
+            return FileResponse(target, media_type=media, headers=_ICON_NO_CACHE)
+
+        handler.__name__ = f"icon_{filename.replace('.', '_')}"
+        return handler
+
+    for filename, media in _ICON_FILES:
+        app.add_api_route(f"/{filename}", _make(filename, media), methods=["GET"])
+
+
+_register_icon_routes()
+
+
+@app.middleware("http")
+async def _icon_cache_headers(request: Request, call_next):
+    path = request.url.path
+    if path in _STALE_ICON_PATHS:
+        return Response(status_code=404, headers=_ICON_NO_CACHE)
+    response = await call_next(request)
+    if (
+        path.startswith("/favicon")
+        or path.startswith("/haven-icon")
+        or "apple-touch-icon" in path
+    ):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 # ─── Static files (SvelteKit build) — mount last ──────────────────────────────
 if STATIC_DIR.exists():

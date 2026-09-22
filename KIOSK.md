@@ -140,7 +140,11 @@ ssh "$PI_HOST" "sudo systemctl restart hue"
 ssh "$PI_HOST" "sudo journalctl -u hue -f"
 ```
 
-**Kiosk URL (Galaxy A12 / Chrome)**: `https://192.168.86.16:8443`
+**Kiosk URL (Galaxy A12 / Chrome, home)**: `https://192.168.86.16:8443`
+
+**Kiosk URL (garden)**: the MagicDNS URL in `certs/public-url.txt`
+(`https://kolonihave-pi.tail7947c4.ts.net:8443`). Not the LAN IP — the Let's
+Encrypt cert is issued for that name only. See `docs/garden.md` TLS.
 
 ---
 

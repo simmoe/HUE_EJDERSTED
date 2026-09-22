@@ -233,11 +233,28 @@ async def stop() -> tuple[bool, str]:
     return await _soap("Stop", "<InstanceID>0</InstanceID>")
 
 
+async def _mozart_stream(action: str) -> tuple[bool, str]:
+    """M5 DLNA Pause on HTTP streams often returns UPnP 500; Mozart does not."""
+    try:
+        response = await _http.post(f"http://{BEO_M5_IP}:8080/BeoZone/Zone/Stream/{action}")
+    except Exception as exc:
+        return False, str(exc)
+    if response.status_code < 400:
+        return True, ""
+    return False, f"HTTP {response.status_code}: {(response.text or '')[:160]}"
+
+
 async def pause() -> tuple[bool, str]:
+    ok, detail = await _mozart_stream("Pause")
+    if ok:
+        return True, ""
     return await _soap("Pause", "<InstanceID>0</InstanceID>")
 
 
 async def resume() -> tuple[bool, str]:
+    ok, detail = await _mozart_stream("Play")
+    if ok:
+        return True, ""
     return await _soap("Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
 
 

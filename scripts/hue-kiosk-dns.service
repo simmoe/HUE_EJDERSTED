@@ -1,0 +1,18 @@
+# Answer the Tailscale MagicDNS name on the garden LAN so Chrome's
+# Let's Encrypt cert matches without the phone running Tailscale.
+# Install on the garden Pi:
+#   sudo ./scripts/install-garden-lan-dns.sh
+
+[Unit]
+Description=LAN DNS rewrite for garden kiosk TLS name
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq -k --conf-file=/etc/hue-kiosk-dns.conf --pid-file=/run/hue-kiosk-dns.pid
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

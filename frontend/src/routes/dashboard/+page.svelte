@@ -20,6 +20,7 @@
     alert?: boolean;
     lastPersonAge?: number | null;
     lastPersonAtIso?: string | null;
+    lastEvidenceAtIso?: string | null;
     lastEvidenceUrl?: string;
     evidenceUrl?: string;
     personConfidence?: number;
@@ -62,6 +63,20 @@
   }
 
   const evidenceUrl = () => security?.lastEvidenceUrl || security?.evidenceUrl || '';
+
+  function formatEvidenceStamp(): string {
+    const iso = security?.lastEvidenceAtIso || security?.lastPersonAtIso;
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString('da-DK', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
 
   async function refreshCamera() {
     try {
@@ -138,8 +153,13 @@
   <div class="modal-backdrop">
     <button class="modal-underlay" aria-label="Luk evidence" onclick={() => (evidenceOpen = false)}></button>
     <div class="evidence-modal" role="dialog" aria-modal="true">
-      <button class="modal-close" onclick={() => (evidenceOpen = false)}>Luk</button>
-      <img src={evidenceUrl()} alt="Evidence fra seneste person-detektion" />
+      <div class="evidence-frame">
+        <img src={evidenceUrl()} alt="Evidence fra seneste person-detektion" />
+        {#if formatEvidenceStamp()}
+          <div class="evidence-stamp">{formatEvidenceStamp()}</div>
+        {/if}
+      </div>
+      <button type="button" class="modal-close" onclick={() => (evidenceOpen = false)}>Luk</button>
     </div>
   </div>
 {/if}
@@ -291,6 +311,7 @@
   .modal-underlay {
     position: absolute;
     inset: 0;
+    z-index: 0;
     border: 0;
     background: transparent;
     cursor: default;
@@ -307,6 +328,12 @@
     background: #090909;
   }
 
+  .evidence-frame {
+    position: relative;
+    overflow: hidden;
+    border-radius: 16px;
+  }
+
   .evidence-modal img {
     display: block;
     width: 100%;
@@ -315,10 +342,26 @@
     border-radius: 16px;
   }
 
+  .evidence-stamp {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 14px 16px 12px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
+    color: #f7f7f7;
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+
   .modal-close {
     position: absolute;
     right: 24px;
     top: 24px;
+    z-index: 2;
     background: rgba(0, 0, 0, 0.72);
+    pointer-events: auto;
   }
 </style>

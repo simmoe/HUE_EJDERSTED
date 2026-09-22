@@ -4,25 +4,29 @@ Latest snapshot: ``ejdersted/fossibot_garden``
 History: ``ejdersted/fossibot_garden/samples/{yyyyMMddTHHmm}`` (UTC, 5-min bucket).
 Policy events: ``ejdersted/fossibot_garden/events/{yyyyMMddTHHmmss}`` — one doc
 each time the power policy presses the SwitchBot (``source``: floor at low
-SoC, rule when charged, hold from a kiosk tap), so a dark hut can be explained
-afterwards.
+SoC, home when the camera sees someone, night after sunset when the hut is
+empty, hold from a kiosk tap), so a dark hut can be explained afterwards.
 
 Writes follow the same REST path as ``security_garden``. Client SDKs must not
-write these documents. Read is for later interpretation (SoC, solar, AC/USB).
+write these documents. Read is for later interpretation (SoC, solar/AC/total in, out, AC/DC/USB).
 """
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 LATEST_DOC = "ejdersted/fossibot_garden"
 SAMPLES_COLLECTION = "ejdersted/fossibot_garden/samples"
 EVENTS_COLLECTION = "ejdersted/fossibot_garden/events"
 DEFAULT_LOG_SEC = 300
+MAX_QUEUED_SAMPLES = 288  # 24 h at 5 min — Pi stays up on DC when AC/router dies
+MAX_QUEUED_EVENTS = 64
 
-_PORT_KEYS = ("online", "acOn", "usbOn", "charging")
+_PORT_KEYS = ("online", "acOn", "dcOn", "usbOn", "charging", "kioskCharging")
 
 
 def _firestore_value(value: Any) -> dict[str, Any]:
@@ -55,10 +59,15 @@ def sample_fields(status: dict[str, Any], *, now: datetime | None = None) -> dic
         "online": bool(status.get("online")),
         "socPercent": status.get("socPercent"),
         "solarWatts": status.get("solarWatts"),
+        "acInWatts": status.get("acInWatts"),
+        "inWatts": status.get("inWatts"),
         "outWatts": status.get("outWatts"),
         "usbOn": bool(status.get("usbOn")),
+        "dcOn": bool(status.get("dcOn")),
         "acOn": bool(status.get("acOn")),
         "charging": bool(status.get("charging")),
+        "kioskBatteryPercent": status.get("kioskBatteryPercent"),
+        "kioskCharging": status.get("kioskCharging"),
     }
 
 
@@ -84,7 +93,8 @@ def policy_event_fields(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """One row per SwitchBot press the Pi makes. `kind` is what we wanted,
-    `source` is why: floor (≤15 %), rule (≥25 %) or hold (a tap on the kiosk)."""
+    `source` is why: floor (low SoC), home (camera), night (after sunset,
+    empty), or hold (a tap on the kiosk)."""
     stamp = now or datetime.now(tz=timezone.utc)
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
@@ -167,20 +177,123 @@ async def _patch_docs(
     return True
 
 
+def _empty_outbox() -> dict[str, dict[str, Any]]:
+    return {"samples": {}, "events": {}}
+
+
+def load_outbox(path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _empty_outbox()
+    if not isinstance(raw, dict):
+        return _empty_outbox()
+    samples = raw.get("samples") if isinstance(raw.get("samples"), dict) else {}
+    events = raw.get("events") if isinstance(raw.get("events"), dict) else {}
+    return {"samples": dict(samples), "events": dict(events)}
+
+
+def save_outbox(path: Path, box: dict[str, dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(box, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _trim(items: dict[str, Any], limit: int) -> dict[str, Any]:
+    if len(items) <= limit:
+        return items
+    keep = sorted(items)[-limit:]
+    return {key: items[key] for key in keep}
+
+
+def queue_sample(path: Path, fields: dict[str, Any], *, sid: str) -> None:
+    box = load_outbox(path)
+    box["samples"][sid] = fields
+    box["samples"] = _trim(box["samples"], MAX_QUEUED_SAMPLES)
+    save_outbox(path, box)
+
+
+def queue_event(path: Path, fields: dict[str, Any], *, eid: str) -> None:
+    box = load_outbox(path)
+    box["events"][eid] = fields
+    box["events"] = _trim(box["events"], MAX_QUEUED_EVENTS)
+    save_outbox(path, box)
+
+
+def drop_outbox_keys(path: Path, *, samples: list[str] | None = None, events: list[str] | None = None) -> None:
+    box = load_outbox(path)
+    for key in samples or []:
+        box["samples"].pop(key, None)
+    for key in events or []:
+        box["events"].pop(key, None)
+    save_outbox(path, box)
+
+
+async def flush_outbox(
+    path: Path,
+    *,
+    firebase_config: dict[str, Any],
+    http_client: Any,
+) -> bool:
+    """Replay queued samples/events once DNS is back. Stops on the first miss."""
+    box = load_outbox(path)
+    if not box["samples"] and not box["events"]:
+        return True
+    sent_samples: list[str] = []
+    sent_events: list[str] = []
+    for eid in sorted(box["events"]):
+        ok = await _patch_docs(
+            [f"{EVENTS_COLLECTION}/{eid}"],
+            box["events"][eid],
+            firebase_config=firebase_config,
+            http_client=http_client,
+            label="event",
+        )
+        if not ok:
+            drop_outbox_keys(path, samples=sent_samples, events=sent_events)
+            return False
+        sent_events.append(eid)
+    for sid in sorted(box["samples"]):
+        ok = await _patch_docs(
+            [f"{SAMPLES_COLLECTION}/{sid}"],
+            box["samples"][sid],
+            firebase_config=firebase_config,
+            http_client=http_client,
+            label="log",
+        )
+        if not ok:
+            drop_outbox_keys(path, samples=sent_samples, events=sent_events)
+            return False
+        sent_samples.append(sid)
+    if sent_samples or sent_events:
+        drop_outbox_keys(path, samples=sent_samples, events=sent_events)
+        print(
+            f"[fossibot] flushed {len(sent_samples)} sample(s), {len(sent_events)} event(s) to firestore"
+        )
+    return True
+
+
 async def persist(
     status: dict[str, Any],
     *,
     firebase_config: dict[str, Any],
     http_client: Any,
     now: datetime | None = None,
+    outbox_path: Path | None = None,
 ) -> bool:
-    return await _patch_docs(
-        [LATEST_DOC, f"{SAMPLES_COLLECTION}/{sample_id(now)}"],
-        sample_fields(status, now=now),
+    fields = sample_fields(status, now=now)
+    sid = sample_id(now)
+    ok = await _patch_docs(
+        [LATEST_DOC, f"{SAMPLES_COLLECTION}/{sid}"],
+        fields,
         firebase_config=firebase_config,
         http_client=http_client,
         label="log",
     )
+    if not ok and outbox_path is not None:
+        queue_sample(outbox_path, fields, sid=sid)
+    return ok
 
 
 async def persist_policy_event(
@@ -194,6 +307,7 @@ async def persist_policy_event(
     firebase_config: dict[str, Any],
     http_client: Any,
     now: datetime | None = None,
+    outbox_path: Path | None = None,
 ) -> bool:
     fields = policy_event_fields(
         status,
@@ -204,10 +318,16 @@ async def persist_policy_event(
         error=error,
         now=now,
     )
-    return await _patch_docs(
-        [f"{EVENTS_COLLECTION}/{event_id(now)}"],
+    eid = event_id(now)
+    if outbox_path is not None:
+        queue_event(outbox_path, fields, eid=eid)
+    ok = await _patch_docs(
+        [f"{EVENTS_COLLECTION}/{eid}"],
         fields,
         firebase_config=firebase_config,
         http_client=http_client,
         label="event",
     )
+    if ok and outbox_path is not None:
+        drop_outbox_keys(outbox_path, events=[eid])
+    return ok

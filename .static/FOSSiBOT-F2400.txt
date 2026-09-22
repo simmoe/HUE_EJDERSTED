@@ -1,0 +1,973 @@
+=== Page 1 ===
+lOSSiBOT
+F2400
+User Manual
+2400W|
+cOms
+PEN TABLE POWER BEATICH
+1 100w
+100. 2400w
+10 20
+lOSSIBOT
+Company official website: https://www.fossibot.com
+Technical service email: support@fossibot.com
+
+=== Page 2 ===
+PRECAUTIONS FOR USE
+1. Please avoid long-term storage and use of this product in environments with
+high temperature and humidity or direct sunlight to avoid shortened battery life
+and other failures. The product should not be close to the fire source, otherwise
+it may cause a major fire or accident.
+2. This product must not be disassembled or modified. Improper operation may
+cause product malfunction or even fire.
+3.Be careful not to drop or drop the product from a high place, so as not to
+damage the product.
+4. Please store or use this product out of the reach of children, otherwise the
+product may be dropped or collided and may cause bodily injury to children.
+5. Please use our original accessories, and Fossibot will not guarantee the
+defective products caused by the use of non-original accessories.
+6. Please directly plug in the wall socket to charge the product, do not use exten-
+sion cords or cable taps, otherwise there is a risk of damage to the extension
+cords and cable taps or even a fire; If the extension socket is plugged in to
+charge this product, please do not connect other electrical appliances to this
+socket, otherwise the household energy meter may trip.
+7. When the product is not in use or idle, please turn it off and unplug the power
+cable. If it needs to be idle for a long time, please consume the product from a
+fully charged state to an uncharged state, then recharge it to about 50% of the
+battery level and store it. In order to prolong the life of the product, please take
+three months as a cycle, operate and keep it in this
+way.
+8. If the product reaches scrap conditions, please discard or recycle the product
+in accordance with local laws.
+Thank you for purchasing Fossibot F2400 portable power
+station. Please
+carefully read the user manual before operating the product.
+This user manual is required for product warranty. Please keep this user
+manual together with the purchase certificate such as the invoice.
+Due to the transportation requirements of international customs for battery
+products, F2400 is charged to about 30% before delivery. Please fully
+charge the product after unpacking for use.
+This product should be charged directly from the wall socket. Do not use
+extension cords and cable taps. When using two or more sockets to charge,
+do not use devices other than this product on the same socket.
+
+=== Page 3 ===
+Contents
+Packing List
+01
+Product Introduction
+01
+Button Function Introduction
+02
+Introduction of Display Interface
+05
+UPS Mode
+06
+Connection of Solar Panels
+07
+Car Charging
+08
+Use of the Fan Cover
+09
+Product Specifications
+10
+Battery Specifications
+10
+Troubleshooting table
+11
+Warranty
+12
+OUTLET TYPE: AC OUTPUT
+US/JP
+CN
+UK
+EU
+KR
+100V~120V
+220V
+230V
+220V~240V
+220V
+50/60Hz
+50Hz
+50Hz
+50Hz
+60Hz
+
+=== Page 4 ===
+Packing list
+1
+O
+Portable
+Car Charging
+AC Cable
+Anderson to MC4
+User Manual
+Power Station
+Cable
+Product Introduction
+This product is a 2048Wh large-capacity 2400W high-power portable
+power station supplied with 2-hour high-speed charging, using a lithium
+iron phosphate battery with extremely high safety performance.
+It can be used as a backup power supply in the event of a sudden-
+power failure or a disaster, or used for camping and living power in a
+camper, and can also provide power for various power tools regardless
+of the occasion.
+2400W high power, sine wave AC output, can be used for high-pow-
+er household appliances such as dryers, microwave ovens, refrigera-
+tors, induction cookers and electric ovens; it can also be used for other
+electronic devices such as personal computers.
+0-100% charging can be completed within 2 hours through the
+1100W ultra-fast charging of the household power socket, and the input
+voltage frequency can be auto switched to 50Hz/60Hz, or the input
+voltage frequency can be manually switched to 50Hz/60Hz. In addition,
+this product also supports solar panel charging, and the maximum
+input power cannot exceed 500w, allowing you to charge outdoors or
+at home when there is a power outage.
+gE
+
+=== Page 5 ===
+Button Function Introduction
+2400W
+1 Power ON/OFF Button
+(2) LED Light Button
+(Switch to different mode)
+4
+(3) USB ON/OFF Button
+lossiboT
+(4) DC ON/OFF Button
+(5) LCD Screen
+6 Input Power Knob
+Cooling Air Duct
+AC Switch
+(Manually Switch to 50/60Hz)
+9) Anderson Input Port
+For Solar Panel)
+10 AC input
+(11) Overload Protection Button
+Power ON/OFF Button
+Instructions: Press and hold the power button for 3s to wake up the system,
+turn on the LCD display, and press and hold again for 3s to turn off.
+Light Button
+Instructions: Short press the Light button, the LED light is on;short press
+again, the LED light enters the SOS mode, short press in turn, enter the
+strobe mode, and finally the LED light turns off (LED in any mode, long press
+the LIGHT button for > 1 second, directly turn off the LED light).
+3) USB ON/OFF Button
+Instructions: Short press the USB button to turn on the USB output port, and
+short press it again to turn it off.
+USB-A
+TYPE-C X 3
+TYPE-CX1
+QC 3.0
+PD-20W
+PD-100W
+2
+
+=== Page 6 ===
+DC ON/OFF Button
+Instructions: Short press the DC button to turn on the DC output port, and short
+press it again to turn it off.
+(0)
+e
+DC output X2 Cigarette port × 1 XT60X1
+12V/3A
+12V/10A
+12V/25A
+5 LCD Screen
+Display the product's battery level and usage status tips.
+6 Input Power Knob
+When the product is connected to the AC mains for charging, the power can
+be adjusted according to the actual input voltage. The clockwise rotation
+increases the input power, and the counter clockwise rotation decreases the
+input power. It is worth noting that charging this product at low power is
+beneficial for extending battery life.
+Cooling Suction/Exhaust Port
+When the product reaches the temperature threshold set by the system, the
+cooling fan will automatically run, accompanied by a certain fan noise (fan
+noise below 60dB is normal). Do not block the cooling suction/exhaust port
+during use of this product, and do not place any object within the range of
+30CM.
+AC Switch (AC output port, the sum of electrical load power should be <2400W)
+Tap the AC button to enable the AC output function.
+Notices:
+1 . Since there may be differences in the AC output frequency in different regions,
+please check the AC voltage and frequency of the device before use.
+2. Press and hold the AC button for 2 seconds to enter the frequency switching mode,
+the 50Hz or 60Hz icon will flash on the display. Short press the AC button again to
+select 50Hz or 60Hz; when the icon stops flashing and displays 50Hz or 60Hz, it
+indicates the switch is successful.
+3. Short press the AC button 10 times in quick succession in the United States and
+Japan to switch the AC output voltage to 100V or 110V.
+3
+
+=== Page 7 ===
+Anderson Port
+Connect the solar panel using the Anderson to MC4 cable.
+1. The input of the solar panel can be up to 500W and the maximum voltage
+is 50V.
+2. If the equipment is damaged by exceeding the maximum voltage, it is
+outside the scope of warranty.
+10 AC Input
+1100W fast charging with a household socket can perform a 100% charge
+within 2 hours.
+X The charging of this product can directly use the socket on the wall, etc. Please do
+not use extension cords and cable taps to connect several devices at the same time.
+* Using a cable tap to charge several devices at the same time will cause a large
+current to flow, causing cable breakage and fire risk.
+× Do not use the same socket to connect other devices while charging this product.
+In general, when the same wiring in the family exceeds 1500W, the safety circuit
+breaker will start.
+Overload Protection Button
+When the power supply current is unstable due to lightning or other reasons,
+and there is a large current input at the AC Input, in order to protect the
+product, the overload protection function (safety circuit breaker) will activate
+and cut off the AC input port.
+Please follow the sequence below to restore the AC input function:
+1) Turn off the power button and unplug all ports.
+2) After confirming that there is no abnormality in each part, turn on the power button.
+3) Press the overload protection button, connect the AC cable to restore the AC input.
+4
+
+=== Page 8 ===
+Introduction of Display Interface
+(5) (1
+(12)
+(8)
+(9
+4 se
+s
+INPUT
+OUTPUT
+982193 00
+188
+5585 W
+1%
+60Hz 50Hz
+LEE the
+60Hz 50Hz
+Supercharge
+0* &8
+(16)
+(15)
+(14)
+(7
+1 Remain Using/
+6 Input Power
+(9) PD Output
+(13 DC (12V) Output
+Recharging Time
+in Total
+(2) Fan Status
+6
+10 USB Output
+Cigar Lighter (12V) Output
+Output Power
+in Total
+(3) High/Low
+7 LED Light
+Connected to the
+(15) XT60 (12V) Output
+Temperature Protection
+AC Mains
+Battery Level
+(8) AC Output
+(12) Anderson Port
+(16 Battery Progress Bar
+Percentage
+The Screen Displays Precautions
+When this icon lights up, please ensure that the vent is not blocked.
+*H
+When this icon flashes, it means that the temperature is too high or too
+low, and the product may turn on the smart protection program and
+stop working. (Need to wait for the product to return to the normal
+temperature range to continue working)
+4f If the icon blinks, it indicates that the AC mains connection is abnormal.
+Check the charging port.
+00
+When this icon flashes, it means abnormal, please check the load.
+5
+
+=== Page 9 ===
+UPS Mode
+UPS Feature
+This product has a bypass mode, which can output directly from AC mains
+without going through the battery.
+In the UPS state, when the AC input power of the commercial power is cut off
+due to a power failure, it can automatically switch to the product battery
+power supply within about 8 milliseconds to ensure the AC output.
+UPS Connection Diagram
+As shown in the figure below, connect the product between the socket and
+the electrical appliance, and the power of the product is in the ON state.
+When
+you turn on a powered device, the powered device uses the main AC
+power directly.
+In this state, when the main power supply is cut off, it will automatically switch
+to the product's internal battery power supply.
+XIn the UPS mode of U. S. and JPN standard, the maximum
+power
+of AC output is
+below 1100W, and the AC output exceeds 1100W, and the " ©" AC output icon
+flashes to indicate overload.
+In the UPS mode of CN, UK, EU and KR standard, the maximum power of AC
+output is below 2400W, and the AC output exceeds 2400W, and the "@" AC output
+icon flashes to indicate overload.
+©
+0 0 0
+POO,
+lOSSIBOT
+6
+
+=== Page 10 ===
+Connection of Solar Panels
+The company's products can be connected to solar panels and can be
+charged through the solar panels.
+The power of the solar panel is 500W, and can fully charge the product within
+4 hours. (The input of the solar panel can be maximum 500W, maximum
+voltage 50V)
+X The charging power of the solar panel is determined according to the
+weather and other conditions.
+* The solar panel voltage exceeding 50V will damage the equipment and
+may be out of warranty.
+By solar panels
+Option one:
+Portable Power Station Charging Area
+AC input
+Anderson
+port
+E
+Portable
+Power Station
+Anderson to MC4
+Solar Panel( Not included in accessories)
+By solar panels
+Option two:
+Portable Power Station Charging Area
+AC input
+Anderson
+Portable
+Power Station
+Anderson to MC4
+Solar panel A (Not included in accessories)
+Solar panel B (Not included in accessories)
+7
+
+=== Page 11 ===
+Car Charging
+This product uses the ACC charging cable, which can be used for mobile
+charging by the cigarette lighter (Accessory: hereinafter referred to as ACC)
+in the car.
+Before using the product, whether it is charging or discharging, you
+must
+open the fan covers on both sides at the same time to prevent the product
+from being over heated and damaging the product.
+Connect the ACC charging cable to the cigarette lighter in the car and the
+Anderson interface on the side of the product, turn on the engine of the car,
+and the LED display of this product will display the input power.
+AC Input
+Anderson Port
+LE
+Portable Power Station
+Car Charging Cable
+8
+
+=== Page 12 ===
+Use of Fan Covers
+2400W
+Left fan cover
+Right fan cover
+lOSSIBOT
+Before operating the product, whether it is charging or discharging you must
+open
+the fan covers on both sides at the same time to prevent the product
+from over heating and causing the product to stop working or enter a protec-
+tion state.
+9
+
+=== Page 13 ===
+Product Specifications
+Product Name
+F2400 Portable Power Station
+Dimension
+L*W*H=386X284X321mm
+Weight
+22.0Kg
+Capacity
+2048Wh
+AC Charging
+AC Mains Input, 1100W max
+MPPT Input
+11.5-50V/20A/500W max
+50/60Hz (switchable), rated 2400W, pure
+sine wave with
+AC Output
+overload, short circuit protection
+USB QC3.0
+18W*2
+Type-C
+Type-C-A(PD 20W)*3
+Type-C
+Type-C-B(PD100W)*1
+DC 5521
+12V/3A*2
+XT-60 Output
+12V/25A
+Car Charging Output
+12V/10A
+Shutdown Current
+< 500uA
+Working Temperature
+-10~40 °C
+Environment Humidity
+≤90%RH
+Cycle Times
+> 3500 Times
+Battery Specifications
+Cell type
+40135 LiFePo4
+Rated voltage of single battery
+3.2V
+Rated capacity of single battery
+20Ah
+Rated voltage of battery pack
+51.2V
+Output voltage range of the battery pack
+43.2-57.6V
+Rated capacity of battery pack
+2048Wh
+10
+
+=== Page 14 ===
+Troubleshooting
+Status
+Explanation
+Recover method
+1 . Remove the product.
+2. Check whether the overload
+:000-s
+protector pops up, if so, press the
+The output exceeds
+The above output
+AC output button after pressing the
+icon flashes and
+the standard and it's
+overload protection button.
+beeps.
+short-circuited.
+3. If the overload protector does not
+pop up, press AC output directly to
+restore the output function.
+DeL
+*H
+The temperature of the
+Remove the product, turn the power
+The temperature
+product is too high or
+off, and wait for the product to
+warning icon
+too low.
+reach a suitable temperature.
+flashes and beeps.
+The charging cable is
+Verify the connection status of the
+poorly connected.
+cable and the power supply.
+#f
+1 . Turn off the power button and
+The icon of
+unplug all ports.
+connecting to the
+2. After confirming that there is no
+mains flashes and
+The overload protection
+abnormality in each part, turn on the
+cannot be charged. function is enabled.
+power button.
+3. Press the overload protection
+button, connect the AC line to
+restore the AC input.
+11
+
+=== Page 15 ===
+Warranty
+Warranty
+Product Model
+User Name
+Address
+Phone Number
+Email
+Sales Contact
+Purchasing Date
+Please fill in all of the above items.
+This product comes with a 24-month warranty from the date of purchase
+a If there is a quality problem within the scope of normal use, we provide warranty.
+After purchasing our company's products, please keep this product together with invoices and
+other items, and please provide information according to our company's reliance request when
+maintenance services are required.
+Warranty service may not be provided if the warranty card is damaged, altered, etc.,
+and it is considered to be incorrect, or if the warranty card is not stamped by the store where it
+was sold.
+Damage caused by use beyond the normal use range is not covered by the warranty service.
+The content of the warranty scope is subject to the content recognized by the company.
+Even within the scope of the warranty, there are times when an equivalent product can be
+exchanged. Shipping and maintenance costs for products not covered by the warranty shall
+be borne by the customer.
+Product specifications and features are sometimes changed without prior notice.
+Please refer to our updated guideline on our website below.
+Manufacturer: Shenzhen Qichang Intelligent Technology Co., Ltd.
+Address: China - Shenzhen
+Technical service email: support@fossibot.com
+Company official website: https://www.fossibot.com
+12
+
+=== Page 16 ===
+lOSSiBOT
+F2400
+EX# EH 0A A
+2400W|
+coma
+SON TABLE POWER BEATICH
+1 100w
+100. 2400w
+10 200
+lOSSIBOT
+AttO71+1: https://www.fossibot.com
+#W#-EX037X-)L:support@fossibot.com
+
+=== Page 17 ===
+EN# EOC‡A
+1. 8 3APKEN ANEXHARD(TEALAITCHELO
+2.4#*WE## **LOREEEDETOT HENIELALITKEELO
+3. IA&DANE EDZH#HOUTAR•OLTCETUO
+4. *TORAU#RESRAUSS=##<E*U0
+5. J 2757*OFOEDTUE~AHHT.RE•EALICEEDO
+6. WE **##ERE ELE*UTENDEMIERTA=IRäEO
+AE/EASHADEDA*
+7.1F5) #I*E#77>ON/-CHA*##IELTKE#U
+8. UNZEALAWBAIANEZOFFILOT-DIEUTEUR
+AZEZMANANO"*5W#TRE*U.
+9. E#RET BAI.37A2-E 75D 50%* THAL ##50% HE
+IRELTRELTCHELO
+10. A PET-TITIMRIENIPTRONUDEHAIN
+#BOFACADETOTEALILITIEELO
+11. #APHIDE EMMER BREATH ARE LEUCE
+LO/RUFU-DANZELLED.#EORRETEDETO
+E DE*2400W7- LERESAWEWEES ARS05 EZEU
+#TO ERNIE RIZEDMADL EL CERCECUO A H
+ZED LETTOT. AXESEDMINE-HERELTONEW
+#TISSRUWELATO AURZI*#*#O÷TERO#30%*
+ORERATIEERTUETO HINGEPDRELTOSCENCEE
+l'o #‡ORE##‡COZYLY NIH##MU, 152- F7-TIL
+SPACERERSBUTCE2U *E. 20 LO2 LUATRE
+†AHA A RUINAUOLATERLAUTKEEUO
+
+=== Page 18 ===
+A*
+NyT->AZ+
+01
+‡U A E
+01
+SHONELZHI
+02
+LC DA ZLOTAS.
+05
+• UPSE-E
+06
+• V-5-ZILO A*
+07
+ACC D 50RE
+08
+•77/HI-OEA
+09
+QUA++**
+10
+17701-TAR
+11
+RäE
+12
+TO YIT: ACHI
+US/JP
+CN
+UK
+EU
+KR
+100V~120V
+220V
+230V
+220V~240V
+220V
+50/60Hz
+50Hz
+50Hz
+50Hz
+60 Hz
+
+=== Page 19 ===
+Ny-get
+CED)
+g
+-CID
+losseor
+R-TIl
+›j-514
+ACERT
+EX#0
+MC4 JU
+iz*
+-JHT-
+-7)L
+4-
+(4#)
+#450 0 55
+4%4#2048Wh*ZET2400W##HON-YTLERTT.20444
+ETE‡TO RANOENEU R#UT LENZEALTUATO
+TROFEYNEHOTHERE-TEALED++/7P*+/7E
+OTHERELTEALED, SEEDIAOERE-TEALED+BE
+EA TESTO
+2400WOTH TEZITALITATE* EFUIYAREEA
+HENKUF-TACOBHARENNET@ETE,/EDA
+DEFINITETETTO
+KENERTE-T1100WO LERE&02#H A-0-100% OF E
+DAT L. \JEER**50 Hz/60 Hz DA DAZED. FDCJ0
+ARE IBEEATEITO EE A EN IL L TED . N
+*\HE *500WTEWP ETEREIIT+RETESTO
+GE
+1
+
+=== Page 20 ===
+SABOTEEZMIE
+2400W
+EAT
+2 LED 51 H54)
+3 USB Hi-FA
+(4) DCAi-FA
+[ossibOT
+(5 LCD/ZIL
+6 ^Ehtj08x71 yF
+(11
+O A*DS/#0
+(8 ACTi-PA
+(50/60Hz FIt) 24 >)
+1-5-/°< LA
+(8
+(10 AC^7
+(10)
+1 BAT RA
+ERS)
+SUMERIFLT3 CAN ERZON/OFFIELATOEEDONIETZELCDI®
+ZILIZOREDARENATO-ZARATELAUEHEO#L
+LCD/ZLOTENTID. LIES< TENNOEN"AHHNIZOFFI
+†DEto
+2 LED 51 FA
+TH*# TEL FIONET51 HIJD#*0#*. #*. 380M E5##
+LAZEOFFIEAD#TO OFF- #ION-+SOS75 2-OFFICE.
+2
+
+=== Page 21 ===
+(3USBA
+USB R **#L TUSB • USB=E• Type-CO&Mi- ZON/OFFL#*.
+*MATILDARRIEDEDT-TUNIENTEADENEZR-HOL
+H*OFFIE+0870
+USB-A x2
+TYPE- C x 3
+TYPE-Cx1
+QC 3.0
+PD-20W
+PD-100W
+DC
+DATA EIFLTDCHHO&*-ZON/OFFIZL#*0
+DC ^7] x2 -#-514-
+XT60
+12V/3A
+12V/10A
+12V/25A
+(5) LCD/L
+SURE OR DAREN*TO -EHHO HELENELCD/ZILO
+"FED TO D, LES CAT ENADERDOFFITILEDEIL
+TTHZAT®
+\E}J04%7
+REHICIA R HO A D SCUTATE**O
+SHHODIOTEA/EDIE<AD#T###ALESTETTER
+ETEAURALADETOT. CONIE\HE E FINaL#ED $ *
+To
+A*0/#70
+ZOHED-CRESTEDEEDEN#77/RODRTO#4
+Q1+#/#40*E/ #0/5I2. 30cmEETEl#*2*0
+CLEECO
+TED #I#H77 DH/-Z##*#ILT<E=0.
+3
+
+=== Page 22 ===
+8 ACT -PRAY (ACHAR- FOESADE?#<2400W)
+ACH-FIE#LTACIEUIZON/OFFIELETON-HONO
+IRE TACT -PAS ERIELTZE, HEED BOLED
+50/60HZJ #TALLETO ACT-FAZZ#LTH****JO#Z?
+E. #HEILA RAT*
+"AMDAC14/100*<##*E. BE 100VE 110V0F20#
+LAZEDTETTO
+I JU-K7
+NEOPH-MC4 WAT-TIEEALT-5-*ILEAL*
+To
+1. U-5-*LOR\hEH#500WT. REEl50VT*.
+2. REFLEX39-5-N*EALTRELETRAIRAINIREâD%
+DA To
+ACAT
+CEO L TED 51100WTER EL TO 0~100% A C 21415
+UNTZLEESTESTO
+× ZADEEN##COIE/FEE*###LIRT-TUPT-TITTIETE#
+OTNIERHEELIUTLETUO
+*F-TINYTHIERATETN#OTMIIEENENETTE.*EHTART-7
+LOR#PHLOENDEDETO
+*#ONE#LALA EYES MOTMIZZEALEUCCEED -BREDT
+WE NIACARD52*1500WZEZ7EF27L-H-DUIFLE+O
+AN REARIANS
+EPE/###HOTZEIZEDACADENEEDENTâ.44*
+RO#BAHRA(70-H-)D'OFLACAN*-EMEn
+*do
+*FELTEINE-TZ*DACAHZALT<EEUO
+1) 70-A-HOIFTEE ACAD HE) LTELCDZILO [Input] 500‡‡≥‡0*
+To
+2) ZAIREDMUNILLT
+3) BAA R#A*#AC/ZE#*t#*0
+4
+
+=== Page 23 ===
+LCD&Z LOATHE
+611 12
+8 13 10 9
+«J
+88
+0 E O
+INPUT
+VULgaR an 0089
+OUTPUT
+1588 W
+188
+1885 W
+%
+60Hz 50Hz
+LEE ms
+60Hz 50Hz
+Supercharge
+O* &
+(3)
+(16)
+(15) (14)
+1 TED 15 # *F
+0 PD3.047
+13) DC(12V)H H
+\D#EH
+(2) AtT
+47#E/
+10) USBEH
+(14 D#-714-(12V) H)
+3 HA • 1 RA
+LED51
+ACA
+XT60(12V) 47]
+2 9-5-*)L
+4 AWFU-TE
+(8) ACHA
+16 /FU-POPUZN-
+RELATONAATENTICEE
+COTTA DENILES, GARDNERATWAUDI
+CHELO
+*H
+ZOT12 DENILE5 440HED GENETEXTUETOZ
+‡DEFLID. EN ETHETHELESTHUT(EEUO
+#f ACAH (RE) FICOTT D EILAT.
+00)
+HITLCOTT/DEITUITO
+5
+
+=== Page 24 ===
+UPSE-F
+454 I#41*100%0RER TACAD50EH* NYTU-Z#*
+SINHACHO-HAZEELTUETO
+CORETEEZELADENDENACADDEMENTE+CIA*
+INTU-DACHI^AHNNED*D O* TO
+A SNID**AE
+TO OISINACO L FETMZOHEZNRE*L ⅔ EZON
+ILLATO TMIDERZONIETZEDITHMADR*TO OKA
+THE ETERDEMENTE, AUNT MONAJ#OO**.
+* UPSET LONÀ "O"ACH)TE R*E I#1100WUT T*.
+* UPSETIL TACH I#1100W* Z3E. "@"ACHAT12 A MUTANTSE
+LITo
+• o
+888
+PO
+LOSSIBOT
+6
+
+=== Page 25 ===
+V-5-NILOTEAT
+****#E -5-**#ALT ERDEW##TEZ#*
+RETESTO
+****20##E9-5-*LET*4500WTAL*
+ETEET. MIRK5HHT L -7-I LAA
+1# *500W. (RE: 50VA TETAEo)
+* H##EDRAILEDO
+* 50V* EX?EZALTAADAEL. RIND**.
+• 1-5-/°*ILA
+1*+#**
+414 mA}3-F
+AC\H
+TUN-Y
+E9
+Em
+‡í*
+TOR- MC4
+1-3-1°3)L
+(TIE URÊAT)
+2*471‡*
+^ * \7*- F
+AC/h 724-Y
+-Alim-
+414
+JU-/MC4
+1-7-17)L A
+1-73-I*L B
+(T/ZHUEZ**)
+(THEYVEÊT)
+7
+
+=== Page 26 ===
+ACC (FAJIETY) SORE
+‡TURINACCHET-TLEEALTEDACC(TILAVER:UT
+ACC) D SMITHED AETT. NADERZONIELTACCHET-TIL
+TEDACCE. ZAmOV-5- KID* ZHE*+ HOIS
+*H ‡ACCO SE ###ENZE. *LCD* LEADENDERE
+nato
+* ACCH SORENEDIUVEDITRETITOTCETUOIUSENITIZE
+73E. NYTU-ENDORELTDATO
+* ACCI###*90~120WHEDEENBOTREEHEDDAD#TO ATEOREIEIS
+E LYNEDRELEAHESHOLETO
+AC\H
+TU-V
+CO
+LE
+z1*
+ERAST-TIL
+8
+
+=== Page 27 ===
+77/h-DER
+g
+E77 AN-
+$77/7/-
+lOSSiBOT
+FIZZEATONIL, NET*A N5#L BOOT? HA- EY
+CHATTED! MOLANESEBALINAOTAâDHELETO
+TENE<E*U
+9
+
+=== Page 28 ===
+#4 11*
+2400W7-4 TILER
+S4 ZA
+EN A*
+40135U #U F*AE
+TV 1X
+L*W*H=386X284X321mm
+THREE
+22.0kg
+MYTU-RE
+2048Wh
+ACAT: 100~120V50/60Hz=1100W
+ACA}
+MPPT\7: 11.5~50V20ALT 5*500W* T
+100-120V~50/60Hz=2400WUEZ
+ACH}
+¡BAA • AAR#*
+18 WARREN x2
+USB QC3.0
+Type-Cai-F
+TYPE-C-A(PD 20W) x3
+Type-Cati-b
+TYPE-C-B(PD 100W) x1(PD3.0)
+DC+- F
+12V/3A x2
+XT-60417
+12V/25A
+yA-TyPH)
+12V/10A
+<500uA
+SAVE EA
+THERE
+-10~40°C
+IRATE
+≤90%RH
+UT17 RE
+>3500
+10
+
+=== Page 29 ===
+†TIA-TINT
+IRS
+FA
+THALA+
+1. #*##lT<E*0.
+80002 -
+2.184070774-527065£55
+H77--P
+EMILL #ATU BA% BATRAT
+BAAT10
+ya-Fedo
+S *##LE#ACHA#4*##L##o
+3. B A R08* *0B=I#. ACHIä
+A TA-
+##L. H###*U#*0
+H}7-A-P
+TINTREATIIL4 HE TO MIE
+RE*AT YOU
+ya-Mck?
+REIA3&TH45<E*0
+On TH-
+T-TILO#**** CHOMETLI
+T-JILO#ATR
+(TUO
+40
+1. F*J0. ANTON-HOT-TILE
+#***o
+RETS™U
+BA A GRAN A *ED
+2./-IR#DAW LET LIAS
+Elt/nATo
+3.3 hEAR#17 *##L. ACAN&
+DEstITO
+11
+
+=== Page 30 ===
+RäE
+RiE
+*4IETIL
+$48
+EFT
+6 3#5
+X-IL
+805 Z
+CHAE
+ERZ?TOHAIICHEATEELO
+Z%##\86247AOR#+-EX**#L**.
+WHOENWNTURONACHUDELLHAIR**##L**.
+#ROMMEZEELL-HEEMALEOATOE-MICREURIZZIAHIOZ
+IRAIGUTERUCE*LO
+RATEON# METEOTENEBINTA S U GRATE NEAR ED
+ENTERTETUH@IN RENALASAWWâDADET
+MAJ+EARANSENTATOENIES#IRäIEN#T/O
+RALOE##/EDEN*I##LLE*.
+RALONHACROSNTHATE##D ODE###D DAOZIP ESTHET ZE
+âbADA*.
+RAID UBENWAD%NE?CCHARI#.68#OHEETZADAD#*.
+TURO+#*##E#T#AUITEIN?HANADET.
+x--:AL88127W»I/77/0-#*A#
+1*F: +3-AL
+#*#i#-E7087x-J:fossibotpower@fossibot.com
+AttOr+1:https://www.fossibot.com
+12
+
+=== Page 31 ===
+
+
+=== Page 32 ===
+www.fossibot.com

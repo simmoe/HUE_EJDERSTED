@@ -218,6 +218,14 @@ class SolarController:
             return False
         return on_dt <= now < off_dt
 
+    def daylight(self, now: datetime | None = None) -> bool:
+        """True between civil sunrise and sunset (no charge-relay offsets)."""
+        now = now or datetime.now(self.tz)
+        sunrise, sunset = sun_times(now.date(), self.lat, self.lon, self.tz)
+        if sunrise is None or sunset is None:
+            return True
+        return sunrise <= now < sunset
+
     def apply(self, now: datetime | None = None) -> bool:
         """Drive the relay to the desired state. Returns True if it changed."""
         now = now or datetime.now(self.tz)

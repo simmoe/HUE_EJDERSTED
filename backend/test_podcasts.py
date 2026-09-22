@@ -1,3 +1,4 @@
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -308,3 +309,178 @@ class SpeakerDedupeTests(unittest.TestCase):
         ips = {d["ip"] for d in main.devices.values()}
         self.assertEqual(ips, {"192.168.86.20", "192.168.86.21"})
         self.assertEqual(set(removed), {"192_168_86_153", "192_168_86_188"})
+
+
+class PodcastTransportDispatchTests(unittest.TestCase):
+    def setUp(self):
+        self._player = dict(main.podcast_player_state)
+        self._engine = main._active_podcast_engine
+
+    def tearDown(self):
+        main.podcast_player_state.clear()
+        main.podcast_player_state.update(self._player)
+        main._active_podcast_engine = self._engine
+
+    def test_empty_source_uses_dlna_engine(self):
+        main._active_podcast_engine = "dlna"
+        main.podcast_player_state["source"] = ""
+        self.assertEqual(main._podcast_transport(), "dlna")
+
+    def test_catalog_fills_sr_identity_from_show_title(self):
+        main.podcast_player_state.update({
+            "source": "",
+            "showId": "",
+            "showTitle": "Text och musik med Eric Schüldt",
+        })
+        main._fill_podcast_identity_from_catalog()
+        self.assertEqual(main.podcast_player_state["source"], "sr")
+        self.assertEqual(main.podcast_player_state["showId"], "sr:4914")
+
+
+class GardenSrRestartTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._player = dict(main.podcast_player_state)
+        self._engine = main._active_podcast_engine
+        self._url = main.garden_sr_stream_url
+        self._title = main.garden_sr_stream_title
+        self._proc = main.garden_sr_player
+        main.garden_sr_player = None
+        main.garden_sr_stream_url = ""
+        main.garden_sr_stream_title = ""
+        main._active_podcast_engine = "garden_sr"
+        main.podcast_player_state.update({
+            "active": True,
+            "source": "sr",
+            "showId": "sr:4914",
+            "showTitle": "Text och musik med Eric Schüldt",
+            "episodeId": "12345",
+            "episodeUri": "sr:episode:12345",
+            "episodeTitle": "Grattis Arvevo",
+            "playing": False,
+            "positionMs": 90_000,
+            "durationMs": 3_600_000,
+            "updatedAt": 0,
+        })
+
+    def tearDown(self):
+        main.podcast_player_state.clear()
+        main.podcast_player_state.update(self._player)
+        main._active_podcast_engine = self._engine
+        main.garden_sr_stream_url = self._url
+        main.garden_sr_stream_title = self._title
+        main.garden_sr_player = self._proc
+
+    async def test_pause_with_dead_process_just_marks_paused(self):
+        main.podcast_player_state["playing"] = True
+        with patch.object(main.hub_config, "site", return_value="garden"):
+            data = await main.podcast_player_pause()
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["player"]["playing"])
+        self.assertNotIn("error", data)
+
+    async def test_resume_restarts_from_saved_position(self):
+        with (
+            patch.object(main.hub_config, "site", return_value="garden"),
+            patch.object(main.sr, "get_episode", AsyncMock(return_value={"title": "Grattis Arvevo"})),
+            patch.object(main.sr, "episode_media_url", return_value="http://sr/ep.m4a"),
+            patch.object(main, "_play_garden_sr_url", AsyncMock(return_value=(True, "spiller"))) as play,
+        ):
+            data = await main.podcast_player_resume()
+        play.assert_awaited_once_with("http://sr/ep.m4a", "Grattis Arvevo", 90_000)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["player"]["playing"])
+
+    async def test_resume_uses_cached_stream_url(self):
+        main.garden_sr_stream_url = "http://cached/ep.m4a"
+        main.garden_sr_stream_title = "cached title"
+        with (
+            patch.object(main.hub_config, "site", return_value="garden"),
+            patch.object(main.sr, "get_episode", AsyncMock(side_effect=AssertionError("should not fetch"))),
+            patch.object(main, "_play_garden_sr_url", AsyncMock(return_value=(True, "spiller"))) as play,
+        ):
+            data = await main.podcast_player_resume()
+        play.assert_awaited_once_with("http://cached/ep.m4a", "cached title", 90_000)
+        self.assertTrue(data["ok"])
+
+    async def test_seek_fetches_media_when_stream_url_missing(self):
+        with (
+            patch.object(main.hub_config, "site", return_value="garden"),
+            patch.object(main.sr, "get_episode", AsyncMock(return_value={"title": "Grattis Arvevo"})),
+            patch.object(main.sr, "episode_media_url", return_value="http://sr/ep.m4a"),
+            patch.object(main, "_play_garden_sr_url", AsyncMock(return_value=(True, "spiller"))) as play,
+        ):
+            data = await main.podcast_player_seek({"positionSeconds": 120})
+        play.assert_awaited_once_with("http://sr/ep.m4a", "Grattis Arvevo", 120_000)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["player"]["positionMs"], 120_000)
+
+
+class PodcastFinishedResetTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._player = dict(main.podcast_player_state)
+        main.podcast_player_state.update({
+            "active": True,
+            "source": "sr",
+            "playing": True,
+            "positionMs": 3_599_000,
+            "durationMs": 3_600_000,
+            "updatedAt": time.time(),
+        })
+
+    def tearDown(self):
+        main.podcast_player_state.clear()
+        main.podcast_player_state.update(self._player)
+
+    async def test_finished_episode_puts_scrubber_at_zero(self):
+        with patch.object(main, "_allow_garden_idle_keepalive_pulses"):
+            await main._podcast_player_tick()
+        self.assertTrue(main.podcast_player_state["active"])
+        self.assertFalse(main.podcast_player_state["playing"])
+        self.assertEqual(main.podcast_player_state["positionMs"], 0)
+
+    def test_paused_at_end_reads_as_zero(self):
+        main.podcast_player_state["playing"] = False
+        main.podcast_player_state["positionMs"] = 3_600_000
+        with patch.object(main, "_schedule_podcast_firestore_sync"):
+            self.assertEqual(main._public_podcast_state()["positionMs"], 0)
+        self.assertEqual(main.podcast_player_state["positionMs"], 0)
+
+
+class PodcastCatalogCacheTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._cache = list(main._podcast_cache)
+        main._podcast_cache = [{
+            "show_id": "sr:4914",
+            "source": "sr",
+            "show_name": "Text och musik med Eric Schüldt",
+            "show_image": "https://img.example/cover.jpg",
+            "episode_id": "1",
+            "episode_uri": "sr:episode:1",
+            "episode_name": "old",
+            "episode_release_date": "2026-01-01",
+            "episode_duration_ms": 1000,
+        }]
+
+    def tearDown(self):
+        main._podcast_cache = self._cache
+
+    async def test_sr_keeps_cached_cover_without_get_program(self):
+        called = []
+
+        async def fake_program(pid):
+            called.append(pid)
+            return {"name": "x", "programimage": "https://other"}
+
+        async def fake_latest(pid):
+            return {"id": 99, "title": "nyt", "publishdateutc": "", "broadcast": {}}
+
+        with (
+            patch.object(main.sr, "get_program", fake_program),
+            patch.object(main.sr, "get_latest_episode", fake_latest),
+            patch.object(main, "_rss_feed", AsyncMock(return_value=({"title": "t", "image": "i"}, []))),
+        ):
+            rows = await main._build_podcast_list()
+        self.assertNotIn(4914, called)
+        row = next(r for r in rows if r["show_id"] == "sr:4914")
+        self.assertEqual(row["show_image"], "https://img.example/cover.jpg")
+        self.assertEqual(row["episode_id"], "99")
