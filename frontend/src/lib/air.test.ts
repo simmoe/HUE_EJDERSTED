@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { airQualityBand, airQualityLabel, formatAirLine } from './air.ts';
 
 describe('formatAirLine', () => {
-  it('joins the three readings like the camera battery line', () => {
+  it('says the IKEA band, not the raw numbers', () => {
     assert.equal(
       formatAirLine({ online: true, pm25: 8.2, tempC: 19.4, humidity: 44.1 }),
-      'luft 8 µg · 19° · 44 %',
+      'luft: god',
     );
   });
 

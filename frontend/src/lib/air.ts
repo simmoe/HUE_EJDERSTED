@@ -8,12 +8,8 @@ export type AirStatus = {
 
 export function formatAirLine(air: AirStatus | null | undefined): string {
   if (!air?.online) return '';
-  const parts: string[] = [];
-  if (typeof air.pm25 === 'number') parts.push(`${Math.round(air.pm25)} µg`);
-  if (typeof air.tempC === 'number') parts.push(`${Math.round(air.tempC)}°`);
-  if (typeof air.humidity === 'number') parts.push(`${Math.round(air.humidity)} %`);
-  if (!parts.length) return '';
-  return `luft ${parts.join(' · ')}`;
+  const band = airQualityBand(air.pm25 ?? null);
+  return band ? `luft: ${band}` : '';
 }
 
 export type AirBand = 'god' | 'middel' | 'dårlig';
