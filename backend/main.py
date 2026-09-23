@@ -49,6 +49,7 @@ import light_bus
 import light_scenes
 import lights_log
 import power
+import zigbee_air
 import zigbee_lights
 import solar
 import switchbot_bot
@@ -930,6 +931,7 @@ async def lifespan(app: FastAPI):
             zigbee_lights.set_state_hook(_zigbee_light_state)
             await zigbee_lights.start()
             lights_cache = await asyncio.to_thread(garden_lights.snapshot)
+            await zigbee_air.start()
         except Exception as exc:
             lights_log.log("zigbee.up", ok=False, error=str(exc)[:160])
     poll_task = asyncio.create_task(poll_loop())
@@ -956,6 +958,7 @@ async def lifespan(app: FastAPI):
     if _lights_after_ac_task is not None:
         _lights_after_ac_task.cancel()
     light_scenes.stop_all()
+    await zigbee_air.stop()
     await zigbee_lights.stop()
     for t in _notify_tasks.values():
         t.cancel()
@@ -1256,6 +1259,17 @@ async def set_audio_target_volume(target_id: str, data: dict = Body(default_fact
 @app.get("/api/solar/status")
 async def get_solar_status():
     return _solar_status()
+
+
+@app.get("/api/air/status")
+async def get_air_status():
+    if hub_config.site() != "garden" and hub_config.garden_hub_url():
+        payload = await _garden_camera_json("/api/air/status")
+        if isinstance(payload, JSONResponse):
+            return {"ok": True, "online": False, "remote": True, "error": "haven offline"}
+        payload["remote"] = True
+        return payload
+    return zigbee_air.status()
 
 
 @app.get("/api/fossibot/status")

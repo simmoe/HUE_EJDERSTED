@@ -18,6 +18,10 @@ class ClassifyIkeaTests(unittest.TestCase):
         self.assertFalse(zigbee_lights.is_lamp("RODRET wireless dimmer"))
         self.assertFalse(zigbee_lights.is_motion("RODRET wireless dimmer"))
 
+    def test_vindstyrka_is_neither(self):
+        self.assertFalse(zigbee_lights.is_lamp("VINDSTYRKA"))
+        self.assertFalse(zigbee_lights.is_motion("VINDSTYRKA"))
+
 
 class LastSeenTests(unittest.TestCase):
     def test_awake_within_window(self):
@@ -36,6 +40,7 @@ class LastSeenTests(unittest.TestCase):
     def test_attr_value_reads_name_and_id(self):
         self.assertTrue(zigbee_lights.attr_value(({"on_off": True}, {}), "on_off", False))
         self.assertEqual(zigbee_lights.attr_value({0: 200}, "current_level"), 200)
+        self.assertEqual(zigbee_lights.attr_value({0: 1950}, "measured_value"), 1950)
 
 
 class CachedStateTests(unittest.TestCase):

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import Card from '$lib/Card.svelte';
+  import { formatAirLine, type AirStatus } from '$lib/air';
   import { store } from '$lib/ws.svelte';
 
   let videoEl = $state<HTMLVideoElement | null>(null);
@@ -55,6 +56,7 @@
     outWatts?: number | null;
   };
   let battery = $state<RemoteBattery | null>(null);
+  let air = $state<AirStatus | null>(null);
   let batteryTimer: ReturnType<typeof setInterval> | null = null;
   const BATTERY_POLL_MS = 30_000;
   let publishing = false;
@@ -268,7 +270,7 @@
   }
 
   async function retryGarden() {
-    await Promise.all([refreshLatestSnapshot(), refreshBattery()]);
+    await Promise.all([refreshLatestSnapshot(), refreshBattery(), refreshAir()]);
   }
 
   async function refreshBattery() {
@@ -280,6 +282,18 @@
       battery = { online: false };
     }
   }
+
+  async function refreshAir() {
+    try {
+      const res = await fetch('/api/air/status', { cache: 'no-store' });
+      const data = (await res.json()) as AirStatus;
+      air = data;
+    } catch {
+      air = { online: false };
+    }
+  }
+
+  const airLine = $derived(formatAirLine(air));
 
   const batteryLine = $derived.by(() => {
     if (!battery) return '';
@@ -298,7 +312,11 @@
     // Only the home kiosk needs this; the garden has its own battery card.
     if (cameraMode() === 'viewer' && !batteryTimer) {
       void refreshBattery();
-      batteryTimer = setInterval(() => void refreshBattery(), BATTERY_POLL_MS);
+      void refreshAir();
+      batteryTimer = setInterval(() => {
+        void refreshBattery();
+        void refreshAir();
+      }, BATTERY_POLL_MS);
     }
     if (viewerTimer) return;
     void refreshLatestSnapshot();
@@ -500,6 +518,9 @@
     {/if}
     {#if batteryLine}
       <div class="publish-status">{batteryLine}</div>
+    {/if}
+    {#if airLine}
+      <div class="publish-status">{airLine}</div>
     {/if}
     {#if canPublish && publishStatus}
       <div class="publish-status">{publishStatus}</div>

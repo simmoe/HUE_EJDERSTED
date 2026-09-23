@@ -93,6 +93,7 @@ def attr_value(result: Any, name: str, default: Any = None) -> Any:
         "on_off": {0, 0x0000, "on_off"},
         "current_level": {0, 0x0000, "current_level"},
         "occupancy": {0, 0x0000, "occupancy"},
+        "measured_value": {0, 0x0000, "measured_value", "measuredValue"},
     }
     wanted = aliases.get(name, {name})
     for key, value in success.items():

@@ -7,6 +7,7 @@
   import SpotifyVoice from '$lib/SpotifyVoice.svelte';
   import FeedbackOverlay from '$lib/FeedbackOverlay.svelte';
   import CameraCard from '$lib/CameraCard.svelte';
+  import AirCard from '$lib/AirCard.svelte';
   import FossibotCard from '$lib/FossibotCard.svelte';
   import SwitchbotCard from '$lib/SwitchbotCard.svelte';
   import LightsCard from '$lib/LightsCard.svelte';
@@ -1431,6 +1432,9 @@
         {#if enabled('fossibot')}
           <FossibotCard />
         {/if}
+        {#if isGarden()}
+          <AirCard />
+        {/if}
         {#if enabled('solar')}
         <!-- Header carries the relay state; the active button carries the mode.
              The window is sunrise+offset → sunset−offset, so the raw sun times add nothing. -->
@@ -1458,7 +1462,7 @@
           <SwitchbotCard />
         {/if}
       </div>
-      {#if [enabled('fossibot'), enabled('solar'), !!store.config.switchbot?.configured].filter(Boolean).length > 1}
+      {#if [enabled('fossibot'), enabled('solar'), !!store.config.switchbot?.configured, isGarden()].filter(Boolean).length > 1}
       <button type="button" class="card-arrow" onclick={() => solInner && advanceCard(solInner, 'sol')} aria-label="Næste kort">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
