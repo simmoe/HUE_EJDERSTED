@@ -132,6 +132,8 @@ class ZigbeeHub:
                 "use_thread": False,
             }
         )
+        if self.db_path.exists() and self.db_path.stat().st_size == 0:
+            self.db_path.unlink()
         await app.startup(auto_form=False)
         self._app = app
         app.add_listener(_JoinWatch(self))

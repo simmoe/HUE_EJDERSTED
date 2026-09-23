@@ -82,18 +82,31 @@ def find_device() -> Any | None:
     return None
 
 
+def _endpoints(device: Any) -> list[Any]:
+    eps = getattr(device, "endpoints", {}) or {}
+    return [ep for epid, ep in eps.items() if epid != 0 and ep is not None]
+
+
 async def _read_cluster(device: Any, cluster_id: int, divisor: float) -> float | None:
-    ep = getattr(device, "endpoints", {}).get(1)
-    if ep is None:
-        return None
-    cluster = getattr(ep, "in_clusters", {}).get(cluster_id)
-    if cluster is None:
-        return None
-    result = await asyncio.wait_for(cluster.read_attributes([0], allow_cache=False), 8)
-    raw = zigbee_lights.attr_value(result, "measured_value", None)
-    if raw is None:
-        raw = zigbee_lights.attr_value(result, "measuredValue", None)
-    return scale_reading(raw, divisor)
+    manufacturer = 0x117C if cluster_id == VOC_CLUSTER else None
+    for ep in _endpoints(device):
+        cluster = getattr(ep, "in_clusters", {}).get(cluster_id)
+        if cluster is None:
+            continue
+        try:
+            kwargs = {"allow_cache": False}
+            if manufacturer is not None:
+                kwargs["manufacturer"] = manufacturer
+            result = await asyncio.wait_for(cluster.read_attributes([0], **kwargs), 8)
+        except Exception:
+            continue
+        raw = zigbee_lights.attr_value(result, "measured_value", None)
+        if raw is None:
+            raw = zigbee_lights.attr_value(result, "measuredValue", None)
+        value = scale_reading(raw, divisor)
+        if value is not None:
+            return value
+    return None
 
 
 async def refresh() -> dict[str, Any]:
@@ -102,21 +115,20 @@ async def refresh() -> dict[str, Any]:
     if device is None:
         _cache = public_status(error="ingen VINDSTYRKA")
         return _cache
-    try:
-        pm25 = await _read_cluster(device, PM25_CLUSTER, 1)
-        temp_c = await _read_cluster(device, TEMP_CLUSTER, 100)
-        humidity = await _read_cluster(device, HUM_CLUSTER, 100)
-        voc = await _read_cluster(device, VOC_CLUSTER, 1)
-        _cache = public_status(
-            online=True,
-            pm25=pm25,
-            temp_c=temp_c,
-            humidity=humidity,
-            voc=voc,
-            updated_at=time.time(),
-        )
-    except Exception as exc:
-        _cache = public_status(error=str(exc)[:160])
+    pm25 = await _read_cluster(device, PM25_CLUSTER, 1)
+    temp_c = await _read_cluster(device, TEMP_CLUSTER, 100)
+    humidity = await _read_cluster(device, HUM_CLUSTER, 100)
+    voc = await _read_cluster(device, VOC_CLUSTER, 1)
+    online = any(v is not None for v in (pm25, temp_c, humidity, voc))
+    _cache = public_status(
+        online=online,
+        pm25=pm25,
+        temp_c=temp_c,
+        humidity=humidity,
+        voc=voc,
+        updated_at=time.time() if online else None,
+        error="" if online else "ingen aflæsning",
+    )
     return _cache
 
 

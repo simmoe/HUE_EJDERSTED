@@ -1269,7 +1269,10 @@ async def get_air_status():
             return {"ok": True, "online": False, "remote": True, "error": "haven offline"}
         payload["remote"] = True
         return payload
-    return zigbee_air.status()
+    row = zigbee_air.status()
+    if not row.get("online"):
+        row = await zigbee_air.refresh()
+    return row
 
 
 @app.get("/api/fossibot/status")
