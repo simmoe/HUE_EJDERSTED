@@ -16,9 +16,15 @@ export function formatAirLine(air: AirStatus | null | undefined): string {
   return `luft ${parts.join(' · ')}`;
 }
 
-export function airQualityLabel(pm25: number | null | undefined): string {
+export type AirBand = 'god' | 'middel' | 'dårlig';
+
+export function airQualityBand(pm25: number | null | undefined): AirBand | '' {
   if (pm25 == null || Number.isNaN(pm25)) return '';
   if (pm25 <= 35) return 'god';
   if (pm25 <= 120) return 'middel';
   return 'dårlig';
+}
+
+export function airQualityLabel(pm25: number | null | undefined): string {
+  return airQualityBand(pm25);
 }

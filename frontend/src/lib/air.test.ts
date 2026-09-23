@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { airQualityLabel, formatAirLine } from './air.ts';
+import { airQualityBand, airQualityLabel, formatAirLine } from './air.ts';
 
 describe('formatAirLine', () => {
   it('joins the three readings like the camera battery line', () => {
@@ -20,5 +20,11 @@ describe('airQualityLabel', () => {
     assert.equal(airQualityLabel(12), 'god');
     assert.equal(airQualityLabel(40), 'middel');
     assert.equal(airQualityLabel(140), 'dårlig');
+  });
+});
+
+describe('airQualityBand', () => {
+  it('is empty without a reading', () => {
+    assert.equal(airQualityBand(null), '');
   });
 });
