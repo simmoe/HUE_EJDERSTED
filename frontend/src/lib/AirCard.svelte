@@ -167,26 +167,38 @@
   }
 
   .air-pip {
-    width: 9px;
-    height: 9px;
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.1);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-    transition: background 0.45s ease, box-shadow 0.45s ease;
+    opacity: 0.38;
+    transition: opacity 0.45s ease, box-shadow 0.45s ease;
+  }
+
+  .air-pip.god {
+    background: #8fa887;
+  }
+
+  .air-pip.middel {
+    background: #c4a06a;
+  }
+
+  .air-pip.dårlig {
+    background: #c07a72;
+  }
+
+  .air-pip.on {
+    opacity: 1;
   }
 
   .air-pip.god.on {
-    background: #b7c4ae;
-    box-shadow: 0 0 10px rgba(183, 196, 174, 0.28);
+    box-shadow: 0 0 10px rgba(143, 168, 135, 0.35);
   }
 
   .air-pip.middel.on {
-    background: #c4a57a;
-    box-shadow: 0 0 10px rgba(196, 165, 122, 0.28);
+    box-shadow: 0 0 10px rgba(196, 160, 106, 0.35);
   }
 
   .air-pip.dårlig.on {
-    background: #c08a82;
-    box-shadow: 0 0 10px rgba(192, 138, 130, 0.28);
+    box-shadow: 0 0 10px rgba(192, 122, 114, 0.35);
   }
 </style>
