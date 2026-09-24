@@ -76,7 +76,7 @@ describe('observeSpeaker', () => {
     assert.deepEqual(result, { type: 'ignore' });
   });
 
-  it('ignores a foreign track the iPhone started', () => {
+  it('treats a leftover speaker track as the queued one having ended', () => {
     const result = observeSpeaker({
       queue,
       activeIndex: 0,
@@ -84,7 +84,7 @@ describe('observeSpeaker', () => {
       startingUri: '',
       speaker: { uri: 'spotify:track:zzz', isPlaying: true },
     });
-    assert.deepEqual(result, { type: 'ignore' });
+    assert.deepEqual(result, { type: 'ended' });
   });
 
   it('does not treat the previous track as a pause while a new start is in flight', () => {

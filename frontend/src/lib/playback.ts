@@ -73,7 +73,12 @@ export function observeSpeaker(input: ObserveInput): ObserveResult {
   const idx = indexOfUri(queue, speaker.uri);
 
   if (speaker.isPlaying) {
-    if (idx < 0) return { type: 'ignore' };
+    if (idx < 0) {
+      // B&O keeps a leftover Connect queue. After our track it starts H.E.R.
+      // (or whatever was next). That is the current track having ended, not
+      // a session we should follow.
+      return assumedPlaying ? { type: 'ended' } : { type: 'ignore' };
+    }
     if (idx !== activeIndex) return { type: 'follow', index: idx };
     return { type: 'ignore' };
   }
