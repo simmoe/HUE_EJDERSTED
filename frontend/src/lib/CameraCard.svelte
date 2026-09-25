@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { initializeApp, getApp, getApps, type FirebaseOptions } from 'firebase/app';
+  import { doc, getFirestore, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
   import Card from '$lib/Card.svelte';
   import { formatAirLine, type AirStatus } from '$lib/air';
+  import { CAMERA_FACING_DOC, parseFacing, type CameraFacing } from '$lib/cameraFacing';
   import { store } from '$lib/ws.svelte';
 
   let videoEl = $state<HTMLVideoElement | null>(null);
@@ -9,9 +12,12 @@
   let cameraOn = $state(false);
   let voiceCaptureActive = $state(false);
   let error = $state('');
-  // The mounted garden kiosk films the room with its screen-facing camera.
-  // A page reload must not silently switch back to the obstructed rear camera.
-  let facingMode = $state<'environment' | 'user'>('user');
+  // Phone in the hut films the garden. Both kiosk cards pick front/bag;
+  // the choice lives in Firestore so Ejdersted can switch it.
+  let facingMode = $state<CameraFacing>('environment');
+  let facingReady = $state(false);
+  let facingUnsub: (() => void) | null = null;
+  let openingCamera = false;
   let publishStatus = $state('');
   let publisherChecked = $state(false);
   let canPublish = $state(false);
@@ -335,18 +341,27 @@
   }
 
   async function openCamera() {
-    if (!canPublish) return;
-    // Stop existing stream
+    if (!canPublish || openingCamera) return;
+    openingCamera = true;
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       stream = null;
     }
     error = '';
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } },
-        audio: false,
-      });
+      const video = {
+        facingMode: { exact: facingMode },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      };
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        });
+      }
       if (videoEl) {
         videoEl.srcObject = stream;
         await videoEl.play().catch(() => undefined);
@@ -357,6 +372,8 @@
       error = `${e.name}: ${e.message}`;
       cameraOn = false;
       stopSnapshotPublisher();
+    } finally {
+      openingCamera = false;
     }
   }
 
@@ -377,10 +394,58 @@
     else openCamera();
   }
 
-  function flipCamera() {
-    if (!canPublish) return;
-    facingMode = facingMode === 'environment' ? 'user' : 'environment';
-    if (cameraOn) openCamera();
+  async function writeFacing(next: CameraFacing) {
+    try {
+      const r = await fetch('/api/config/firebase');
+      const cfg = (await r.json()) as Record<string, unknown>;
+      if (!cfg.apiKey || typeof cfg.apiKey !== 'string') return;
+      const app = getApps().length ? getApp() : initializeApp(cfg as FirebaseOptions);
+      await setDoc(
+        doc(getFirestore(app), 'ejdersted', CAMERA_FACING_DOC),
+        { facing: next, updatedAt: serverTimestamp() },
+        { merge: true },
+      );
+    } catch {
+      /* rules or offline */
+    }
+  }
+
+  function applyFacing(next: CameraFacing) {
+    if (facingMode === next) {
+      facingReady = true;
+      return;
+    }
+    facingMode = next;
+    facingReady = true;
+    if (canPublish && cameraOn) void openCamera();
+  }
+
+  async function setFacing(next: CameraFacing) {
+    if (facingMode === next) return;
+    facingMode = next;
+    void writeFacing(next);
+    if (canPublish && cameraOn) void openCamera();
+  }
+
+  async function listenFacing() {
+    try {
+      const r = await fetch('/api/config/firebase');
+      const cfg = (await r.json()) as Record<string, unknown>;
+      if (!cfg.apiKey || typeof cfg.apiKey !== 'string') {
+        facingReady = true;
+        return;
+      }
+      const app = getApps().length ? getApp() : initializeApp(cfg as FirebaseOptions);
+      const ref = doc(getFirestore(app), 'ejdersted', CAMERA_FACING_DOC);
+      facingUnsub = onSnapshot(ref, (snap) => {
+        const next = parseFacing(snap.data()?.facing) || 'environment';
+        applyFacing(next);
+      }, () => {
+        facingReady = true;
+      });
+    } catch {
+      facingReady = true;
+    }
   }
 
   function handleVoiceCapture(event: Event) {
@@ -391,7 +456,12 @@
 
   onMount(() => {
     window.addEventListener('hue:voice-capture', handleVoiceCapture);
-    return () => window.removeEventListener('hue:voice-capture', handleVoiceCapture);
+    void listenFacing();
+    return () => {
+      window.removeEventListener('hue:voice-capture', handleVoiceCapture);
+      facingUnsub?.();
+      facingUnsub = null;
+    };
   });
 
   $effect(() => {
@@ -416,7 +486,7 @@
   });
 
   $effect(() => {
-    if (cameraMode() === 'publisher' && store.config.features.camera && publisherChecked && canPublish && !voiceCaptureActive && !cameraOn && !error) {
+    if (cameraMode() === 'publisher' && store.config.features.camera && publisherChecked && facingReady && canPublish && !voiceCaptureActive && !cameraOn && !error) {
       void openCamera();
     }
   });
@@ -502,16 +572,28 @@
     {/if}
     </div>
     <div class="cam-meta">
-    {#if canPublish}
+    {#if !gardenOffline}
       <div class="action-row">
-        <button class="action-btn" onclick={toggleCamera}>
-          {cameraOn ? 'stop' : 'start'}
-        </button>
-        <button class="action-btn" onclick={flipCamera} disabled={!cameraOn}>
-          {facingMode === 'environment' ? 'front' : 'bag'}
-        </button>
+        {#if canPublish}
+          <button class="action-btn" onclick={toggleCamera}>
+            {cameraOn ? 'stop' : 'start'}
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="action-btn"
+          class:active={facingMode === 'user'}
+          onclick={() => void setFacing('user')}
+        >front</button>
+        <button
+          type="button"
+          class="action-btn"
+          class:active={facingMode === 'environment'}
+          onclick={() => void setFacing('environment')}
+        >bag</button>
       </div>
-    {:else if kioskOffline}
+    {/if}
+    {#if kioskOffline}
       <div class="publish-status">sidst set {formatAge(latestAge)}</div>
     {:else if latestAge != null}
       <div class="publish-status cam-age">havekiosk · {Math.round(latestAge)} s siden</div>
