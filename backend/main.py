@@ -3526,6 +3526,15 @@ async def set_garden_security_armed(data: dict = Body(default_factory=dict)):
     return {"ok": True, "security": security}
 
 
+@app.get("/api/security/evidence")
+async def garden_security_evidence_list():
+    if not hub_config.feature_enabled("camera"):
+        return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        return await _garden_camera_json("/api/security/evidence")
+    return {"ok": True, "items": camera_security.list_evidence()}
+
+
 @app.get("/api/security/evidence/{event_id}.jpg")
 async def garden_security_evidence(event_id: str):
     if not hub_config.feature_enabled("camera"):

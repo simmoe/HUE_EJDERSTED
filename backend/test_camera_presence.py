@@ -161,5 +161,23 @@ class EvidenceCaptureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(out.getpixel((cx, cy))[0], 160)
 
 
+class EvidenceListTests(unittest.TestCase):
+    def test_lists_newest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = CameraPresenceStateMachineTests().make_service(root)
+            older = root / "events" / "person-old"
+            newer = root / "events" / "person-new"
+            older.mkdir(parents=True)
+            newer.mkdir(parents=True)
+            (older / "snapshot.jpg").write_bytes(b"old")
+            (newer / "snapshot.jpg").write_bytes(b"new")
+            (older / "metadata.json").write_text('{"createdAt": 100}', encoding="utf-8")
+            (newer / "metadata.json").write_text('{"createdAt": 200}', encoding="utf-8")
+            items = service.list_evidence()
+            self.assertEqual([row["id"] for row in items], ["person-new", "person-old"])
+            self.assertEqual(items[0]["url"], "/api/security/evidence/person-new.jpg")
+
+
 if __name__ == "__main__":
     unittest.main()
