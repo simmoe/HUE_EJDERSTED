@@ -82,6 +82,22 @@ class KioskPodcastCatalogTests(unittest.TestCase):
         self.assertEqual(by_id["4914"], "sr")
         self.assertEqual(by_id["2488"], "sr")
 
+    def test_song_exploder_and_splittet_til_atomer_are_in_the_catalog(self):
+        exploder = main._find_show("song-exploder")
+        atoms = main._find_show("splittet-til-atomer")
+        self.assertEqual(exploder["source"], "rss")
+        self.assertEqual(exploder.get("order"), "latest")
+        self.assertIn("songexploder", exploder["feed"])
+        self.assertEqual(atoms["source"], "rss")
+        self.assertEqual(atoms.get("order"), "latest")
+        self.assertIn("/feeds/splittet-til-atomer", atoms["feed"])
+
+    def test_portraetalbum_is_in_the_catalog(self):
+        sh = main._find_show("portraetalbum")
+        self.assertEqual(sh["source"], "rss")
+        self.assertEqual(sh.get("order"), "latest")
+        self.assertIn("omnycontent.com", sh["feed"])
+
 
 class CatalogStreamPlayTests(unittest.IsolatedAsyncioTestCase):
     async def test_spotify_alias_lists_rss_uris(self):
