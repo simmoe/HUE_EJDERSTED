@@ -76,7 +76,8 @@ and booleans fail fast instead of silently selecting a different deployment.
 Home and garden share playlist library data, but not physical player state.
 
 - `ejdersted/radioPlaylists` is the shared library for saved radio playlists and
-  saved songs.
+  saved songs. `ejdersted/savedAlbums` is the shared library of album copies:
+  the track list as it was saved, so individual songs can be removed.
 - `ejdersted/player_home` is the Vesterbro player runtime: current queue, index,
   playing flag, transport and podcast state. Now-playing cards are views of this
   document. Spotify Connect owns the playback timeline; the kiosk follows

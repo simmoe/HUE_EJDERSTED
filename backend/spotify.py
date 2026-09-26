@@ -105,6 +105,42 @@ def _looks_like_m5(device: dict) -> bool:
 _TITLE_ARTIST_SPLIT = re.compile(r"^(?P<title>.+?)\s+(?:by|af|med|with)\s+(?P<artist>.+)$", re.IGNORECASE)
 
 
+def librespot_status_to_now_playing(data: dict) -> dict | None:
+    """go-librespot /status → the same shape as the Spotify Web API player."""
+    track = data.get("track")
+    if not isinstance(track, dict):
+        return None
+    uri = str(track.get("uri") or "")
+    if not uri.startswith("spotify:"):
+        return None
+    names = track.get("artist_names")
+    if isinstance(names, list):
+        artist = ", ".join(str(name) for name in names if name)
+    else:
+        artist = str(names or "")
+    try:
+        progress = int(track.get("position") or 0)
+    except (TypeError, ValueError):
+        progress = 0
+    try:
+        duration = int(track.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    playing = not bool(data.get("paused")) and not bool(data.get("stopped"))
+    return {
+        "name": str(track.get("name") or ""),
+        "artist": artist,
+        "album": str(track.get("album_name") or ""),
+        "image": str(track.get("album_cover_url") or ""),
+        "is_playing": playing,
+        "uri": uri,
+        "progress_ms": progress,
+        "duration_ms": duration,
+        "next_name": "",
+        "next_artist": "",
+    }
+
+
 def pick_best_track(query: str, tracks: list[dict]) -> dict | None:
     """Prefer a track whose title/artist actually appear in the spoken query."""
     q = re.sub(r"\s+", " ", (query or "").lower()).strip()
@@ -129,6 +165,26 @@ def pick_best_track(query: str, tracks: list[dict]) -> dict | None:
 
     ranked = sorted(valid, key=score, reverse=True)
     return ranked[0] if score(ranked[0]) > 0 else valid[0]
+
+
+def album_card(album: dict | None) -> dict:
+    """Name, artist line and a mid-size cover from a Spotify album object."""
+    src = album if isinstance(album, dict) else {}
+    images = src.get("images") or []
+    image = ""
+    if isinstance(images, list) and images:
+        pick = images[1] if len(images) > 1 else images[0]
+        if isinstance(pick, dict):
+            image = str(pick.get("url") or "")
+    artists = src.get("artists") or []
+    artist = ", ".join(
+        a.get("name", "") for a in artists if isinstance(a, dict) and a.get("name")
+    )
+    return {
+        "album": str(src.get("name") or ""),
+        "artist": artist,
+        "image": image,
+    }
 
 
 def split_title_artist(query: str) -> tuple[str, str] | None:
@@ -236,6 +292,16 @@ class Spotify:
         if not token:
             return None
         return {"Authorization": f"Bearer {token}"}
+
+    async def _garden_now_playing(self) -> dict | None:
+        try:
+            response = await self._http.get(f"{self._garden_player_base()}/status")
+        except Exception:
+            return None
+        if response.status_code != 200:
+            return None
+        data = response.json() if response.content else {}
+        return librespot_status_to_now_playing(data if isinstance(data, dict) else {})
 
     def _garden_player_base(self) -> str:
         return hub_config.garden_player_url()
@@ -679,6 +745,10 @@ class Spotify:
         return await self._post_player_previous()
 
     async def now_playing(self) -> dict | None:
+        if hub_config.site() == "garden":
+            local = await self._garden_now_playing()
+            if local:
+                return local
         h = await self._headers()
         if not h:
             return None
@@ -1180,14 +1250,13 @@ class Spotify:
             return {"ok": False, "error": "Kunne ikke hente track"}
         album = tr.json().get("album") or {}
         album_uri = album.get("uri") or ""
-        album_name = album.get("name", "")
         album_id = album_uri.split(":")[-1] if album_uri else ""
         if not album_id:
             return {"ok": False, "error": "Intet album fundet"}
         rows = await self._album_track_rows(album_id, h)
         if not rows:
             return {"ok": False, "error": "Tomt album"}
-        return {"ok": True, "album": album_name, "queue": rows}
+        return {"ok": True, **album_card(album), "queue": rows}
 
     # Default kiosk playlist (POST /me/playlists). Override in spotify_config.json only if needed.
     _FAVORITES_PLAYLIST_ID_DEFAULT = "0lQTaldhDsvMlLAEctDX81"
@@ -1284,13 +1353,11 @@ class Spotify:
             return {"ok": False, "error": "Mangler album-uri"}
         album_id = album_uri.split(":")[-1]
         ar = await self._http.get(f"{API}/albums/{album_id}", headers=h, params={"market": "DK"})
-        album_name = ""
-        if ar.status_code == 200:
-            album_name = ar.json().get("name", "")
+        body = ar.json() if ar.status_code == 200 else {}
         rows = await self._album_track_rows(album_id, h)
         if not rows:
             return {"ok": False, "error": "Tomt album"}
-        return {"ok": True, "album": album_name, "queue": rows}
+        return {"ok": True, **album_card(body), "queue": rows}
 
     async def build_artist_top_queue(self, artist_uri: str) -> dict:
         h = await self._headers()

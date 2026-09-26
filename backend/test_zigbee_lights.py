@@ -3,6 +3,14 @@ import unittest
 import zigbee_lights
 
 
+class DurableDbTests(unittest.TestCase):
+    def test_path_is_outside_the_repo(self):
+        path = zigbee_lights.durable_db_path()
+        repo = zigbee_lights.Path(__file__).resolve().parents[1]
+        self.assertNotEqual(path, repo / "zigbee.db")
+        self.assertTrue(str(path).endswith(".local/share/hue/zigbee.db"))
+
+
 class ClassifyIkeaTests(unittest.TestCase):
     def test_motion_not_lamp(self):
         self.assertTrue(zigbee_lights.is_motion("TRADFRI motion sensor"))

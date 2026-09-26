@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   indexOfUri,
+  nextQueuedIndex,
   observeSpeaker,
   remainingUris,
   startHasLanded,
@@ -143,6 +144,16 @@ describe('trackHasEnded', () => {
 
   it('is true when progress is within two seconds of duration', () => {
     assert.equal(trackHasEnded({ uri: 'spotify:track:aaa', isPlaying: false, progressMs: 178000, durationMs: 180000 }), true);
+  });
+});
+
+describe('nextQueuedIndex', () => {
+  it('is null when the queue is a single song', () => {
+    assert.equal(nextQueuedIndex([{ uri: 'spotify:track:aaa' }], 0), null);
+  });
+
+  it('points at the following queued uri', () => {
+    assert.equal(nextQueuedIndex(queue, 0), 1);
   });
 });
 

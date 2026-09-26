@@ -21,6 +21,35 @@ HOME_DEVICES = [
 ]
 
 
+class LibrespotStatusTests(unittest.TestCase):
+    def test_maps_the_local_track_the_kiosk_should_follow(self):
+        row = spotify.librespot_status_to_now_playing(
+            {
+                "paused": False,
+                "stopped": False,
+                "track": {
+                    "name": "Deeper Dark",
+                    "artist_names": ["Pip Millett"],
+                    "album_name": "Deeper Dark",
+                    "album_cover_url": "https://i.scdn.co/image/x",
+                    "uri": "spotify:track:3cvKUJL7vSRgV5cWh7czXW",
+                    "position": 2510,
+                    "duration": 189546,
+                },
+            }
+        )
+        self.assertEqual(row["name"], "Deeper Dark")
+        self.assertEqual(row["artist"], "Pip Millett")
+        self.assertTrue(row["is_playing"])
+        self.assertEqual(row["progress_ms"], 2510)
+
+    def test_paused_local_player_is_not_playing(self):
+        row = spotify.librespot_status_to_now_playing(
+            {"paused": True, "stopped": False, "track": {"uri": "spotify:track:abc", "name": "Cuidado"}}
+        )
+        self.assertFalse(row["is_playing"])
+
+
 class FindSpeakerTests(unittest.IsolatedAsyncioTestCase):
     async def test_home_picks_m5_never_phone_or_kiosk(self):
         client = _client()
@@ -273,6 +302,25 @@ class PickBestTrackTests(unittest.TestCase):
             {"uri": "spotify:track:b", "name": "Beta", "artists": [{"name": "B"}]},
         ]
         self.assertEqual(spotify.pick_best_track("xyz", tracks)["uri"], "spotify:track:a")
+
+
+class AlbumCardTests(unittest.TestCase):
+    def test_picks_the_mid_image_and_joins_artists(self):
+        card = spotify.album_card({
+            "name": "Grace",
+            "artists": [{"name": "Jeff Buckley"}],
+            "images": [
+                {"url": "https://big"},
+                {"url": "https://mid"},
+                {"url": "https://small"},
+            ],
+        })
+        self.assertEqual(card["album"], "Grace")
+        self.assertEqual(card["artist"], "Jeff Buckley")
+        self.assertEqual(card["image"], "https://mid")
+
+    def test_empty_album_is_blank_card(self):
+        self.assertEqual(spotify.album_card(None), {"album": "", "artist": "", "image": ""})
 
 
 if __name__ == "__main__":

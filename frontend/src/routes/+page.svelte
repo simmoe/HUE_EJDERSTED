@@ -24,6 +24,15 @@
     type RadioPlaylist,
   } from '$lib/radioLibrary.svelte';
   import {
+    albumLibrary,
+    initAlbumLibrary,
+    saveAlbumCopy,
+    deleteSavedAlbum,
+    deleteSavedAlbumTrack,
+    sameTrackList,
+    type SavedAlbum,
+  } from '$lib/albumLibrary.svelte';
+  import {
     playlist,
     activeQueue,
     registerScrollToNowPlaying,
@@ -92,6 +101,11 @@
   }
 
   function enterFullscreenFromGesture() {
+    // The installed Haven app is already display-mode:fullscreen, so there is
+    // no address bar. requestFullscreen() only makes Chrome show the
+    // "how to leave fullscreen" notice, and on this tablet it leaves the
+    // toolbar up anyway.
+    if (window.matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches) return;
     const root = document.documentElement as HTMLElement & {
       webkitRequestFullscreen?: () => void;
     };
@@ -176,6 +190,7 @@
 
   let stopPlaylistHub: (() => void) | undefined;
   let stopRadioLibrary: (() => void) | undefined;
+  let stopAlbumLibrary: (() => void) | undefined;
   let audioTargets = $state<AudioTargetStatus[]>([]);
   let connectingAudioTarget = $state('');
 
@@ -267,6 +282,9 @@
           void initRadioLibrary().then((stop) => {
             stopRadioLibrary = stop;
           });
+          void initAlbumLibrary().then((stop) => {
+            stopAlbumLibrary = stop;
+          });
         }
         void refreshAudioTargets();
         if (enabled('audio')) {
@@ -322,6 +340,7 @@
       document.removeEventListener('scroll', onContinuousActivity, { capture: true });
       stopPlaylistHub?.();
       stopRadioLibrary?.();
+      stopAlbumLibrary?.();
     };
   });
 
@@ -419,6 +438,12 @@
     void playlist.radioQueue;
     void playlist.playListMode;
     radioSaveDone = false;
+  });
+
+  $effect(() => {
+    void playlist.albumQueue;
+    void playlist.playListMode;
+    albumSaveDone = false;
   });
 
   $effect(() => {
@@ -556,6 +581,7 @@
   let spotifySaved = $state(false);
   let saveLoading = $state(false);
   let radioSaveDone = $state(false);
+  let albumSaveDone = $state(false);
 
   // ── Vertical card carousel ──────────────────────────────────────────────
   let lydInner = $state<HTMLDivElement>();
@@ -647,13 +673,23 @@
     });
   }
 
+  function isAlbumSaveable() {
+    return playlist.playListMode === 'album' && playlist.albumQueue.length > 0;
+  }
+
+  function isCurrentAlbumInLibrary() {
+    return albumLibrary.albums.some((album) => sameTrackList(album.tracks, playlist.albumQueue));
+  }
+
   function isBookmarkFilled() {
+    if (isAlbumSaveable()) return albumSaveDone || isCurrentAlbumInLibrary();
     if (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive) return true;
     if (isRadioPlaylistSaveable() && (radioSaveDone || isCurrentPlaylistInLibrary())) return true;
     return isCurrentTrackSaved();
   }
 
   function currentSaveLabel() {
+    if (isAlbumSaveable()) return isBookmarkFilled() ? 'Album gemt' : 'Gem album';
     if (isRadioPlaylistSaveable() || (playlist.playListMode === 'playlist' && playlist.savedPlaylistActive)) {
       return isBookmarkFilled() ? 'Playliste gemt' : 'Gem playliste';
     }
@@ -664,6 +700,19 @@
     if (saveLoading || !playlist.spotifyTrackUri) return;
     saveLoading = true;
     try {
+      if (isAlbumSaveable()) {
+        const saved = await saveAlbumCopy({
+          name: playlist.albumTitle,
+          artist: playlist.albumArtist,
+          coverUrl: playlist.albumImage,
+          tracks: playlist.albumQueue,
+        });
+        albumSaveDone = true;
+        albumLibrary.albums = [saved, ...albumLibrary.albums.filter((album) => album.id !== saved.id)];
+        activeAlbumId = saved.id;
+        showFeedback(`Album gemt som "${saved.name}" (${saved.tracks.length} sange)`, { kind: 'success', duration: 7000 });
+        return;
+      }
       if (isRadioPlaylistSaveable()) {
         const seed = playlist.radioQueue[0];
         const saved = await saveRadioPlaylist(seed, playlist.radioQueue);
@@ -812,12 +861,18 @@
   }
 
   // ── Bibliotek: playlister og podcast deler én side ─────────────────────────
-  let libraryTab = $state<'playlists' | 'podcasts'>('playlists');
-  const libraryView = $derived<'playlists' | 'podcasts'>(
-    enabled('playlists') && (libraryTab === 'playlists' || !enabled('podcasts')) ? 'playlists' : 'podcasts'
+  let libraryTab = $state<'playlists' | 'albums' | 'podcasts'>('playlists');
+  const libraryView = $derived<'playlists' | 'albums' | 'podcasts'>(
+    libraryTab === 'albums' && enabled('playlists')
+      ? 'albums'
+      : libraryTab === 'podcasts' && enabled('podcasts')
+        ? 'podcasts'
+        : enabled('playlists')
+          ? 'playlists'
+          : 'podcasts'
   );
 
-  function setLibraryTab(tab: 'playlists' | 'podcasts') {
+  function setLibraryTab(tab: 'playlists' | 'albums' | 'podcasts') {
     libraryTab = tab;
   }
 
@@ -1233,6 +1288,23 @@
   type PlaylistTrack = { uri: string; name: string; artist: string; position?: number };
   let drilledPlaylist = $state<RadioPlaylist | null>(null);
   let drilledTracks = $state<PlaylistTrack[]>([]);
+  let loadingAlbumId = $state('');
+  let loadingAlbumTrackIndex = $state(-1);
+  let deletingAlbumTrackIndex = $state(-1);
+  let activeAlbumId = $state('');
+  let albumInner = $state<HTMLDivElement>();
+  let drilledAlbum = $state<SavedAlbum | null>(null);
+  let drilledAlbumTracks = $state<PlaylistTrack[]>([]);
+
+  $effect(() => {
+    if (playlist.playListMode !== 'album') {
+      if (activeAlbumId) activeAlbumId = '';
+      return;
+    }
+    if (!activeAlbumId) return;
+    const saved = albumLibrary.albums.find((album) => album.id === activeAlbumId);
+    if (!saved || !sameTrackList(saved.tracks, playlist.albumQueue)) activeAlbumId = '';
+  });
 
   function startCachedPlaylist(p: RadioPlaylist) {
     playlist.spotifyRadio = false;
@@ -1330,6 +1402,108 @@
       await playFromCurrentIndex();
     } finally {
       loadingTrackIndex = -1;
+    }
+  }
+
+  function scrollAlbumPage(direction: 1 | -1) {
+    scrollListRows(albumInner, '.album-card', direction);
+  }
+
+  function startSavedAlbum(album: SavedAlbum, index = 0) {
+    playlist.spotifyRadio = false;
+    playlist.savedPlaylistActive = false;
+    playlist.spotifyAlbumActive = true;
+    playlist.albumQueue = album.tracks;
+    playlist.albumIndex = index;
+    playlist.albumTitle = album.name;
+    playlist.albumArtist = album.seedArtist;
+    playlist.albumImage = album.coverUrl || '';
+    playlist.playListMode = 'album';
+    paintNpFromQueues();
+  }
+
+  async function playSavedAlbum(album: SavedAlbum) {
+    if (loadingAlbumId) return;
+    loadingAlbumId = album.id;
+    try {
+      await releasePodcastForMusic();
+      startSavedAlbum(album);
+      activeAlbumId = album.id;
+      await playFromCurrentIndex();
+    } finally {
+      loadingAlbumId = '';
+    }
+  }
+
+  function openAlbumDrill(album: SavedAlbum) {
+    drilledAlbum = album;
+    drilledAlbumTracks = album.tracks.map((track, i) => ({ ...track, position: i }));
+  }
+
+  function closeAlbumDrill() {
+    drilledAlbum = null;
+    drilledAlbumTracks = [];
+  }
+
+  async function deleteAlbum(album: SavedAlbum) {
+    if (loadingAlbumId) return;
+    loadingAlbumId = album.id;
+    try {
+      await deleteSavedAlbum(album.id);
+      if (activeAlbumId === album.id) activeAlbumId = '';
+      if (drilledAlbum?.id === album.id) closeAlbumDrill();
+      showFeedback('Album slettet', { kind: 'success' });
+    } catch (e) {
+      showFeedback((e as Error).message || 'Kunne ikke slette', { kind: 'error' });
+    } finally {
+      loadingAlbumId = '';
+    }
+  }
+
+  async function deleteTrackFromAlbum(track: PlaylistTrack, index: number) {
+    if (!drilledAlbum || deletingAlbumTrackIndex >= 0) return;
+    deletingAlbumTrackIndex = index;
+    try {
+      await deleteSavedAlbumTrack(drilledAlbum.id, index);
+      drilledAlbumTracks = drilledAlbumTracks
+        .filter((_, i) => i !== index)
+        .map((row, i) => ({ ...row, position: i }));
+      drilledAlbum = { ...drilledAlbum, tracks: drilledAlbumTracks };
+      if (activeAlbumId === drilledAlbum.id) {
+        playlist.albumQueue = playlist.albumQueue.filter((_, i) => i !== index);
+        if (playlist.albumIndex >= playlist.albumQueue.length) {
+          playlist.albumIndex = Math.max(0, playlist.albumQueue.length - 1);
+        } else if (playlist.albumIndex > index) {
+          playlist.albumIndex -= 1;
+        }
+        paintNpFromQueues();
+      }
+      const nextTracks = drilledAlbum.tracks;
+      albumLibrary.albums = nextTracks.length
+        ? albumLibrary.albums.map((album) => album.id === drilledAlbum!.id ? { ...album, tracks: nextTracks } : album)
+        : albumLibrary.albums.filter((album) => album.id !== drilledAlbum!.id);
+      showFeedback('Sang fjernet', { kind: 'success' });
+    } catch (e) {
+      showFeedback((e as Error).message || 'Kunne ikke slette sang', { kind: 'error' });
+    } finally {
+      deletingAlbumTrackIndex = -1;
+    }
+  }
+
+  async function playTrackFromDrilledAlbum(track: PlaylistTrack, index: number) {
+    if (!drilledAlbum || loadingAlbumTrackIndex >= 0 || deletingAlbumTrackIndex >= 0) return;
+    loadingAlbumTrackIndex = index;
+    try {
+      if (activeAlbumId === drilledAlbum.id && playlist.albumQueue.length > 0) {
+        playlist.albumIndex = index;
+        paintNpFromQueues();
+      } else {
+        startSavedAlbum(drilledAlbum, index);
+        activeAlbumId = drilledAlbum.id;
+      }
+      await playFromCurrentIndex();
+    } finally {
+      loadingAlbumTrackIndex = -1;
     }
   }
 
@@ -1735,7 +1909,7 @@
     </section>
     {/if}
 
-    <!-- PAGE · BIBLIOTEK (playlister · podcast) ─────────────────────────── -->
+    <!-- PAGE · BIBLIOTEK (playlister · album · podcast) ─────────────────── -->
     {#if enabled('playlists') || enabled('podcasts')}
     <section class="page" data-page="podcast">
       {#if libraryView === 'playlists' && drilledPlaylist}
@@ -1745,6 +1919,15 @@
               <polyline points="15 6 9 12 15 18" />
             </svg>
             <span class="drill-back-label">playlister</span>
+          </button>
+        </div>
+      {:else if libraryView === 'albums' && drilledAlbum}
+        <div class="col-header drill-header">
+          <button type="button" class="drill-back" onclick={closeAlbumDrill} aria-label="Tilbage til album-liste">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+            <span class="drill-back-label">album</span>
           </button>
         </div>
       {:else if libraryView === 'podcasts' && showPodcastQueue}
@@ -1770,6 +1953,7 @@
         <div class="col-header col-header--tabs" role="tablist">
           {#if enabled('playlists')}
             <button type="button" role="tab" class:active={libraryView === 'playlists'} aria-selected={libraryView === 'playlists'} onclick={() => setLibraryTab('playlists')}>playlister</button>
+            <button type="button" role="tab" class:active={libraryView === 'albums'} aria-selected={libraryView === 'albums'} onclick={() => setLibraryTab('albums')}>album</button>
           {/if}
           {#if enabled('podcasts')}
             <button type="button" role="tab" class:active={libraryView === 'podcasts'} aria-selected={libraryView === 'podcasts'} onclick={() => setLibraryTab('podcasts')}>podcast</button>
@@ -1887,6 +2071,122 @@
         </button>
 
         <button type="button" class="card-arrow list-arrow list-arrow--down" onclick={() => scrollPlaylistPage(1)} aria-label="Næste playliste">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      {/if}
+      {:else if libraryView === 'albums'}
+      <div class="scroll-inner list-scroll" bind:this={albumInner}>
+        {#if drilledAlbum}
+          {#if drilledAlbumTracks.length === 0}
+            <p class="empty">Ingen sange fundet.</p>
+          {:else}
+            {#each drilledAlbumTracks as track, i (track.uri + i)}
+              <div class="playlist-track-row">
+                <button
+                  type="button"
+                  class="episode-row playlist-track-main"
+                  class:active={activeAlbumId === drilledAlbum.id && playlist.albumIndex === i && playlist.spotifyPlaying}
+                  class:loading={loadingAlbumTrackIndex === i}
+                  onclick={() => playTrackFromDrilledAlbum(track, i)}
+                >
+                  <span class="episode-meta-top">
+                    {#if loadingAlbumTrackIndex === i}
+                      · · ·
+                    {:else}
+                      {i + 1}
+                    {/if}
+                  </span>
+                  <span class="episode-title">{track.name}</span>
+                  <span class="podcast-meta">{track.artist}</span>
+                </button>
+                <button
+                  type="button"
+                  class="playlist-track-delete"
+                  class:loading={deletingAlbumTrackIndex === i}
+                  onclick={() => deleteTrackFromAlbum(track, i)}
+                  disabled={deletingAlbumTrackIndex >= 0 || loadingAlbumTrackIndex >= 0}
+                  aria-label={`Slet ${track.name} fra album`}
+                >
+                  {#if deletingAlbumTrackIndex === i}
+                    · · ·
+                  {:else}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" />
+                    </svg>
+                  {/if}
+                </button>
+              </div>
+            {/each}
+            <button type="button" class="playlist-delete-row" onclick={() => deleteAlbum(drilledAlbum!)} aria-label="Slet album">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" />
+              </svg>
+              <span>Slet album</span>
+            </button>
+          {/if}
+        {:else if albumLibrary.loading && albumLibrary.albums.length === 0}
+          <p class="empty">Henter album…</p>
+        {:else if albumLibrary.error && albumLibrary.albums.length === 0}
+          <p class="empty">{albumLibrary.error}</p>
+        {:else if albumLibrary.albums.length === 0}
+          <p class="empty">Ingen album gemt endnu.</p>
+        {:else}
+          {#each albumLibrary.albums as album (album.id)}
+            <div
+              class="podcast-card playlist-card album-card"
+              class:active={activeAlbumId === album.id}
+              class:loading={loadingAlbumId === album.id}
+              data-name={album.name}
+            >
+              <button
+                type="button"
+                class="podcast-card-main"
+                onclick={() => playSavedAlbum(album)}
+                aria-label={`Spil albummet ${album.name}`}
+              >
+                <CoverArt
+                  title={album.name}
+                  artist={album.seedArtist || album.tracks[0]?.artist || ''}
+                  src={album.coverUrl || ''}
+                />
+                <div class="podcast-info">
+                  <span class="podcast-show">{album.name}</span>
+                  <span class="podcast-meta">
+                    {#if album.seedArtist}{album.seedArtist} · {/if}
+                    {album.tracks.length} sange
+                    {#if loadingAlbumId === album.id}
+                      · henter…
+                    {:else if activeAlbumId === album.id}
+                      · aktiv
+                    {/if}
+                  </span>
+                </div>
+              </button>
+              <button
+                type="button"
+                class="podcast-drill"
+                onclick={() => openAlbumDrill(album)}
+                aria-label={`Vis sange i ${album.name}`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9 6 15 12 9 18" />
+                </svg>
+              </button>
+            </div>
+          {/each}
+        {/if}
+      </div>
+
+      {#if !drilledAlbum}
+        <button type="button" class="card-arrow list-arrow list-arrow--up" onclick={() => scrollAlbumPage(-1)} aria-label="Forrige album">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+        </button>
+
+        <button type="button" class="card-arrow list-arrow list-arrow--down" onclick={() => scrollAlbumPage(1)} aria-label="Næste album">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="6 9 12 15 18 9" />
           </svg>
@@ -2367,7 +2667,8 @@
   }
 
   .col-header--tabs {
-    gap: 26px;
+    gap: 16px;
+    letter-spacing: 0.14em;
   }
   .col-header--tabs button {
     background: none;

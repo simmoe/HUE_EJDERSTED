@@ -19,7 +19,7 @@ import {
   type DocumentReference,
 } from 'firebase/firestore';
 import { showFeedback } from '$lib/feedback.svelte';
-import { observeSpeaker, remainingUris, startHasLanded, type SpeakerSnapshot } from '$lib/playback';
+import { nextQueuedIndex, observeSpeaker, remainingUris, startHasLanded, type SpeakerSnapshot } from '$lib/playback';
 
 export type QTrack = { uri: string; name: string; artist: string };
 export type PodcastEpisode = {
@@ -44,6 +44,9 @@ type SyncPayload = {
   playListMode: PlaylistMode;
   spotifyRadio: boolean;
   spotifyAlbumActive: boolean;
+  albumTitle: string;
+  albumArtist: string;
+  albumImage: string;
   savedPlaylistActive: boolean;
   savedPlaylistTitle: string;
   spotifyPlaying: boolean;
@@ -85,6 +88,9 @@ export const playlist = $state({
   spotifyAlbumActive: false,
   spotifyAlbumLoading: false,
   spotifyAlbumError: '',
+  albumTitle: '',
+  albumArtist: '',
+  albumImage: '',
   savedPlaylistActive: false,
   savedPlaylistTitle: '',
   activeTransport: '' as ActiveTransport,
@@ -213,11 +219,14 @@ function applySpeakerObservation(result: ReturnType<typeof observeSpeaker>) {
     return;
   }
   if (result.type === 'ended') {
-    const next = activeIndex() + 1;
-    if (!pausedThisTrack && next < activeQueue().length) {
+    const next = nextQueuedIndex(activeQueue(), activeIndex());
+    if (!pausedThisTrack && next != null) {
       void startSpotifyFromIndex(next);
       return;
     }
+    // One searched song. Spotify/B&O will keep going; stop that so the card stays.
+    startingUri = '';
+    void pauseSpotifyRemote();
   }
   playlist.spotifyPlaying = false;
   void commitPlayerState({ spotifyPlaying: false });
@@ -361,6 +370,9 @@ function currentSyncPayload(): SyncPayload {
     playListMode: playlist.playListMode,
     spotifyRadio: playlist.spotifyRadio,
     spotifyAlbumActive: playlist.spotifyAlbumActive,
+    albumTitle: playlist.albumTitle,
+    albumArtist: playlist.albumArtist,
+    albumImage: playlist.albumImage,
     savedPlaylistActive: playlist.savedPlaylistActive,
     savedPlaylistTitle: playlist.savedPlaylistTitle,
     spotifyPlaying: playlist.spotifyPlaying,
@@ -408,6 +420,21 @@ function normalizeSyncData(d: Record<string, unknown>): SyncPayload {
     playListMode: parseMode(player.mode ?? d.playListMode),
     spotifyRadio: !!(contexts.radioActive ?? d.spotifyRadio),
     spotifyAlbumActive: !!(contexts.albumActive ?? d.spotifyAlbumActive),
+    albumTitle: typeof contexts.albumTitle === 'string'
+      ? contexts.albumTitle
+      : typeof d.albumTitle === 'string'
+        ? d.albumTitle
+        : '',
+    albumArtist: typeof contexts.albumArtist === 'string'
+      ? contexts.albumArtist
+      : typeof d.albumArtist === 'string'
+        ? d.albumArtist
+        : '',
+    albumImage: typeof contexts.albumImage === 'string'
+      ? contexts.albumImage
+      : typeof d.albumImage === 'string'
+        ? d.albumImage
+        : '',
     savedPlaylistActive: !!(contexts.savedPlaylistActive ?? d.savedPlaylistActive),
     savedPlaylistTitle: typeof contexts.savedPlaylistTitle === 'string'
       ? contexts.savedPlaylistTitle
@@ -512,6 +539,9 @@ function firestoreDocFromPayload(p: SyncPayload) {
     contexts: {
       radioActive: p.spotifyRadio,
       albumActive: p.spotifyAlbumActive,
+      albumTitle: p.albumTitle,
+      albumArtist: p.albumArtist,
+      albumImage: p.albumImage,
       savedPlaylistActive: p.savedPlaylistActive,
       savedPlaylistTitle: p.savedPlaylistTitle,
     },
@@ -587,6 +617,9 @@ function applyPayload(incoming: SyncPayload) {
   playlist.playListMode = incoming.playListMode;
   playlist.spotifyRadio = incoming.spotifyRadio;
   playlist.spotifyAlbumActive = incoming.spotifyAlbumActive;
+  playlist.albumTitle = incoming.albumTitle;
+  playlist.albumArtist = incoming.albumArtist;
+  playlist.albumImage = incoming.albumImage;
   playlist.savedPlaylistActive = incoming.savedPlaylistActive;
   playlist.savedPlaylistTitle = incoming.savedPlaylistTitle;
   playlist.spotifyPlaying = incoming.spotifyPlaying;
@@ -961,6 +994,9 @@ export async function playAlbum() {
     }
     playlist.albumQueue = (data.queue as QTrack[]) ?? [];
     playlist.albumIndex = 0;
+    playlist.albumTitle = typeof data.album === 'string' ? data.album : '';
+    playlist.albumArtist = typeof data.artist === 'string' ? data.artist : '';
+    playlist.albumImage = typeof data.image === 'string' ? data.image : '';
     playlist.spotifyAlbumActive = true;
     playlist.playListMode = 'album';
     paintNpFromQueues();

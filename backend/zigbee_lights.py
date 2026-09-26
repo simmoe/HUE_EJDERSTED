@@ -14,7 +14,17 @@ DEFAULT_PORT = (
     "usb-Itead_Sonoff_Zigbee_3.0_USB_Dongle_Plus_V2_"
     "9405800ca678f011b5fff4eba7772636-if00-port0"
 )
-DB_PATH = Path(__file__).parent.parent / "zigbee.db"
+def durable_db_path() -> Path:
+    """Zigbee device table lives outside the repo so a deploy cannot wipe it."""
+    path = Path.home() / ".local" / "share" / "hue" / "zigbee.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = Path(__file__).resolve().parent.parent / "zigbee.db"
+    if not path.exists() and legacy.is_file() and legacy.stat().st_size > 0:
+        path.write_bytes(legacy.read_bytes())
+    return path
+
+
+DB_PATH = durable_db_path()
 KNOWN_SENG = "34:8d:13:ff:fe:7c:32:59"
 KNOWN_RODRET = "08:fd:52:ff:fe:d3:52:0f"
 SENSOR_AWAKE_S = 90.0
@@ -123,6 +133,9 @@ class ZigbeeHub:
         from bellows.zigbee.application import ControllerApplication
 
         self.loop = asyncio.get_running_loop()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.db_path.exists() and self.db_path.stat().st_size == 0:
+            self.db_path.unlink()
         app = ControllerApplication(
             {
                 "device": {"path": self.port, "baudrate": 115200},
@@ -132,10 +145,12 @@ class ZigbeeHub:
                 "use_thread": False,
             }
         )
-        if self.db_path.exists() and self.db_path.stat().st_size == 0:
-            self.db_path.unlink()
+        # ControllerApplication.new() loads the db. startup() alone never does,
+        # so every restart forgot the PAN and waited for a device to speak.
+        await app._load_db()
         await app.startup(auto_form=False)
         self._app = app
+        await self._rediscover_from_coordinator()
         app.add_listener(_JoinWatch(self))
         import garden_lights
 
@@ -165,6 +180,30 @@ class ZigbeeHub:
         for dev in garden_lights.configured_devices():
             if str(dev.get("protocol") or "") in ("zigbee", "ikea") and dev.get("id"):
                 self.loop.create_task(self._refresh(dev, source="boot"))
+
+    async def _rediscover_from_coordinator(self) -> None:
+        """Ask the dongle who is still on the PAN, then interview anyone we forgot."""
+        app = self._app
+        coord = getattr(app, "_device", None)
+        if coord is None:
+            return
+        try:
+            neighbors = await app.topology._scan_neighbors(coord)
+        except Exception as exc:
+            lights_log.log("zigbee.neighbors", ok=False, detail=str(exc)[:160])
+            return
+        app.topology.neighbors[coord.ieee] = neighbors
+        lights_log.log(
+            "zigbee.neighbors",
+            ok=True,
+            n=len(neighbors),
+            db=str(self.db_path),
+            devices=len(app.devices),
+        )
+        await app.topology._find_unknown_devices(
+            neighbors={coord.ieee: neighbors},
+            routes={},
+        )
 
     async def permit(self, seconds: int = 180) -> None:
         if self._app is None:

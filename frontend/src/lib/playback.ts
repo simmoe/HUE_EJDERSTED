@@ -45,6 +45,12 @@ export function remainingUris(queue: TrackRef[], index: number): string[] {
     .filter((uri) => typeof uri === 'string' && uri.startsWith('spotify:track:'));
 }
 
+/** Next queued track, or null when this play was a single song. */
+export function nextQueuedIndex(queue: TrackRef[], index: number): number | null {
+  const next = index + 1;
+  return next >= 0 && next < queue.length ? next : null;
+}
+
 export function indexOfUri(queue: TrackRef[], uri: string): number {
   if (!uri) return -1;
   return queue.findIndex((row) => row.uri === uri);

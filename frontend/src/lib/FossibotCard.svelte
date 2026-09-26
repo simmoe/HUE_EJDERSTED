@@ -65,12 +65,12 @@
         <svg class="fossibot-dial-ring" viewBox="0 0 100 100" aria-hidden="true">
           {#each Array.from({ length: TICKS }, (_, i) => i) as i}
             <g transform="rotate({tickAngle(i)} 50 50)">
-              <line
+              <rect
                 class="fossibot-tick"
-                x1="50"
-                y1="5.5"
-                x2="50"
-                y2="13"
+                x="49.1"
+                y="4.6"
+                width="1.8"
+                height="9.3"
                 style="animation-delay: {tickDelay(i)}s"
               />
             </g>
@@ -221,8 +221,11 @@
     display: grid;
     place-items: center;
     aspect-ratio: 1;
-    width: min(84cqb, 58cqw, 320px);
-    height: min(84cqb, 58cqw, 320px);
+    container-type: size;
+    /* Viewport, not the card. A size-container height collapses on Android
+       and the ticks land on the glyphs. 40vh is the hole in the reference. */
+    width: min(40vh, 320px);
+    height: min(40vh, 320px);
   }
 
   .fossibot-soc {
@@ -233,7 +236,8 @@
   }
 
   .fossibot-value--soc {
-    font-size: clamp(2.6rem, 22cqmin, 5.6rem);
+    font-size: 28cqmin;
+    text-size-adjust: 100%;
   }
 
   .fossibot-soc-frac {
@@ -274,15 +278,12 @@
   }
 
   .fossibot-tick {
-    stroke: rgba(255, 255, 255, 0.16);
-    stroke-width: 1.8;
-    stroke-linecap: square;
+    fill: rgba(255, 255, 255, 0.16);
   }
 
   .fossibot-dial.charging .fossibot-tick {
-    stroke: rgba(0, 128, 200, 0.95);
+    fill: rgba(0, 128, 200, 0.95);
     animation: fossibot-tick-chase 2.8s linear infinite;
-    will-change: opacity;
   }
 
   @keyframes fossibot-tick-chase {

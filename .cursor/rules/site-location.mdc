@@ -20,3 +20,23 @@ ipconfig getifaddr en0
 - State the site in the first reply. Use that LAN for ADB and kiosk reload; Tailscale is the hop when the other site is needed.
 - iPhone hotspot (`172.20.10.x`) or any other SSID is neither. Say so. Do not guess home vs garden.
 - Do not ask Simon "er vi hjemme eller i haven?" until this check has run.
+
+## GitHub and the live hubs, once per session
+
+The Wi-Fi check is cheap. Matching git and the Pis is not. Do it once per chat, the first time you run the site check, then skip it.
+
+Flag file (gitignored): `.cursor/session-sync.json`
+
+```json
+{ "commit": "<full HEAD sha>", "hubs": { "home": "<release>", "garden": "<release>" } }
+```
+
+If that file's `commit` is already this checkout's HEAD, do not fetch and do not curl the hubs again this session.
+
+If the flag is missing or the commit differs:
+
+1. `git fetch` and confirm HEAD equals `origin/main`. Say so if it does not.
+2. Read `release` from `GET /api/health` on both hubs (`scripts/hubctl status`).
+3. Write the flag with HEAD and the two release strings.
+
+Do not deploy, reset, or "fix" a mismatch unless Simon asked. The flag only records that this session already looked.

@@ -4,7 +4,7 @@
 // Do not deploy this file to p5-firebase-eebc1 (informatik / chord / min-økonomi).
 //
 // Assumed data on this project includes the diary app plus Ejdersted:
-//   ejdersted/radioPlaylists, player_home, player_garden, security_garden
+//   ejdersted/radioPlaylists, savedAlbums, player_home, player_garden, security_garden
 //   ejdersted/fossibot_garden + fossibot_garden/samples/{yyyyMMddTHHmm}
 //   ejdersted/audio_home + audio_garden /events/{id} (hub-written playback log)
 // The live catch-all is test-mode until 2027-03-24. Keep it. New matches
