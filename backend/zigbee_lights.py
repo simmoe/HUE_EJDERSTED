@@ -1,4 +1,8 @@
-"""IKEA / EmberZNet lights on the Sonoff dongle. Opens the existing PAN."""
+"""Zigbee lights on the Sonoff dongle. Opens the existing PAN.
+
+IKEA seng/toilet and a Hue loft bulb share the same coordinator. Hue lighting
+clusters live on endpoint 11, IKEA on 1 — look the OnOff endpoint up.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +29,13 @@ def durable_db_path() -> Path:
 
 DB_PATH = durable_db_path()
 KNOWN_SENG = "34:8d:13:ff:fe:7c:32:59"
+KNOWN_TOILET = "94:34:69:ff:fe:64:2c:5b"
 KNOWN_RODRET = "08:fd:52:ff:fe:d3:52:0f"
+LAMP_NAMES = {"seng": "Seng", "toilet": "Toilet", "loft": "Loft"}
+HUE_LAMP_PREFIXES = (
+    "LCT", "LWA", "LWB", "LTW", "LCA", "LCD", "LCE", "LTA", "LTC", "LTD", "LST", "LLC", "LWO", "LWL",
+)
+HUE_NOT_LAMP_PREFIXES = ("RWL", "RDM", "SML", "ROM", "RDT", "LOM")
 
 StateHook = Callable[[dict[str, Any]], None]
 
@@ -35,13 +45,75 @@ def is_motion(model: str) -> bool:
     return any(token in text for token in ("motion", "vallhorn", "occupancy"))
 
 
-def is_lamp(model: str) -> bool:
+def is_hue_lamp(model: str, manufacturer: str = "") -> bool:
+    text = (model or "").strip()
+    upper = text.upper()
+    if any(upper.startswith(prefix) for prefix in HUE_NOT_LAMP_PREFIXES):
+        return False
+    lowered = text.lower()
+    if any(token in lowered for token in ("dimmer", "motion", "tap", "switch", "outlet")):
+        return False
+    mfr = (manufacturer or "").lower()
+    if "philips" in mfr or "signify" in mfr:
+        return True
+    return any(upper.startswith(prefix) for prefix in HUE_LAMP_PREFIXES)
+
+
+def is_lamp(model: str, manufacturer: str = "") -> bool:
     if is_motion(model):
         return False
+    if is_hue_lamp(model, manufacturer):
+        return True
     text = (model or "").lower()
     if "dimmer" in text or "rodret" in text or "styrbar" in text:
         return False
     return any(token in text for token in ("bulb", "driver", "led", "lamp", "stoftmoln", "gu10", "e27", "e14"))
+
+
+def adopt_lamp_id(
+    model: str,
+    manufacturer: str,
+    ieee: str,
+    devices: list[dict[str, Any]],
+) -> str | None:
+    """Map a newly interviewed device to seng, toilet or loft. Never steal a taken IEEE."""
+    if ieee == KNOWN_SENG:
+        return "seng"
+    if ieee == KNOWN_TOILET:
+        return "toilet"
+    if ieee == KNOWN_RODRET:
+        return None
+    by_ieee = next((d for d in devices if d.get("ieee") == ieee), None)
+    if by_ieee:
+        return str(by_ieee.get("id") or "") or None
+    if is_hue_lamp(model, manufacturer):
+        loft = next((d for d in devices if d.get("id") == "loft"), None)
+        if loft and loft.get("ieee") and loft["ieee"] != ieee:
+            return None
+        return "loft"
+    if is_lamp(model, manufacturer):
+        toilet = next((d for d in devices if d.get("id") == "toilet"), None)
+        if toilet and toilet.get("ieee") and toilet["ieee"] != ieee:
+            return None
+        return "toilet"
+    return None
+
+
+def light_endpoint(device: Any) -> Any:
+    from zigpy.zcl.clusters.general import OnOff
+
+    endpoints = getattr(device, "endpoints", None) or {}
+    found: list[tuple[int, Any]] = []
+    for epid, ep in endpoints.items():
+        if epid == 0:
+            continue
+        clusters = getattr(ep, "in_clusters", None) or {}
+        if OnOff.cluster_id in clusters:
+            found.append((int(epid), ep))
+    if not found:
+        raise RuntimeError("ingen on/off-endpoint")
+    found.sort(key=lambda item: item[0])
+    return found[0][1]
 
 
 def public_state(
@@ -128,20 +200,18 @@ class ZigbeeHub:
         app.add_listener(_JoinWatch(self))
         import garden_lights
 
+        garden_lights.upsert_device(id="loft", name="Loft", protocol="zigbee")
         for dev in garden_lights.configured_devices():
             if dev.get("id") == "toilet" and dev.get("ieee"):
                 self._toilet_ieee = dev["ieee"]
             if dev.get("sensorIeee"):
                 self._sensor_ieee = dev["sensorIeee"]
+        if not self._toilet_ieee:
+            self._toilet_ieee = KNOWN_TOILET
         for device in app.devices.values():
             model = str(getattr(device, "model", "") or "")
-            ieee = str(device.ieee)
-            if ieee in {KNOWN_SENG, KNOWN_RODRET}:
-                continue
             if is_motion(model):
-                self._sensor_ieee = ieee
-            if is_lamp(model):
-                self._toilet_ieee = ieee
+                self._sensor_ieee = str(device.ieee)
         lights_log.log(
             "zigbee.up",
             channel=int(app.state.network_info.channel),
@@ -150,8 +220,12 @@ class ZigbeeHub:
             sensor=self._sensor_ieee or "",
         )
         for dev in garden_lights.configured_devices():
-            if str(dev.get("protocol") or "") in ("zigbee", "ikea") and dev.get("id"):
-                self.loop.create_task(self._refresh(dev, source="boot"))
+            if str(dev.get("protocol") or "") not in ("zigbee", "ikea") or not dev.get("id"):
+                continue
+            if not dev.get("ieee"):
+                self._publish(public_state(dev, online=False, error="ikke parret"))
+                continue
+            self.loop.create_task(self._refresh(dev, source="boot"))
 
     async def _rediscover_from_coordinator(self) -> None:
         """Ask the dongle who is still on the PAN, then interview anyone we forgot."""
@@ -194,29 +268,30 @@ class ZigbeeHub:
         }
         self.joins.append(record)
         lights_log.log("zigbee.ready", nwk=record["nwk"], model=model, ieee=ieee)
-        if ieee in {KNOWN_SENG, KNOWN_RODRET}:
-            if ieee == KNOWN_SENG:
-                import garden_lights
-
-                seng = next(
-                    (d for d in garden_lights.configured_devices() if d.get("id") == "seng"),
-                    {"id": "seng", "name": "Seng", "protocol": "zigbee", "ieee": ieee},
-                )
-                await self._refresh(seng, source="ready")
-            return
-        if is_lamp(model):
-            self._toilet_ieee = ieee
-            _adopt_toilet(ieee, record["nwk"], self._sensor_ieee)
-            import garden_lights
-
-            toilet = next(
-                (d for d in garden_lights.configured_devices() if d.get("id") == "toilet"),
-                {"id": "toilet", "name": "Toilet", "protocol": "zigbee", "ieee": ieee},
-            )
-            await self._refresh(toilet, source="ready")
-            return
         if is_motion(model):
             self._sensor_ieee = ieee
+        import garden_lights
+
+        light_id = adopt_lamp_id(model, record["manufacturer"], ieee, garden_lights.configured_devices())
+        if not light_id:
+            return
+        fields = {
+            "id": light_id,
+            "name": LAMP_NAMES.get(light_id, light_id.title()),
+            "protocol": "zigbee",
+            "ieee": ieee,
+            "nwk": record["nwk"],
+        }
+        if light_id == "toilet":
+            self._toilet_ieee = ieee
+            if self._sensor_ieee:
+                fields["sensorIeee"] = self._sensor_ieee
+        garden_lights.upsert_device(**fields)
+        adopted = next(
+            (d for d in garden_lights.configured_devices() if d.get("id") == light_id),
+            fields,
+        )
+        await self._refresh(adopted, source="ready")
 
     def _publish(self, state: dict[str, Any]) -> None:
         light_id = str(state.get("id") or "")
@@ -245,7 +320,7 @@ class ZigbeeHub:
         try:
             from zigpy.zcl.clusters.general import LevelControl, OnOff
 
-            ep = device.endpoints[1]
+            ep = light_endpoint(device)
             ep.in_clusters[OnOff.cluster_id].add_listener(_LampWatch(self, light_id, "on_off"))
             level = ep.in_clusters.get(LevelControl.cluster_id)
             if level is not None:
@@ -257,11 +332,12 @@ class ZigbeeHub:
     async def _read_on_level(self, device: Any) -> tuple[bool, int]:
         from zigpy.zcl.clusters.general import LevelControl, OnOff
 
-        onoff = device.endpoints[1].in_clusters[OnOff.cluster_id]
+        ep = light_endpoint(device)
+        onoff = ep.in_clusters[OnOff.cluster_id]
         result = await asyncio.wait_for(onoff.read_attributes(["on_off"], allow_cache=False), 8)
         on = bool(attr_value(result, "on_off", False))
         bri = 100 if on else 0
-        level = device.endpoints[1].in_clusters.get(LevelControl.cluster_id)
+        level = ep.in_clusters.get(LevelControl.cluster_id)
         if level is not None:
             lres = await asyncio.wait_for(
                 level.read_attributes(["current_level"], allow_cache=False), 8
@@ -274,7 +350,7 @@ class ZigbeeHub:
     async def _bind_reports(self, device: Any, light_id: str) -> None:
         from zigpy.zcl.clusters.general import OnOff
 
-        onoff = device.endpoints[1].in_clusters[OnOff.cluster_id]
+        onoff = light_endpoint(device).in_clusters[OnOff.cluster_id]
         try:
             await asyncio.wait_for(onoff.bind(), 8)
             await asyncio.wait_for(onoff.configure_reporting("on_off", 1, 300, 1), 8)
@@ -289,6 +365,10 @@ class ZigbeeHub:
             )
 
     async def _refresh(self, dev: dict[str, Any], *, source: str) -> dict[str, Any]:
+        if not str(dev.get("ieee") or "").strip():
+            state = public_state(dev, online=False, error="ikke parret")
+            self._publish(state)
+            return state
         try:
             device = await self._device(dev)
             self._listen_lamp(device, str(dev.get("id") or ""))
@@ -337,10 +417,13 @@ class ZigbeeHub:
 
         if self._app is None:
             return public_state(dev, online=False, error="zigbee ikke startet")
+        if not str(dev.get("ieee") or "").strip():
+            return public_state(dev, online=False, error="ikke parret")
         light_id = str(dev.get("id") or "")
         try:
             device = await self._device(dev)
-            onoff = device.endpoints[1].in_clusters[OnOff.cluster_id]
+            ep = light_endpoint(device)
+            onoff = ep.in_clusters[OnOff.cluster_id]
             want_on = command.on is not False and not (
                 command.brightness is not None and command.brightness <= 0
             )
@@ -351,7 +434,7 @@ class ZigbeeHub:
                 self._publish(state)
                 return state
             brightness = 100 if command.brightness is None else max(1, min(100, command.brightness))
-            level = device.endpoints[1].in_clusters.get(LevelControl.cluster_id)
+            level = ep.in_clusters.get(LevelControl.cluster_id)
             lights_log.log("zigbee.zcl", id=light_id, cmd="on", brightness=brightness)
             await asyncio.wait_for(onoff.on(), 8)
             if level is not None:
@@ -376,7 +459,11 @@ class ZigbeeHub:
         if ieee not in self._app.devices:
             self._app.add_device(nwk=nwk or 0xE6BF, ieee=ieee)
         device = self._app.get_device(ieee)
-        if not device.is_initialized or 1 not in device.endpoints:
+        if not device.is_initialized:
+            await asyncio.wait_for(device.initialize(), 12)
+        try:
+            light_endpoint(device)
+        except Exception:
             await asyncio.wait_for(device.initialize(), 12)
         return device
 
@@ -422,21 +509,6 @@ class _LampWatch:
             except (TypeError, ValueError):
                 return
             self.hub.note_report(self.light_id, brightness=bri)
-
-
-def _adopt_toilet(ieee: str, nwk: str, sensor_ieee: str | None = None) -> None:
-    import garden_lights
-
-    fields = {
-        "id": "toilet",
-        "name": "Toilet",
-        "protocol": "zigbee",
-        "ieee": ieee,
-        "nwk": nwk,
-    }
-    if sensor_ieee:
-        fields["sensorIeee"] = sensor_ieee
-    garden_lights.upsert_device(**fields)
 
 
 _hub: ZigbeeHub | None = None
