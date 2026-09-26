@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+STATIC_ID_REMOTE = "/home/simmoe/HUE_EJDERSTED/static-id"
+_SHA = re.compile(r"^[0-9a-f]{40}$")
 VAULT = Path.home() / "Documents/Git/cursor-global-setup/.cursor-local/vault/secrets.payload.json"
 SITES = {
     "home": {
@@ -183,29 +186,122 @@ def _http(url: str, ctx) -> str:
         return f"FAIL {exc}"
 
 
+def _git(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=check)
+
+
+def _require_published_main() -> str:
+    fetch = _git(["fetch", "origin"], check=False)
+    if fetch.returncode != 0:
+        _die("git fetch origin failed. Not deploying.")
+    head = _git(["rev-parse", "HEAD"]).stdout.strip()
+    origin = _git(["rev-parse", "origin/main"]).stdout.strip()
+    if head != origin:
+        _die(
+            f"HEAD {head[:12]} is not origin/main {origin[:12]}. "
+            "Commit, push, and pull before deploy."
+        )
+    dirty = _git(["status", "--porcelain"]).stdout.strip()
+    if dirty:
+        _die("Working tree is dirty. Commit and push before deploy.")
+    if not _SHA.match(head):
+        _die("HEAD is not a commit sha. Not deploying.")
+    return head
+
+
+def _ssh_text(site: str, remote: str) -> subprocess.CompletedProcess:
+    host = _host(site)
+    if SITES[site]["ssh_auth"] == "password":
+        if not shutil.which("sshpass"):
+            _die("sshpass missing")
+        cmd = [
+            "sshpass",
+            "-p",
+            _pass(site),
+            "ssh",
+            "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=8",
+            host,
+            remote,
+        ]
+    else:
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote]
+    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+
+
+def _remote_static_id(site: str) -> str:
+    result = _ssh_text(site, f"cat {STATIC_ID_REMOTE} 2>/dev/null || true")
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or str(result.returncode)
+        _die(f"{site}: could not read static-id ({detail})")
+    return result.stdout.strip()
+
+
+def _require_hub_ancestor(site: str, head: str) -> None:
+    current = _remote_static_id(site)
+    if not current:
+        print(f"{site} has no static-id. This deploy records {head[:12]}.")
+        return
+    if not _SHA.match(current):
+        _die(f"{site} static-id is not a commit sha. Refusing to overwrite.")
+    if _git(["cat-file", "-t", current], check=False).returncode != 0:
+        _die(f"{site} is on {current[:12]}, which is not in this repo. Fetch before deploy.")
+    if _git(["merge-base", "--is-ancestor", current, head], check=False).returncode != 0:
+        _die(
+            f"{site} is on {current[:12]}, which is not contained in {head[:12]}. "
+            "Merge that work into main before deploy."
+        )
+
+
+def _record_static_id(site: str, head: str) -> None:
+    result = _ssh_text(site, f"printf '%s\\n' {head} > {STATIC_ID_REMOTE}")
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or str(result.returncode)
+        _die(f"{site}: could not write static-id ({detail})")
+
+
+def _guard_deploy(sites: list[str]) -> str:
+    head = _require_published_main()
+    for site in sites:
+        _require_hub_ancestor(site, head)
+    return head
+
+
 def cmd_static(args: list[str]) -> None:
     if not args:
         _die("hubctl static garden|home|both")
+    sites = _sites(args[0])
+    head = _guard_deploy(sites)
     static = ROOT / "backend" / "static"
     if not static.is_dir():
         _die("backend/static missing — build frontend first")
-    for site in _sites(args[0]):
+    for site in sites:
         print(f"→ static {site} {_host(site)}")
         _scp(site, static, "/home/simmoe/HUE_EJDERSTED/backend/")
         _purge_stale_icons(site)
-        print(f"✓ static {site}")
+        _record_static_id(site, head)
+        print(f"✓ static {site} {head[:12]}")
 
 
 def cmd_backend(args: list[str]) -> None:
     if not args:
         _die("hubctl backend garden|home|both")
+    sites = _sites(args[0])
+    head = _guard_deploy(sites)
     backend = ROOT / "backend"
-    for site in _sites(args[0]):
+    for site in sites:
         print(f"→ backend {site} {_host(site)}")
         _scp(site, backend, "/home/simmoe/HUE_EJDERSTED/")
         _purge_stale_icons(site)
+        _record_static_id(site, head)
         _sudo(site, "systemctl restart hue")
-        print(f"✓ backend {site} (hue restart)")
+        print(f"✓ backend {site} {head[:12]} (hue restart)")
 
 
 def cmd_reload(args: list[str]) -> None:

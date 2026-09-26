@@ -1718,6 +1718,16 @@ async def app_config():
     return hub_config.public_config()
 
 
+def _static_id() -> str:
+    """Commit that was last uploaded. hubctl refuses to deploy over a sha this tree does not contain."""
+    path = Path(__file__).resolve().parents[1] / "static-id"
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text if len(text) == 40 and all(c in "0123456789abcdef" for c in text) else ""
+
+
 @app.get("/api/health")
 async def health():
     return {
@@ -1726,6 +1736,7 @@ async def health():
         "cameraMode": hub_config.camera_mode(),
         "gardenUpstreamConfigured": bool(hub_config.garden_hub_url()),
         "release": os.environ.get("HUB_RELEASE", "development"),
+        "staticId": _static_id(),
     }
 
 

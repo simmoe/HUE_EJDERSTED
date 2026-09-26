@@ -19,3 +19,11 @@ say so instead of discovering it with `adb connect`.
 Use `scripts/hubctl` for status, static sync, backend copy, and reload.
 Do not rediscover vault passwords or CDP. Detect the Mac LAN first
 (`site-location`). Simon looks; no Cursor browser QA.
+
+## Deploy gate
+
+`hubctl static` and `hubctl backend` replace the whole tree on the Pi.
+They refuse a dirty working tree, a HEAD that is not `origin/main`, and a
+hub whose `static-id` is not an ancestor of HEAD. Do not scp `backend/static`
+or the backend tree by hand. If the command refuses, commit, push, and merge
+until this checkout contains the hub's id. Then run hubctl again.

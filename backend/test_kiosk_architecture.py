@@ -152,6 +152,7 @@ class CameraBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "cameraMode": "viewer",
                 "gardenUpstreamConfigured": True,
                 "release": "abc123",
+                "staticId": "",
             },
         )
 

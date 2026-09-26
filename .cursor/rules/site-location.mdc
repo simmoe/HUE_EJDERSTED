@@ -28,7 +28,11 @@ The Wi-Fi check is cheap. Matching git and the Pis is not. Do it once per chat, 
 Flag file (gitignored): `.cursor/session-sync.json`
 
 ```json
-{ "commit": "<full HEAD sha>", "hubs": { "home": "<release>", "garden": "<release>" } }
+{
+  "commit": "<full HEAD sha>",
+  "hubs": { "home": "<release>", "garden": "<release>" },
+  "staticId": { "home": "<sha or empty>", "garden": "<sha or empty>" }
+}
 ```
 
 If that file's `commit` is already this checkout's HEAD, do not fetch and do not curl the hubs again this session.
@@ -36,7 +40,9 @@ If that file's `commit` is already this checkout's HEAD, do not fetch and do not
 If the flag is missing or the commit differs:
 
 1. `git fetch` and confirm HEAD equals `origin/main`. Say so if it does not.
-2. Read `release` from `GET /api/health` on both hubs (`scripts/hubctl status`).
-3. Write the flag with HEAD and the two release strings.
+2. Read `release` and `staticId` from `GET /api/health` on both hubs (`scripts/hubctl status`).
+3. Write the flag with HEAD, the two release strings, and the two static ids.
+
+`release` is the Pi's own SHA. `staticId` is the commit whose files the hub is serving. If `staticId` is a sha and `git merge-base --is-ancestor <staticId> HEAD` fails, say so. Do not deploy over it. `hubctl` enforces that on upload.
 
 Do not deploy, reset, or "fix" a mismatch unless Simon asked. The flag only records that this session already looked.
