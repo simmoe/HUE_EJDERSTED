@@ -5,6 +5,7 @@
   import Card from '$lib/Card.svelte';
   import { formatAirLine, type AirStatus } from '$lib/air';
   import { CAMERA_FACING_DOC, parseFacing, type CameraFacing } from '$lib/cameraFacing';
+  import { applyWidestZoom, pickWideBackDeviceId } from '$lib/cameraWide';
   import { store } from '$lib/ws.svelte';
 
   let videoEl = $state<HTMLVideoElement | null>(null);
@@ -143,7 +144,9 @@
   // The kiosk posts every 2 s. Two minutes without a frame means it has left
   // Wi-Fi or died; the card then says so instead of ageing a stale frame.
   const KIOSK_STALE_S = 120;
-  const kioskOffline = $derived(!canPublish && latestAvailable && (latestAge == null || latestAge > KIOSK_STALE_S));
+  const kioskOffline = $derived(
+    (!canPublish || nativePublisher()) && latestAvailable && (latestAge == null || latestAge > KIOSK_STALE_S),
+  );
   const gardenOffline = $derived(
     cameraMode() === 'viewer'
     && viewerReady
@@ -152,7 +155,7 @@
   );
 
   const headerStatus = () => {
-    if (canPublish) return cameraOn ? 'live' : error ? 'fejl' : 'slukket';
+    if (canPublish && !nativePublisher()) return cameraOn ? 'live' : error ? 'fejl' : 'slukket';
     if (!latestAvailable) return 'venter';
     return kioskOffline ? 'kiosk offline' : 'kiosk live';
   };
@@ -160,9 +163,12 @@
   const evidenceUrl = () => latestPresence.lastEvidenceUrl || latestPresence.evidenceUrl || '';
   const presenceState = () => latestPresence.presence || latestPresence.state || 'unknown';
   const cameraMode = () => store.config.camera?.mode ?? (store.config.site === 'garden' ? 'publisher' : 'viewer');
+  // Garden Chrome cannot open the 115° lens. A CameraX service on the A12
+  // publishes; this card only shows the JPEG — same as home.
+  const nativePublisher = () => store.config.site === 'garden' && cameraMode() === 'publisher';
 
   function canExpandPreview(): boolean {
-    if (canPublish) return cameraOn && !!stream;
+    if (canPublish && !nativePublisher()) return cameraOn && !!stream;
     return latestAvailable;
   }
 
@@ -362,6 +368,25 @@
           audio: false,
         });
       }
+      if (facingMode === 'environment' && stream) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const wideId = pickWideBackDeviceId(devices);
+        const currentId = stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+        if (wideId && wideId !== currentId) {
+          try {
+            const wide = await navigator.mediaDevices.getUserMedia({
+              video: { deviceId: { exact: wideId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+              audio: false,
+            });
+            stream.getTracks().forEach((t) => t.stop());
+            stream = wide;
+          } catch {
+            /* keep the environment camera we already have */
+          }
+        }
+        const track = stream.getVideoTracks()[0];
+        if (track) await applyWidestZoom(track);
+      }
       if (videoEl) {
         videoEl.srcObject = stream;
         await videoEl.play().catch(() => undefined);
@@ -486,13 +511,14 @@
   });
 
   $effect(() => {
-    if (cameraMode() === 'publisher' && store.config.features.camera && publisherChecked && facingReady && canPublish && !voiceCaptureActive && !cameraOn && !error) {
+    if (cameraMode() === 'publisher' && store.config.features.camera && publisherChecked && facingReady && canPublish && !nativePublisher() && !voiceCaptureActive && !cameraOn && !error) {
       void openCamera();
     }
   });
 
   $effect(() => {
     const viewer = cameraMode() === 'viewer'
+      || nativePublisher()
       || (cameraMode() === 'publisher' && publisherChecked && !canPublish);
     if (viewer && store.config.features.camera) {
       stopCamera();
@@ -532,7 +558,7 @@
       aria-label={previewOpen ? 'Luk kamerabillede' : 'Vis kamerabillede stort'}
       onclick={togglePreview}
     >
-      {#if canPublish}
+      {#if canPublish && !nativePublisher()}
         <!-- svelte-ignore a11y_media_has_caption -->
         <video
           bind:this={videoEl}
@@ -574,7 +600,7 @@
     <div class="cam-meta">
     {#if !gardenOffline}
       <div class="action-row">
-        {#if canPublish}
+        {#if canPublish && !nativePublisher()}
           <button class="action-btn" onclick={toggleCamera}>
             {cameraOn ? 'stop' : 'start'}
           </button>
@@ -615,7 +641,7 @@
 {#if previewOpen && canExpandPreview()}
   <div class="modal-backdrop preview-backdrop">
     <button type="button" class="preview-frame" aria-label="Luk kamerabillede" onclick={closePreview}>
-      {#if canPublish && stream}
+      {#if canPublish && !nativePublisher() && stream}
         <!-- svelte-ignore a11y_media_has_caption -->
         <video bind:this={modalVideoEl} autoplay playsinline muted></video>
       {:else}

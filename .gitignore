@@ -35,6 +35,12 @@ deploy.*.env
 # TLS certs
 certs/
 
+# Android CameraX publisher (build tree only)
+android/garden-camera/.gradle/
+android/garden-camera/build/
+android/garden-camera/app/build/
+android/garden-camera/local.properties
+
 # Cursor (local editor) — keep shared rules/skills in git
 .cursor/*
 !.cursor/rules/

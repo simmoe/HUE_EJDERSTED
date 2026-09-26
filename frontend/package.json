@@ -13,7 +13,7 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-		"test:playback": "node --experimental-strip-types --test src/lib/playback.test.ts src/lib/air.test.ts src/lib/cameraFacing.test.ts"
+		"test:playback": "node --experimental-strip-types --test src/lib/playback.test.ts src/lib/air.test.ts src/lib/cameraFacing.test.ts src/lib/cameraWide.test.ts"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.0",
