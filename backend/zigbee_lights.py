@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,9 +26,6 @@ def durable_db_path() -> Path:
 DB_PATH = durable_db_path()
 KNOWN_SENG = "34:8d:13:ff:fe:7c:32:59"
 KNOWN_RODRET = "08:fd:52:ff:fe:d3:52:0f"
-SENSOR_AWAKE_S = 90.0
-BIND_RETRY_S = 30.0
-BIND_TRIES = 40
 
 StateHook = Callable[[dict[str, Any]], None]
 
@@ -75,24 +71,6 @@ def public_state(
     }
 
 
-def last_seen_age_s(device: Any, *, now: float | None = None) -> float | None:
-    seen = getattr(device, "last_seen", None)
-    if seen is None:
-        return None
-    if hasattr(seen, "timestamp"):
-        seen = seen.timestamp()
-    try:
-        age = (now if now is not None else time.time()) - float(seen)
-    except (TypeError, ValueError):
-        return None
-    return max(0.0, age)
-
-
-def sensor_is_awake(device: Any, *, max_age_s: float = SENSOR_AWAKE_S, now: float | None = None) -> bool:
-    age = last_seen_age_s(device, now=now)
-    return age is not None and age <= max_age_s
-
-
 def attr_value(result: Any, name: str, default: Any = None) -> Any:
     success = result[0] if isinstance(result, tuple) else result
     if not isinstance(success, dict):
@@ -124,10 +102,6 @@ class ZigbeeHub:
         self._sensor_ieee: str | None = None
         self._on_state: StateHook | None = None
         self._listening: set[str] = set()
-        self._bind_ok = False
-        self._bind_wait_logged = False
-        self._bind_task: asyncio.Task | None = None
-        self._bind_busy = False
 
     async def start(self) -> None:
         from bellows.zigbee.application import ControllerApplication
@@ -166,7 +140,6 @@ class ZigbeeHub:
                 continue
             if is_motion(model):
                 self._sensor_ieee = ieee
-                self._listen_sensor(device)
             if is_lamp(model):
                 self._toilet_ieee = ieee
         lights_log.log(
@@ -176,7 +149,6 @@ class ZigbeeHub:
             toilet=self._toilet_ieee or "",
             sensor=self._sensor_ieee or "",
         )
-        self._bind_task = self.loop.create_task(self._bind_when_awake())
         for dev in garden_lights.configured_devices():
             if str(dev.get("protocol") or "") in ("zigbee", "ikea") and dev.get("id"):
                 self.loop.create_task(self._refresh(dev, source="boot"))
@@ -210,107 +182,6 @@ class ZigbeeHub:
             raise RuntimeError("zigbee ikke startet")
         await self._app.permit(max(1, int(seconds)))
         lights_log.log("zigbee.permit", seconds=int(seconds))
-
-    def _sensor_device(self):
-        from zigpy.types import EUI64
-
-        if self._app is None or not self._sensor_ieee:
-            return None
-        ieee = EUI64.convert(self._sensor_ieee)
-        if ieee not in self._app.devices:
-            return None
-        return self._app.get_device(ieee)
-
-    def _toilet_device(self):
-        from zigpy.types import EUI64
-
-        if self._app is None or not self._toilet_ieee:
-            return None
-        ieee = EUI64.convert(self._toilet_ieee)
-        if ieee not in self._app.devices:
-            return None
-        return self._app.get_device(ieee)
-
-    async def _bind_when_awake(self) -> None:
-        for _ in range(BIND_TRIES):
-            if self._app is None or self._bind_ok:
-                return
-            await self._try_bind_toilet()
-            if self._bind_ok:
-                return
-            await asyncio.sleep(BIND_RETRY_S)
-
-    async def _try_bind_toilet(self) -> bool:
-        if self._bind_ok or self._bind_busy:
-            return self._bind_ok
-        if not (self._sensor_ieee and self._toilet_ieee):
-            return False
-        sensor = self._sensor_device()
-        toilet = self._toilet_device()
-        if sensor is None or toilet is None:
-            if not self._bind_wait_logged:
-                lights_log.log(
-                    "zigbee.bind",
-                    ok=False,
-                    detail="missing device",
-                    sensor=self._sensor_ieee or "",
-                    toilet=self._toilet_ieee or "",
-                )
-                self._bind_wait_logged = True
-            return False
-        if not sensor_is_awake(sensor):
-            if not self._bind_wait_logged:
-                age = last_seen_age_s(sensor)
-                lights_log.log(
-                    "zigbee.bind",
-                    ok=False,
-                    detail="sensor asleep",
-                    age_s=None if age is None else round(age),
-                )
-                self._bind_wait_logged = True
-            return False
-        self._bind_wait_logged = False
-        self._bind_busy = True
-        try:
-            result = await self.bind_on_off(self._sensor_ieee, self._toilet_ieee)
-            ok = bool(result) and all("FAIL" not in part and "missing" not in part for part in result)
-            self._bind_ok = ok
-            lights_log.log("zigbee.bind", ok=ok, result=",".join(result))
-            return ok
-        except Exception as exc:
-            lights_log.log("zigbee.bind", ok=False, detail=str(exc)[:160])
-            return False
-        finally:
-            self._bind_busy = False
-
-    async def bind_on_off(self, source_ieee: str, dest_ieee: str, source_nwk: int | None = None) -> list[str]:
-        from zigpy.types import EUI64
-        from zigpy.zdo.types import MultiAddress
-
-        if self._app is None:
-            raise RuntimeError("zigbee ikke startet")
-        src_ieee = EUI64.convert(source_ieee)
-        dst_ieee = EUI64.convert(dest_ieee)
-        if src_ieee not in self._app.devices:
-            return ["missing-source"]
-        if dst_ieee not in self._app.devices:
-            return ["missing-dest"]
-        src = self._app.get_device(src_ieee)
-        dst_dev = self._app.get_device(dst_ieee)
-        dst = MultiAddress()
-        dst.addrmode = 0x03
-        dst.ieee = dst_dev.ieee
-        dst.endpoint = 1
-        out: list[str] = []
-        for cluster_id, name in ((6, "on_off"), (8, "level")):
-            try:
-                status = await asyncio.wait_for(
-                    src.zdo.Bind_req(src.ieee, 1, cluster_id, dst), 8
-                )
-                out.append(f"{name}:{status}")
-            except Exception as exc:
-                out.append(f"{name}:FAIL:{type(exc).__name__}")
-        return out
 
     async def _on_ready(self, device: Any) -> None:
         model = str(getattr(device, "model", "") or "")
@@ -346,8 +217,6 @@ class ZigbeeHub:
             return
         if is_motion(model):
             self._sensor_ieee = ieee
-            self._listen_sensor(device)
-            await self._try_bind_toilet()
 
     def _publish(self, state: dict[str, Any]) -> None:
         light_id = str(state.get("id") or "")
@@ -384,20 +253,6 @@ class ZigbeeHub:
             self._listening.add(key)
         except Exception as exc:
             lights_log.log("zigbee.listen", id=light_id, ok=False, detail=str(exc)[:160])
-
-    def _listen_sensor(self, device: Any) -> None:
-        key = f"sensor:{device.ieee}"
-        if key in self._listening:
-            return
-        try:
-            ep = device.endpoints.get(1)
-            if ep is None:
-                return
-            for cluster in list(getattr(ep, "in_clusters", {}).values()):
-                cluster.add_listener(_SensorWatch(self))
-            self._listening.add(key)
-        except Exception as exc:
-            lights_log.log("zigbee.listen", id="sensor", ok=False, detail=str(exc)[:160])
 
     async def _read_on_level(self, device: Any) -> tuple[bool, int]:
         from zigpy.zcl.clusters.general import LevelControl, OnOff
@@ -463,9 +318,6 @@ class ZigbeeHub:
             return state
 
     async def stop(self) -> None:
-        if self._bind_task is not None:
-            self._bind_task.cancel()
-            self._bind_task = None
         app = self._app
         self._app = None
         if app is not None:
@@ -570,18 +422,6 @@ class _LampWatch:
             except (TypeError, ValueError):
                 return
             self.hub.note_report(self.light_id, brightness=bri)
-
-
-class _SensorWatch:
-    def __init__(self, hub: ZigbeeHub) -> None:
-        self.hub = hub
-
-    def attribute_updated(self, attrid: Any, value: Any, *args: Any) -> None:
-        lights_log.log("zigbee.report", id="sensor", attrid=attrid, value=value)
-        loop = self.hub.loop
-        if loop is None or self.hub._bind_ok:
-            return
-        loop.create_task(self.hub._try_bind_toilet())
 
 
 def _adopt_toilet(ieee: str, nwk: str, sensor_ieee: str | None = None) -> None:
