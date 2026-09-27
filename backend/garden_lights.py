@@ -290,7 +290,20 @@ def _or_last_good(dev: dict[str, str], failed: dict[str, Any]) -> dict[str, Any]
     return failed
 
 
+def hold_off(dev: dict[str, str]) -> dict[str, Any]:
+    """230 V is out. Keep the last-good copy off so grace cannot resurrect it."""
+    state = public_light(dev, dps={"20": False, "22": 0}, online=True)
+    state["on"] = False
+    state["any_on"] = False
+    state["brightness"] = 0
+    return _remember(state)
+
+
 def read_device(dev: dict[str, str], *, use_grace: bool = True) -> dict[str, Any]:
+    import light_bus
+
+    if light_bus.mains_is_dark():
+        return hold_off(dev)
     protocol = str(dev.get("protocol") or "tuya").strip().lower()
     if protocol in ("zigbee", "ikea"):
         import zigbee_lights

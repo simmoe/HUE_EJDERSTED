@@ -350,6 +350,7 @@ class ZigbeeHub:
             await self._try_bind_toilet()
 
     def _publish(self, state: dict[str, Any]) -> None:
+        state = self._without_mains(state)
         light_id = str(state.get("id") or "")
         if light_id:
             self._cache[light_id] = dict(state)
@@ -471,8 +472,31 @@ class ZigbeeHub:
         if app is not None:
             await app.shutdown()
 
+    def _without_mains(self, state: dict[str, Any]) -> dict[str, Any]:
+        import light_bus
+
+        if not light_bus.mains_is_dark():
+            return state
+        return public_state(
+            {"id": state.get("id"), "name": state.get("name")},
+            on=False,
+            brightness=0,
+            online=True,
+        )
+
+    def hold_off(self, dev: dict[str, Any]) -> dict[str, Any]:
+        state = public_state(dev, on=False, brightness=0, online=True)
+        light_id = str(state.get("id") or "")
+        if light_id:
+            self._cache[light_id] = dict(state)
+        return state
+
     def cached(self, dev: dict[str, Any]) -> dict[str, Any]:
         light_id = str(dev.get("id") or "")
+        import light_bus
+
+        if light_bus.mains_is_dark():
+            return self.hold_off(dev)
         prev = self._cache.get(light_id)
         if prev:
             return dict(prev)
@@ -638,8 +662,18 @@ async def stop() -> None:
         _hub = None
 
 
+def hold_off(dev: dict[str, Any]) -> dict[str, Any]:
+    if _hub is None:
+        return public_state(dev, on=False, brightness=0, online=True)
+    return _hub.hold_off(dev)
+
+
 def public(dev: dict[str, Any]) -> dict[str, Any]:
     if _hub is None:
+        import light_bus
+
+        if light_bus.mains_is_dark():
+            return public_state(dev, on=False, brightness=0, online=True)
         return public_state(dev, online=False, error="zigbee ikke startet")
     return _hub.cached(dev)
 

@@ -169,6 +169,11 @@ Lamps on Fossibot 230 V boot **on**. A rising edge — kiosk tænd or a finger
 on the Fossibot — sweeps the toilet off, so the motion sensor owns it. Seng
 and gårdlys are left as they are.
 
+While Fossibot says 230 V is out, every lamp is held off in the cache. Nothing
+is sent to the bulbs: they have no power, so a command cannot succeed, and a
+later poll or Zigbee report must not put the old "on" back. The flag stays
+until Fossibot reports 230 V on again. A Fossibot miss does not clear it.
+
 Every AC edge, kiosk/REST command, Zigbee read/report and sensor bind is
 logged to `backend/var/lights.jsonl` and journal `[lights]`. Lookup:
 `GET /api/lights/log`. Zigbee on/off on the kiosk is a cluster read (or a

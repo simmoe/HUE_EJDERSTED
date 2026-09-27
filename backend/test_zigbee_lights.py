@@ -52,6 +52,38 @@ class LastSeenTests(unittest.TestCase):
 
 
 class CachedStateTests(unittest.TestCase):
+    def test_report_while_mains_dark_cannot_turn_the_lamp_on(self):
+        import light_bus
+
+        light_bus.set_mains_dark(True)
+        try:
+            hub = zigbee_lights.ZigbeeHub()
+            hub._cache["toilet"] = zigbee_lights.public_state(
+                {"id": "toilet", "name": "Toilet"}, on=True, brightness=80, online=True
+            )
+            hub.note_report("toilet", on=True, brightness=80)
+            state = hub._cache["toilet"]
+            self.assertTrue(state["online"])
+            self.assertFalse(state["on"])
+            self.assertEqual(state["brightness"], 0)
+        finally:
+            light_bus.set_mains_dark(False)
+
+    def test_cached_read_while_mains_dark_is_off(self):
+        import light_bus
+
+        light_bus.set_mains_dark(True)
+        try:
+            hub = zigbee_lights.ZigbeeHub()
+            hub._cache["toilet"] = zigbee_lights.public_state(
+                {"id": "toilet", "name": "Toilet"}, on=True, brightness=40, online=True
+            )
+            state = hub.cached({"id": "toilet", "name": "Toilet"})
+            self.assertFalse(state["on"])
+            self.assertEqual(state["brightness"], 0)
+        finally:
+            light_bus.set_mains_dark(False)
+
     def test_empty_cache_is_unread_not_off(self):
         hub = zigbee_lights.ZigbeeHub()
         hub._app = object()

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import garden_lights
 
@@ -60,6 +61,37 @@ class GardenLightDpsTests(unittest.TestCase):
                 self.assertFalse(state["online"])
             finally:
                 garden_lights.CONFIG_FILE = old
+
+    def test_read_while_mains_dark_does_not_ask_the_bulb(self):
+        import light_bus
+
+        garden_lights.reset_poll_state()
+        garden_lights._remember({
+            "id": "abc",
+            "name": "Flare",
+            "online": True,
+            "on": True,
+            "any_on": True,
+            "brightness": 40,
+        })
+        light_bus.set_mains_dark(True)
+        try:
+            with patch.object(garden_lights, "_bulb") as bulb:
+                state = garden_lights.read_device(
+                    {"id": "abc", "name": "Flare", "localKey": "k", "protocol": "tuya"}
+                )
+            bulb.assert_not_called()
+            self.assertTrue(state["online"])
+            self.assertFalse(state["on"])
+            self.assertEqual(state["brightness"], 0)
+            kept = garden_lights._or_last_good(
+                {"id": "abc"},
+                {"id": "abc", "online": False, "error": "unreachable"},
+            )
+            self.assertFalse(kept["on"])
+        finally:
+            light_bus.set_mains_dark(False)
+            garden_lights.reset_poll_state()
 
     def test_failed_read_keeps_last_good_within_grace(self):
         garden_lights.reset_poll_state()

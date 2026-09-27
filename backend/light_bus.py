@@ -30,6 +30,18 @@ class LightCommand:
 
 OFF = LightCommand(on=False, brightness=0)
 
+# Fossibot has said 230 V is out. Lamps on that circuit are dark; do not ask them.
+_mains_dark = False
+
+
+def mains_is_dark() -> bool:
+    return _mains_dark
+
+
+def set_mains_dark(dark: bool) -> None:
+    global _mains_dark
+    _mains_dark = bool(dark)
+
 
 def should_force_off_after_ac(
     *,
@@ -45,6 +57,19 @@ def protocol_of(dev: dict[str, Any]) -> str:
     return str(dev.get("protocol") or "tuya").strip().lower() or "tuya"
 
 
+def hold_off(dev: dict[str, Any]) -> dict[str, Any]:
+    """Remember the lamp as off. No radio. A dead bulb cannot confirm."""
+    if protocol_of(dev) in ("zigbee", "ikea"):
+        import zigbee_lights
+
+        return zigbee_lights.hold_off(dev)
+    return garden_lights.hold_off(dev)
+
+
+def remember_mains_off() -> list[dict[str, Any]]:
+    return [hold_off(dev) for dev in garden_lights.configured_devices() if dev.get("id")]
+
+
 def apply(
     dev: dict[str, Any],
     command: LightCommand,
@@ -53,6 +78,25 @@ def apply(
     source: str = "unknown",
 ) -> dict[str, Any]:
     light_id = str(dev.get("id") or "")
+    if _mains_dark and light_id:
+        state = hold_off(dev)
+        lights_log.log(
+            "apply",
+            id=light_id,
+            protocol=protocol_of(dev),
+            source=source,
+            on=False,
+            skipped="mains",
+        )
+        lights_log.log(
+            "apply.result",
+            id=light_id,
+            source=source,
+            online=state.get("online"),
+            on=False,
+            brightness=0,
+        )
+        return state
     lights_log.log(
         "apply",
         id=light_id,

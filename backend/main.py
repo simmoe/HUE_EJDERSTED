@@ -348,7 +348,7 @@ async def _fossibot_loop() -> None:
                 http_client=_http,
             )
             await _apply_power_policy(status)
-            _note_ac_edge(status)
+            await _note_ac_edge(status)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -394,12 +394,17 @@ def _zigbee_light_state(state: dict) -> None:
     loop.create_task(manager.broadcast({"type": "lights", "lights": lights_cache}))
 
 
-def _note_ac_edge(status: dict) -> None:
+async def _note_ac_edge(status: dict) -> None:
     global _last_ac_on
     online = bool(status.get("online"))
     ac_on = bool(status.get("acOn"))
     # Any rising edge, including kiosk tænd and a finger on the Fossibot.
     # The toilet boots on; sweep only that lamp so the motion sensor owns it.
+    # A known mains cut is the opposite: the lamps are already off, so say so
+    # here. Asking them would fail, and the last Zigbee read would stay "on".
+    was_dark = light_bus.mains_is_dark()
+    if online:
+        light_bus.set_mains_dark(not ac_on)
     by_rule = bool(power_ctrl and power_ctrl.pressed_recently(power.SOURCE_RULE))
     sweep = light_bus.should_force_off_after_ac(
         ac_was_on=_last_ac_on,
@@ -413,7 +418,13 @@ def _note_ac_edge(status: dict) -> None:
             now=ac_on,
             by_rule=by_rule,
             sweep=sweep,
+            dark=light_bus.mains_is_dark(),
         )
+    if light_bus.mains_is_dark() and not was_dark:
+        for state in light_bus.remember_mains_off():
+            _store_light_state(state)
+        lights_log.log("ac.dark", n=len(lights_cache))
+        await manager.broadcast({"type": "lights", "lights": lights_cache})
     if sweep:
         _start_lights_after_ac()
     if online:

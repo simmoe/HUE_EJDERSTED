@@ -140,7 +140,9 @@ ssh "$PI_HOST" "sudo systemctl restart hue"
 ssh "$PI_HOST" "sudo journalctl -u hue -f"
 ```
 
-**Kiosk URL (Galaxy A12 / Chrome, home)**: `https://192.168.86.16:8443`
+**Kiosk URL (Galaxy A12 / installed Haven app, home)**: `https://ejdersted-home-hub.tail7947c4.ts.net:8443`
+
+The home hub serves a Let's Encrypt cert for that name. The tablet's Wi-Fi DNS is the Pi (`192.168.86.16`), which answers the name. Do not open `https://192.168.86.16:8443` — Chrome will show a name mismatch. Launch the Haven WebAPK (`SameTaskWebApkActivity`), not a Chrome tab, or the fullscreen notice comes back.
 
 **Kiosk URL (garden)**: the MagicDNS URL in `certs/public-url.txt`
 (`https://kolonihave-pi.tail7947c4.ts.net:8443`). Not the LAN IP — the Let's
@@ -166,7 +168,7 @@ adb -s $ADB shell settings put system user_rotation 1
 adb -s $ADB shell settings put global policy_control "immersive.full=com.android.chrome"
 adb -s $ADB shell appops set com.android.systemui SYSTEM_ALERT_WINDOW deny
 adb -s $ADB shell am force-stop com.android.chrome
-adb -s $ADB shell am start -a android.intent.action.VIEW -d "https://192.168.86.16:8443" com.android.chrome
+adb -s $ADB shell am start -n org.chromium.webapk.ac338c95aad86d37b_v2/org.chromium.webapk.shell_apk.h2o.H2OOpaqueMainActivity
 ```
 
 **NB**: Den fysiske volumenknap sidder i klemme pga. kiosk-kabinettet. Kør `SYSTEM_ALERT_WINDOW deny`
@@ -187,7 +189,7 @@ adb -s $ADB shell am start -a android.intent.action.VIEW -d "https://192.168.86.
 - **Uden root**: den eneste pålidelige løsning er at **løsne den fysiske knap** eller **blokere
   input-enheden** (kræver typisk root / specialværktøj).
 
-Første gang skal det self-signed certifikat accepteres i Chrome (Avanceret → Fortsæt).
+Home bruger samme Let's Encrypt-sti som haven. Åbn MagicDNS-navnet, ikke LAN-IP'en.
 
 ---
 

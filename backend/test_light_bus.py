@@ -34,6 +34,30 @@ class AfterAcPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_remember_mains_off_does_not_transmit(self):
+        devices = [
+            {"id": "toilet", "name": "Toilet", "protocol": "tuya", "localKey": "k"},
+            {"id": "seng", "name": "Seng", "protocol": "tuya", "localKey": "k"},
+        ]
+        with patch.object(light_bus.garden_lights, "configured_devices", return_value=devices):
+            with patch.object(light_bus.garden_lights, "set_brightness") as fn:
+                states = light_bus.remember_mains_off()
+        fn.assert_not_called()
+        self.assertEqual([s["id"] for s in states], ["toilet", "seng"])
+        self.assertTrue(all(s["online"] and not s["on"] and s["brightness"] == 0 for s in states))
+
+    def test_apply_while_dark_does_not_transmit(self):
+        light_bus.set_mains_dark(True)
+        try:
+            dev = {"id": "bf1", "name": "Flare", "protocol": "tuya", "localKey": "k"}
+            with patch.object(light_bus.garden_lights, "set_brightness") as fn:
+                state = light_bus.apply(dev, LightCommand(on=True, brightness=80))
+            fn.assert_not_called()
+            self.assertTrue(state["online"])
+            self.assertFalse(state["on"])
+        finally:
+            light_bus.set_mains_dark(False)
+
 
 class ApplyRoutingTests(unittest.TestCase):
     def test_off_uses_tuya_brightness_zero(self):
