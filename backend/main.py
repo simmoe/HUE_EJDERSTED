@@ -36,6 +36,7 @@ import audio_log
 import bo_dlna
 import bo_link
 import player_state
+import podcast_catalog
 import sr
 import audio_targets
 import camera_presence
@@ -925,6 +926,11 @@ async def lifespan(app: FastAPI):
         print(f"[power] policy ready (band={band.off:g}/{band.on:g} %, mode={power_ctrl.mode}, hold={power_ctrl.hold})")
 
     if hub_config.feature_enabled("podcasts"):
+        await podcast_catalog.hydrate(
+            firebase_config=_load_firebase_config(),
+            http_client=_http,
+            force=True,
+        )
         await _hydrate_podcast_from_firestore()
 
     hue_bridge = HueBridge()
@@ -2033,42 +2039,13 @@ async def spotify_playlist_build(data: dict = Body(default_factory=dict)):
     return await spotify.build_playlist_queue((data.get("playlist_uri") or "").strip())
 
 # ─── REST: Podcasts ───────────────────────────────────────────────────────────
-# Kiosk-katalog: hver show har en direkte media-URL (RSS enclosure eller SR-stream).
+# Live-kataloget sidder i Firestore `ejdersted/podcasts`. DEFAULT_SHOWS seeder
+# dokumentet og er fallback hvis Firebase er nede. Kiosken henter GET /api/podcasts.
+# Hvert show har en direkte media-URL (RSS enclosure eller SR-stream).
 # Home spiller den via DLNA på B&O; garden via lokal decoder. Spotify Connect bruges
 # ikke til podcasts — M5 er ikke et Connect-target, og Connect-Computer giver falsk play.
 # Valgfri `spotify_id` er kun alias for gamle kiosk-klienter, ikke en afspilningsvej.
-PODCAST_SHOWS: list[dict] = [
-    {
-        "source": "rss",
-        "id": "fodboldlisten",
-        "fallback_name": "Fodboldlisten",
-        "order": "latest",
-        "spotify_id": "6FVyoDMn4GKxveMegJ2Yih",
-        "feed": "https://api.dr.dk/podcasts/v1/feeds/fodboldlisten.xml?format=podcast",
-    },
-    {
-        "source": "rss",
-        "id": "det-naeste-kapitel",
-        "fallback_name": "Det næste kapitel",
-        "spotify_id": "5d4yba4KbcBTtwZ8glscZZ",
-        "feed": "https://www.omnycontent.com/d/playlist/1283f5f4-2508-4981-a99f-acb500e64dcf/3a33d3f9-b4e2-4e62-96cf-ad0800b1138a/cb87422a-2300-40a2-8fc0-ad0800b11393/podcast.rss",
-    },
-    {"source": "sr", "id": "4914", "fallback_name": "Text och musik med Eric Schüldt"},
-    {"source": "sr", "id": "2488", "fallback_name": "Rendezvous med Kristjan Saag"},
-    {
-        "source": "rss",
-        "id": "magtfuld",
-        "fallback_name": "Magtfuld",
-        "feed": "https://www.omnycontent.com/d/playlist/414edbb4-4b91-4960-8650-ad4000dbc027/da2c3abe-ae37-4c83-bae0-b29500896504/bf710267-fe14-48e8-82f5-b29500896988/podcast.rss",
-    },
-    {
-        "source": "rss",
-        "id": "prompt",
-        "fallback_name": "Prompt",
-        "order": "latest",
-        "feed": "https://api.dr.dk/podcasts/v1/feeds/prompt.xml?format=podcast",
-    },
-]
+PODCAST_SHOWS = podcast_catalog.DEFAULT_SHOWS
 PODCAST_CACHE_TTL = 30 * 60  # 30 min — afsnit udkommer typisk én gang om ugen
 _podcast_cache: list[dict] = []
 _podcast_cache_at: float = 0.0
@@ -2087,11 +2064,12 @@ def _show_key(sh: dict) -> str:
 
 
 def _find_show(show_id: str) -> dict | None:
-    for sh in PODCAST_SHOWS:
+    shows = podcast_catalog.current()
+    for sh in shows:
         if _show_key(sh) == show_id:
             return sh
     # Tolerant fallback: rå ID uden prefix, or a retired Spotify show id.
-    for sh in PODCAST_SHOWS:
+    for sh in shows:
         if sh["id"] == show_id or sh.get("spotify_id") == show_id or sh.get("legacy_spotify_id") == show_id:
             return sh
     return None
@@ -2247,7 +2225,7 @@ def _fill_podcast_identity_from_catalog() -> None:
     title = str(podcast_player_state.get("showTitle") or "").strip().lower()
     if not title:
         return
-    for sh in PODCAST_SHOWS:
+    for sh in podcast_catalog.current():
         if str(sh.get("fallback_name") or "").strip().lower() != title:
             continue
         if not podcast_player_state.get("source"):
@@ -2652,7 +2630,7 @@ def _catalog_prev() -> dict[str, dict]:
 async def _build_podcast_list() -> list[dict]:
     out: list[dict] = []
     prev_rows = _catalog_prev()
-    for sh in PODCAST_SHOWS:
+    for sh in podcast_catalog.current():
         key = _show_key(sh)
         prev = prev_rows.get(key)
         if sh["source"] == "spotify":
@@ -2761,12 +2739,19 @@ async def _build_podcast_list() -> list[dict]:
 
 @app.get("/api/podcasts")
 async def list_podcasts(refresh: int = 0):
-    """Hardkodet liste af podcasts, beriget med cover + seneste afsnit. Cache 30 min."""
+    """Katalog fra Firestore, beriget med cover + seneste afsnit. Cache 30 min."""
     if not hub_config.feature_enabled("podcasts"):
         return []
     global _podcast_cache, _podcast_cache_at
+    before = podcast_catalog.fingerprint()
+    await podcast_catalog.hydrate(
+        firebase_config=_load_firebase_config(),
+        http_client=_http,
+        force=bool(refresh),
+    )
     now = time.time()
-    if refresh or not _podcast_cache or (now - _podcast_cache_at) >= PODCAST_CACHE_TTL:
+    catalog_changed = podcast_catalog.fingerprint() != before
+    if refresh or catalog_changed or not _podcast_cache or (now - _podcast_cache_at) >= PODCAST_CACHE_TTL:
         try:
             _podcast_cache = await _build_podcast_list()
             _podcast_cache_at = now
@@ -2975,7 +2960,7 @@ async def _play_rss_matching_title(title: str, show_hint: str = "") -> tuple[boo
     hint_key = (show_hint or "").strip().lower()
     if not title_key:
         return None
-    for sh in PODCAST_SHOWS:
+    for sh in podcast_catalog.current():
         if sh.get("source") != "rss":
             continue
         keys = _rss_show_keys(sh)
@@ -3535,6 +3520,15 @@ async def set_garden_security_armed(data: dict = Body(default_factory=dict)):
     )
     await manager.broadcast({"type": "security_status", **security})
     return {"ok": True, "security": security}
+
+
+@app.get("/api/security/evidence")
+async def garden_security_evidence_list():
+    if not hub_config.feature_enabled("camera"):
+        return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        return await _garden_camera_json("/api/security/evidence")
+    return {"ok": True, "items": camera_security.list_evidence()}
 
 
 @app.get("/api/security/evidence/{event_id}.jpg")

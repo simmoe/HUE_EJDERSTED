@@ -5,6 +5,11 @@
   import Card from '$lib/Card.svelte';
   import { formatAirLine, type AirStatus } from '$lib/air';
   import { CAMERA_FACING_DOC, parseFacing, type CameraFacing } from '$lib/cameraFacing';
+  import {
+    indexOfEvidence,
+    parseEvidenceList,
+    type EvidenceItem,
+  } from '$lib/cameraEvidence';
   import { applyWidestZoom, pickWideBackDeviceId } from '$lib/cameraWide';
   import { store } from '$lib/ws.svelte';
 
@@ -48,6 +53,9 @@
   };
   let latestPresence = $state<PresenceStatus>({ presence: 'unknown', label: 'Ukendt' });
   let evidenceOpen = $state(false);
+  let evidenceItems = $state<EvidenceItem[]>([]);
+  let evidenceIndex = $state(0);
+  let evidenceSwipeX = 0;
   let previewOpen = $state(false);
   let modalVideoEl = $state<HTMLVideoElement | null>(null);
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
@@ -127,9 +135,9 @@
     return `${Math.round(seconds / 86400)} dage siden`;
   }
 
-  function formatEvidenceStamp(): string {
-    const iso = latestPresence.lastEvidenceAtIso || latestPresence.lastPersonAtIso;
-    const unix = latestPresence.lastEvidenceAt || latestPresence.lastPersonAt;
+  function formatEvidenceStamp(item?: EvidenceItem | null): string {
+    const iso = item?.createdAtIso || latestPresence.lastEvidenceAtIso || latestPresence.lastPersonAtIso;
+    const unix = item?.createdAt || latestPresence.lastEvidenceAt || latestPresence.lastPersonAt;
     const date = iso ? new Date(iso) : unix ? new Date(unix * 1000) : null;
     if (!date || Number.isNaN(date.getTime())) return '';
     return date.toLocaleString('da-DK', {
@@ -139,6 +147,51 @@
       hour: '2-digit',
       minute: '2-digit',
     });
+  }
+
+  const currentEvidence = $derived(evidenceItems[evidenceIndex] ?? null);
+  const currentEvidenceUrl = $derived(currentEvidence?.url || evidenceUrl());
+  const evidenceCount = $derived(evidenceItems.length);
+
+  function openEvidence() {
+    evidenceOpen = true;
+    previewOpen = false;
+    void loadEvidenceList();
+  }
+
+  function closeEvidence() {
+    evidenceOpen = false;
+  }
+
+  function stepEvidence(delta: number) {
+    if (evidenceItems.length < 2) return;
+    evidenceIndex = (evidenceIndex + delta + evidenceItems.length) % evidenceItems.length;
+  }
+
+  async function loadEvidenceList() {
+    const fallback: EvidenceItem[] = evidenceUrl()
+      ? [{ id: 'latest', createdAt: latestPresence.lastEvidenceAt ?? null, createdAtIso: latestPresence.lastEvidenceAtIso, url: evidenceUrl() }]
+      : [];
+    try {
+      const res = await fetch('/api/security/evidence', { cache: 'no-store' });
+      const data = await res.json().catch(() => null);
+      const items = parseEvidenceList(data);
+      evidenceItems = items.length ? items : fallback;
+      evidenceIndex = items.length ? indexOfEvidence(items, evidenceUrl()) : 0;
+    } catch {
+      evidenceItems = fallback;
+      evidenceIndex = 0;
+    }
+  }
+
+  function onEvidencePointerDown(event: PointerEvent) {
+    evidenceSwipeX = event.clientX;
+  }
+
+  function onEvidencePointerUp(event: PointerEvent) {
+    const dx = event.clientX - evidenceSwipeX;
+    if (Math.abs(dx) < 50) return;
+    stepEvidence(dx < 0 ? 1 : -1);
   }
 
   // The kiosk posts every 2 s. Two minutes without a frame means it has left
@@ -496,9 +549,15 @@
   });
 
   $effect(() => {
-    if (!previewOpen) return;
+    if (!previewOpen && !evidenceOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closePreview();
+      if (e.key === 'Escape') {
+        if (evidenceOpen) closeEvidence();
+        else closePreview();
+      }
+      if (evidenceOpen && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        stepEvidence(e.key === 'ArrowLeft' ? -1 : 1);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -579,10 +638,7 @@
             <button
               type="button"
               class="presence-evidence"
-              onclick={() => {
-                evidenceOpen = true;
-                previewOpen = false;
-              }}
+              onclick={openEvidence}
             >sidst hjemme</button>
           {/if}
         </div>
@@ -651,17 +707,40 @@
   </div>
 {/if}
 
-{#if evidenceOpen && evidenceUrl()}
+{#if evidenceOpen && currentEvidenceUrl}
   <div class="modal-backdrop">
-    <button class="modal-underlay" aria-label="Luk evidence" onclick={() => (evidenceOpen = false)}></button>
+    <button class="modal-underlay" aria-label="Luk evidence" onclick={closeEvidence}></button>
     <div class="evidence-modal" role="dialog" aria-modal="true">
-      <div class="evidence-frame">
-        <img src={evidenceUrl()} alt="Evidence fra seneste person-detektion" />
-        {#if formatEvidenceStamp()}
-          <div class="evidence-stamp">{formatEvidenceStamp()}</div>
+      <div
+        class="evidence-frame"
+        onpointerdown={onEvidencePointerDown}
+        onpointerup={onEvidencePointerUp}
+      >
+        <img src={currentEvidenceUrl} alt="Evidence fra person-detektion" />
+        {#if formatEvidenceStamp(currentEvidence) || evidenceCount > 1}
+          <div class="evidence-stamp">
+            {formatEvidenceStamp(currentEvidence)}
+            {#if evidenceCount > 1}
+              <span class="evidence-count">{evidenceIndex + 1} / {evidenceCount}</span>
+            {/if}
+          </div>
+        {/if}
+        {#if evidenceCount > 1}
+          <button
+            type="button"
+            class="evidence-nav prev"
+            aria-label="Nyere billede"
+            onclick={(e) => { e.stopPropagation(); stepEvidence(-1); }}
+          >‹</button>
+          <button
+            type="button"
+            class="evidence-nav next"
+            aria-label="Ældre billede"
+            onclick={(e) => { e.stopPropagation(); stepEvidence(1); }}
+          >›</button>
         {/if}
       </div>
-      <button type="button" class="modal-close" onclick={() => (evidenceOpen = false)}>luk</button>
+      <button type="button" class="modal-close" onclick={closeEvidence}>luk</button>
     </div>
   </div>
 {/if}
@@ -935,6 +1014,7 @@
     position: relative;
     overflow: hidden;
     border-radius: 16px;
+    touch-action: pan-y;
   }
 
   .evidence-modal img {
@@ -957,7 +1037,37 @@
     font-weight: 600;
     letter-spacing: 0.04em;
     pointer-events: none;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
   }
+
+  .evidence-count {
+    opacity: 0.7;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    flex: 0 0 auto;
+  }
+
+  .evidence-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 2;
+    width: 52px;
+    height: 72px;
+    border: 0;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.45);
+    color: #f7f7f7;
+    font-size: 2rem;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .evidence-nav.prev { left: 8px; }
+  .evidence-nav.next { right: 8px; }
 
   .modal-close {
     position: absolute;

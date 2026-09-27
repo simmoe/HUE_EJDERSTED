@@ -30,21 +30,55 @@ class ClassifyIkeaTests(unittest.TestCase):
         self.assertFalse(zigbee_lights.is_lamp("VINDSTYRKA"))
         self.assertFalse(zigbee_lights.is_motion("VINDSTYRKA"))
 
+    def test_hue_product_code_is_lamp(self):
+        self.assertTrue(zigbee_lights.is_lamp("LWA001", "Signify Netherlands B.V."))
+        self.assertTrue(zigbee_lights.is_lamp("LCT015", "Philips"))
+        self.assertTrue(zigbee_lights.is_hue_lamp("LWA001"))
+        self.assertFalse(zigbee_lights.is_lamp("RWL021", "Philips"))
+        self.assertFalse(zigbee_lights.is_hue_lamp("RWL021", "Philips"))
 
-class LastSeenTests(unittest.TestCase):
-    def test_awake_within_window(self):
-        class Device:
-            last_seen = 1000.0
 
-        self.assertTrue(zigbee_lights.sensor_is_awake(Device(), now=1030.0))
-        self.assertFalse(zigbee_lights.sensor_is_awake(Device(), now=1300.0))
+class AdoptLampTests(unittest.TestCase):
+    def test_hue_becomes_loft_and_leaves_toilet(self):
+        devices = [
+            {"id": "toilet", "ieee": zigbee_lights.KNOWN_TOILET},
+            {"id": "seng", "ieee": zigbee_lights.KNOWN_SENG},
+            {"id": "loft", "ieee": ""},
+        ]
+        self.assertEqual(
+            zigbee_lights.adopt_lamp_id("LWA001", "Signify Netherlands B.V.", "00:17:88:01:0b:aa:bb:cc", devices),
+            "loft",
+        )
+        self.assertEqual(
+            zigbee_lights.adopt_lamp_id("STOFTMOLN ceiling/wall lamp WW24", "IKEA", zigbee_lights.KNOWN_TOILET, devices),
+            "toilet",
+        )
 
-    def test_missing_last_seen_is_asleep(self):
-        class Device:
-            last_seen = None
+    def test_second_hue_does_not_steal_loft(self):
+        devices = [{"id": "loft", "ieee": "00:17:88:01:0b:aa:bb:cc"}]
+        self.assertIsNone(
+            zigbee_lights.adopt_lamp_id("LCT015", "Philips", "00:17:88:01:0b:dd:ee:ff", devices)
+        )
 
-        self.assertFalse(zigbee_lights.sensor_is_awake(Device()))
 
+class LightEndpointTests(unittest.TestCase):
+    def test_hue_style_endpoint_11(self):
+        try:
+            from zigpy.zcl.clusters.general import OnOff
+        except ImportError:
+            self.skipTest("zigpy missing")
+
+        class Ep:
+            def __init__(self, clusters):
+                self.in_clusters = clusters
+
+        class Dev:
+            endpoints = {0: Ep({}), 11: Ep({OnOff.cluster_id: object()})}
+
+        self.assertIs(zigbee_lights.light_endpoint(Dev()), Dev.endpoints[11])
+
+
+class AttrValueTests(unittest.TestCase):
     def test_attr_value_reads_name_and_id(self):
         self.assertTrue(zigbee_lights.attr_value(({"on_off": True}, {}), "on_off", False))
         self.assertEqual(zigbee_lights.attr_value({0: 200}, "current_level"), 200)

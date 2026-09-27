@@ -5,9 +5,10 @@ import android.hardware.camera2.CameraManager
 import android.util.Log
 
 object CameraIds {
-    // A12: Camera2/Chrome label camera 2 as "front", but it is the 115° UW.
-    private const val A12_UW = "2"
-    private const val A12_FRONT = "1"
+    // A12 Camera2: 0 = real back (garden). 1 and 2 are both front;
+    // 2 is the wider living-room shot and the one we keep as FRONT.
+    private const val A12_BACK = "0"
+    private const val A12_FRONT = "2"
 
     fun pick(manager: CameraManager, front: Boolean): String? {
         val ids = manager.cameraIdList
@@ -18,17 +19,15 @@ object CameraIds {
             val size = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
             Log.i("GardenCam", "all id=$id facing=$facing focal=$focal px=$size")
         }
-        if (front) {
-            if (ids.contains(A12_FRONT)) return A12_FRONT
-            return ids.firstOrNull { id ->
-                manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
-                    CameraCharacteristics.LENS_FACING_FRONT && id != A12_UW
-            }
+        val want = if (front) A12_FRONT else A12_BACK
+        if (ids.contains(want)) return want
+        val facing = if (front) {
+            CameraCharacteristics.LENS_FACING_FRONT
+        } else {
+            CameraCharacteristics.LENS_FACING_BACK
         }
-        if (ids.contains(A12_UW)) return A12_UW
         return ids.firstOrNull { id ->
-            manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_BACK
+            manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == facing
         }
     }
 }

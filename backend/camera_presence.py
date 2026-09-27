@@ -849,3 +849,32 @@ class CameraPresenceService:
             return None
         path = self.evidence_dir / event_id / "snapshot.jpg"
         return path if path.is_file() else None
+
+    def list_evidence(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        if not self.evidence_dir.is_dir():
+            return items
+        for event_dir in self.evidence_dir.iterdir():
+            if not event_dir.is_dir():
+                continue
+            snap = event_dir / "snapshot.jpg"
+            if not snap.is_file():
+                continue
+            created = None
+            meta = event_dir / "metadata.json"
+            if meta.is_file():
+                try:
+                    payload = json.loads(meta.read_text(encoding="utf-8"))
+                    created = _as_float(payload.get("createdAt"))
+                except (OSError, ValueError, TypeError):
+                    created = None
+            if not created:
+                created = snap.stat().st_mtime
+            items.append({
+                "id": event_dir.name,
+                "createdAt": created,
+                "createdAtIso": _iso(created),
+                "url": f"/api/security/evidence/{event_dir.name}.jpg",
+            })
+        items.sort(key=lambda row: float(row.get("createdAt") or 0), reverse=True)
+        return items
