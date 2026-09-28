@@ -22,8 +22,17 @@ Do not rediscover vault passwords or CDP. Detect the Mac LAN first
 
 ## Deploy gate
 
-`hubctl static` and `hubctl backend` replace the whole tree on the Pi.
-They refuse a dirty working tree, a HEAD that is not `origin/main`, and a
-hub whose `static-id` is not an ancestor of HEAD. Do not scp `backend/static`
-or the backend tree by hand. If the command refuses, commit, push, and merge
-until this checkout contains the hub's id. Then run hubctl again.
+`hubctl static` and `hubctl backend` refuse a dirty working tree, a HEAD that
+is not `origin/main`, and a page whose baked commit is not an ancestor of HEAD.
+
+`hubctl backend` uploads Python only. It does not copy `backend/static` and it
+does not write `static-id`. The live page is `/home/simmoe/HUE_EJDERSTED/served`,
+which a backend copy cannot reach.
+
+`hubctl static` builds into a fresh directory from that commit, stamps the sha
+into `index.html` and `build-id`, and writes `static-id` only after the Pi's
+`build-id` matches HEAD. It never uploads the checkout's `backend/static`.
+
+Do not scp `backend/`, `backend/static`, or `served` by hand. If the command
+refuses, commit, push, and merge until this checkout contains the page's commit.
+Then run hubctl again.

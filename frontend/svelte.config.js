@@ -4,8 +4,10 @@ import adapter from '@sveltejs/adapter-static';
 const config = {
 	kit: {
 		adapter: adapter({
-			pages:  '../backend/static',
-			assets: '../backend/static',
+			// hubctl static sets HUE_STATIC_OUT to a fresh directory. A manual
+			// npm run build still fills backend/static, and hubctl never uploads that folder.
+			pages: process.env.HUE_STATIC_OUT || '../backend/static',
+			assets: process.env.HUE_STATIC_OUT || '../backend/static',
 			fallback: 'index.html',
 			precompress: false,
 		}),

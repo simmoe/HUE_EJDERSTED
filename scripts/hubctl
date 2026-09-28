@@ -5,6 +5,10 @@
   scripts/hubctl static garden|home|both
   scripts/hubctl backend garden|home|both
   scripts/hubctl reload garden|home
+
+backend uploads source only and does not move static-id.
+static builds a fresh page into served/ and stamps static-id only if
+the uploaded build-id matches HEAD.
 """
 
 from __future__ import annotations
@@ -15,12 +19,16 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_ID_REMOTE = "/home/simmoe/HUE_EJDERSTED/static-id"
+# Sibling of backend/. A copy of backend/ cannot replace the page.
+SERVED_REMOTE = "/home/simmoe/HUE_EJDERSTED/served"
+BUILD_ID_NAME = "build-id"
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 VAULT = Path.home() / "Documents/Git/cursor-global-setup/.cursor-local/vault/secrets.payload.json"
 SITES = {
@@ -128,16 +136,6 @@ def _scp(site: str, source: Path, dest: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def _purge_stale_icons(site: str) -> None:
-    _ssh(
-        site,
-        "rm -f /home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon.png "
-        "/home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon-precomposed.png "
-        "/home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon-180x180.png "
-        "/home/simmoe/HUE_EJDERSTED/backend/static/apple-touch-icon-v3.png",
-    )
-
-
 def _sudo(site: str, remote: str) -> None:
     if SITES[site]["ssh_auth"] == "password":
         pw = _pass(site).replace("'", "'\\''")
@@ -181,7 +179,7 @@ def ssl_insecure():
 def _http(url: str, ctx) -> str:
     try:
         with urllib.request.urlopen(url, context=ctx, timeout=8) as res:
-            return res.read().decode()[:400]
+            return res.read().decode()[:800]
     except Exception as exc:
         return f"FAIL {exc}"
 
@@ -243,8 +241,53 @@ def _remote_static_id(site: str) -> str:
     return result.stdout.strip()
 
 
+def stage_backend(source: Path, dest: Path) -> None:
+    """Copy backend source. The page directory is not part of a backend upload."""
+    shutil.copytree(
+        source,
+        dest,
+        ignore=shutil.ignore_patterns("static", "served", "__pycache__", "*.pyc", "var", ".pytest_cache"),
+    )
+    if (dest / "static").exists() or (dest / "served").exists():
+        _die("backend stage contains a page directory. Refusing to upload.")
+
+
+def stamp_build(static_dir: Path, sha: str) -> None:
+    """Write the commit into the build that is about to be uploaded. No other tree."""
+    if not _SHA.match(sha):
+        _die(f"refusing to stamp a build with {sha!r}")
+    index = static_dir / "index.html"
+    if not index.is_file():
+        _die("build has no index.html")
+    text = index.read_text(encoding="utf-8")
+    meta = f'<meta name="hue-build" content="{sha}" />'
+    if 'name="hue-build"' in text:
+        text = re.sub(r'<meta name="hue-build" content="[0-9a-f]{40}"\s*/>', meta, text)
+    elif "<head>" not in text:
+        _die("build index.html has no <head>")
+    else:
+        text = text.replace("<head>", "<head>\n\t\t" + meta, 1)
+    index.write_text(text, encoding="utf-8")
+    (static_dir / BUILD_ID_NAME).write_text(sha + "\n", encoding="utf-8")
+
+
+def page_commit_to_guard(build_id: str, static_id: str) -> str:
+    """The commit baked into the page wins over the stamp file."""
+    build_id = build_id.strip()
+    static_id = static_id.strip()
+    if _SHA.match(build_id):
+        return build_id
+    return static_id
+
+
 def _require_hub_ancestor(site: str, head: str) -> None:
-    current = _remote_static_id(site)
+    build_id = _ssh_text(site, f"cat {SERVED_REMOTE}/{BUILD_ID_NAME} 2>/dev/null || true").stdout
+    if not _SHA.match(build_id.strip()):
+        legacy = _ssh_text(
+            site, f"cat /home/simmoe/HUE_EJDERSTED/backend/static/{BUILD_ID_NAME} 2>/dev/null || true"
+        ).stdout
+        build_id = legacy
+    current = page_commit_to_guard(build_id, _remote_static_id(site))
     if not current:
         print(f"{site} has no static-id. This deploy records {head[:12]}.")
         return
@@ -259,13 +302,6 @@ def _require_hub_ancestor(site: str, head: str) -> None:
         )
 
 
-def _record_static_id(site: str, head: str) -> None:
-    result = _ssh_text(site, f"printf '%s\\n' {head} > {STATIC_ID_REMOTE}")
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip() or str(result.returncode)
-        _die(f"{site}: could not write static-id ({detail})")
-
-
 def _guard_deploy(sites: list[str]) -> str:
     head = _require_published_main()
     for site in sites:
@@ -273,20 +309,79 @@ def _guard_deploy(sites: list[str]) -> str:
     return head
 
 
+def _build_page(head: str) -> Path:
+    """Build the frontend into a new directory. Never reads backend/static."""
+    if not shutil.which("npm"):
+        _die("npm missing. Not building the page.")
+    parent = Path(tempfile.mkdtemp(prefix="hue-static-"))
+    out = parent / "served"
+    out.mkdir()
+    env = os.environ.copy()
+    env["HUE_STATIC_OUT"] = str(out)
+    print(f"→ build {head[:12]} → {out}")
+    subprocess.run(["npm", "run", "build"], cwd=ROOT / "frontend", env=env, check=True)
+    stamp_build(out, head)
+    baked = (out / BUILD_ID_NAME).read_text(encoding="utf-8").strip()
+    if baked != head or f'content="{head}"' not in (out / "index.html").read_text(encoding="utf-8"):
+        _die("build stamp does not match HEAD. Not uploading.")
+    return out
+
+
+def _install_page(site: str, archive: Path, head: str) -> bool:
+    """Swap served/ only after the uploaded build-id matches HEAD.
+
+    Returns whether a page was already being served from served/.
+    static-id is written in the same remote step, after the check.
+    """
+    remote_tar = f"/tmp/hue-served-{head}.tgz"
+    _scp(site, archive, remote_tar)
+    script = f"""set -eu
+base=/home/simmoe/HUE_EJDERSTED
+rm -rf "$base/served.new"
+mkdir -p "$base/served.new"
+tar -xzf {remote_tar} -C "$base/served.new"
+baked=$(tr -d '[:space:]' < "$base/served.new/build-id")
+if [ "$baked" != {head} ]; then
+  rm -rf "$base/served.new"
+  echo "mismatch" >&2
+  exit 1
+fi
+had=0
+if [ -f "$base/served/index.html" ]; then had=1; fi
+rm -rf "$base/served.prev"
+if [ -d "$base/served" ]; then mv "$base/served" "$base/served.prev"; fi
+mv "$base/served.new" "$base/served"
+rm -rf "$base/served.prev"
+printf '%s\\n' {head} > "$base/static-id"
+rm -f {remote_tar}
+echo "had:$had"
+"""
+    result = _ssh_text(site, script)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or str(result.returncode)
+        _die(f"{site}: page was not swapped ({detail}). static-id was not moved.")
+    return "had:1" in result.stdout
+
+
 def cmd_static(args: list[str]) -> None:
     if not args:
         _die("hubctl static garden|home|both")
     sites = _sites(args[0])
     head = _guard_deploy(sites)
-    static = ROOT / "backend" / "static"
-    if not static.is_dir():
-        _die("backend/static missing — build frontend first")
-    for site in sites:
-        print(f"→ static {site} {_host(site)}")
-        _scp(site, static, "/home/simmoe/HUE_EJDERSTED/backend/")
-        _purge_stale_icons(site)
-        _record_static_id(site, head)
-        print(f"✓ static {site} {head[:12]}")
+    out = _build_page(head)
+    archive = out.parent / "page.tgz"
+    try:
+        subprocess.run(["tar", "-C", str(out), "-czf", str(archive), "."], check=True)
+        for site in sites:
+            print(f"→ static {site} {_host(site)} (fresh build)")
+            already = _install_page(site, archive, head)
+            if not already:
+                _sudo(site, "systemctl restart hue")
+                print(f"✓ static {site} {head[:12]} (first served/, hue restart)")
+            else:
+                print(f"✓ static {site} {head[:12]}")
+    finally:
+        shutil.rmtree(out.parent, ignore_errors=True)
 
 
 def cmd_backend(args: list[str]) -> None:
@@ -294,14 +389,17 @@ def cmd_backend(args: list[str]) -> None:
         _die("hubctl backend garden|home|both")
     sites = _sites(args[0])
     head = _guard_deploy(sites)
-    backend = ROOT / "backend"
-    for site in sites:
-        print(f"→ backend {site} {_host(site)}")
-        _scp(site, backend, "/home/simmoe/HUE_EJDERSTED/")
-        _purge_stale_icons(site)
-        _record_static_id(site, head)
-        _sudo(site, "systemctl restart hue")
-        print(f"✓ backend {site} {head[:12]} (hue restart)")
+    parent = Path(tempfile.mkdtemp(prefix="hue-backend-"))
+    stage = parent / "backend"
+    try:
+        stage_backend(ROOT / "backend", stage)
+        for site in sites:
+            print(f"→ backend {site} {_host(site)} (source only)")
+            _scp(site, stage, "/home/simmoe/HUE_EJDERSTED/")
+            _sudo(site, "systemctl restart hue")
+            print(f"✓ backend {site} {head[:12]} (hue restart, page untouched)")
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
 
 
 def cmd_reload(args: list[str]) -> None:

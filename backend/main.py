@@ -62,6 +62,8 @@ BASE_DIR = Path(__file__).parent
 REPO_ROOT = BASE_DIR.parent
 DEVICES_FILE = REPO_ROOT / "devices.json"
 STATIC_DIR = BASE_DIR / "static"
+# The live page. hubctl static is the only writer. A backend copy cannot reach it.
+SERVED_DIR = BASE_DIR.parent / "served"
 HUB_GLOBALS_FILE = REPO_ROOT / "hub_globals.json"
 MULTIAPP_PACKAGE = hub_config.multiapp_package()
 CAMERA_DIR = REPO_ROOT / "runtime" / "camera"
@@ -1735,9 +1737,7 @@ async def app_config():
     return hub_config.public_config()
 
 
-def _static_id() -> str:
-    """Commit that was last uploaded. hubctl refuses to deploy over a sha this tree does not contain."""
-    path = Path(__file__).resolve().parents[1] / "static-id"
+def _sha_file(path: Path) -> str:
     try:
         text = path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -1745,15 +1745,36 @@ def _static_id() -> str:
     return text if len(text) == 40 and all(c in "0123456789abcdef" for c in text) else ""
 
 
+def page_dir() -> Path:
+    """Prefer the directory hubctl static writes. backend/static is the old place."""
+    if (SERVED_DIR / "index.html").is_file():
+        return SERVED_DIR
+    return STATIC_DIR
+
+
+def _static_id() -> str:
+    """Stamp written after a checked static upload. Not proof of the files on disk."""
+    return _sha_file(Path(__file__).resolve().parents[1] / "static-id")
+
+
+def _build_id() -> str:
+    """Commit baked into the page directory. This is the page the process can serve."""
+    return _sha_file(page_dir() / "build-id")
+
+
 @app.get("/api/health")
 async def health():
+    static_id = _static_id()
+    build_id = _build_id()
     return {
         "ok": True,
         "site": hub_config.site(),
         "cameraMode": hub_config.camera_mode(),
         "gardenUpstreamConfigured": bool(hub_config.garden_hub_url()),
         "release": os.environ.get("HUB_RELEASE", "development"),
-        "staticId": _static_id(),
+        "staticId": static_id,
+        "buildId": build_id,
+        "staticMismatch": bool(static_id and build_id and static_id != build_id),
     }
 
 
@@ -3556,7 +3577,7 @@ async def garden_security_evidence(event_id: str):
 
 @app.get("/dashboard")
 async def dashboard_page():
-    dashboard_file = STATIC_DIR / "dashboard.html"
+    dashboard_file = page_dir() / "dashboard.html"
     if dashboard_file.is_file():
         return FileResponse(dashboard_file, media_type="text/html")
     return JSONResponse({"ok": False, "error": "Dashboard not built"}, status_code=404)
@@ -3584,7 +3605,7 @@ _ICON_FILES = (
 def _register_icon_routes() -> None:
     def _make(filename: str, media: str):
         async def handler():
-            target = STATIC_DIR / filename
+            target = page_dir() / filename
             if not target.is_file():
                 return JSONResponse({"ok": False}, status_code=404)
             return FileResponse(target, media_type=media, headers=_ICON_NO_CACHE)
@@ -3615,8 +3636,9 @@ async def _icon_cache_headers(request: Request, call_next):
     return response
 
 # ─── Static files (SvelteKit build) — mount last ──────────────────────────────
-if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+_PAGE = page_dir()
+if _PAGE.exists():
+    app.mount("/", StaticFiles(directory=str(_PAGE), html=True), name="static")
 
 def _tls_cert_paths() -> tuple[Path, Path]:
     """Resolve hub TLS material. Prefer env overrides, then repo certs/."""

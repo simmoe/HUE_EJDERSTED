@@ -153,6 +153,8 @@ class CameraBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "gardenUpstreamConfigured": True,
                 "release": "abc123",
                 "staticId": "",
+                "buildId": "",
+                "staticMismatch": False,
             },
         )
 
