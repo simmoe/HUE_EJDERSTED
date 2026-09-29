@@ -44,6 +44,17 @@ class StampBuildTests(unittest.TestCase):
                 hubctl.stamp_build(page, "not-a-sha")
 
 
+class StampSiteTests(unittest.TestCase):
+    def test_html_root_names_the_hub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index = Path(tmp) / "index.html"
+            index.write_text('<html lang="da"><head></head></html>', encoding="utf-8")
+            hubctl.stamp_site(index, "garden")
+            text = index.read_text(encoding="utf-8")
+            self.assertIn('data-hue-site="garden"', text)
+            self.assertNotIn('data-hue-site="home"', text)
+
+
 class PageCommitTests(unittest.TestCase):
     def test_baked_commit_wins_over_the_stamp(self):
         self.assertEqual(hubctl.page_commit_to_guard(SHA, OTHER), SHA)

@@ -2,6 +2,45 @@
 <html lang="da">
 	<head>
 		<meta charset="utf-8" />
+		<script>
+			(function () {
+				var el = document.documentElement;
+				var baked = el.getAttribute('data-hue-site');
+				if (baked === 'home' || baked === 'garden') return;
+				var host = location.hostname;
+				var garden =
+					host === '192.168.8.133' ||
+					host === '100.111.167.54' ||
+					/kolonihave/i.test(host);
+				el.setAttribute('data-hue-site', garden ? 'garden' : 'home');
+			})();
+		</script>
+		<style>
+			#hue-boot-splash {
+				position: fixed;
+				inset: 0;
+				z-index: 10000;
+				background: #000;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				cursor: pointer;
+				-webkit-tap-highlight-color: transparent;
+			}
+			#hue-boot-splash span {
+				font-size: 1.1rem;
+				font-weight: 300;
+				letter-spacing: 0.35em;
+				text-transform: uppercase;
+				color: #9b9b9b;
+				font-family: Roboto, sans-serif;
+			}
+			html[data-hue-site='garden'] #hue-boot-splash .name-home,
+			html[data-hue-site='home'] #hue-boot-splash .name-garden,
+			html:not([data-hue-site]) #hue-boot-splash .name-garden {
+				display: none;
+			}
+		</style>
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 		<meta name="mobile-web-app-capable" content="yes" />
 		<meta name="apple-mobile-web-app-capable" content="yes" />
@@ -38,6 +77,10 @@
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
+		<div id="hue-boot-splash">
+			<span class="name-garden">HAVEN</span>
+			<span class="name-home">EJDERSTED</span>
+		</div>
 		<div style="display: contents">%sveltekit.body%</div>
 		<script>
 			(function () {

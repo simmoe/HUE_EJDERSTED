@@ -18,7 +18,7 @@ Before the first deploy after 28 Sep 2026, read `docs/til-den-anden-agent.md`. D
 
 `hubctl backend` uploads Python only. It does not copy `backend/static` and it does not write `static-id`. On first backend copy, the Pi copies its live `backend/static` into `served/`. After that, a copy of `backend/` cannot replace the page.
 
-`hubctl static` builds a fresh page from published `main`, stamps the commit into `index.html` and `build-id`, and swaps it onto `served/` only after the uploaded `build-id` matches HEAD. It never uploads the checkout's `backend/static`. It refuses when the live page has no `build-id`, unless `--replace-unstamped` is passed.
+`hubctl static` builds a fresh page from published `main`, stamps the commit into `index.html` and `build-id`, stamps `data-hue-site` so garden paints HAVEN before JS, and swaps it onto `served/` only after the uploaded `build-id` matches HEAD. It never uploads the checkout's `backend/static`. It refuses when the live page has no `build-id`, unless `--replace-unstamped` is passed.
 
 Do not scp `backend/`, `backend/static`, or `served` by hand.
 

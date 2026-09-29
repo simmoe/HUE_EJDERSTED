@@ -261,6 +261,7 @@
   }
 
   onMount(() => {
+    document.getElementById('hue-boot-splash')?.remove();
     syncPageLayout();
     store.connect();
     updateClock();
@@ -1529,7 +1530,7 @@
   <!-- Splash screen for fullscreen entry -->
   {#if showSplash}
     <div class="splash" onclick={dismissSplash} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && dismissSplash()}>
-      <span class="splash-title">{store.config.site === 'garden' ? 'HAVEN' : 'EJDERSTED'}</span>
+      <span class="splash-title">{isGarden() ? 'HAVEN' : 'EJDERSTED'}</span>
     </div>
   {/if}
 

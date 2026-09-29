@@ -143,8 +143,21 @@ export interface HubConfig {
   };
 }
 
+export function bakedHubSite(): 'home' | 'garden' {
+  if (typeof document === 'undefined') return 'home';
+  const attr = document.documentElement.getAttribute('data-hue-site');
+  if (attr === 'garden' || attr === 'home') return attr;
+  if (typeof location !== 'undefined') {
+    const host = location.hostname;
+    if (host === '192.168.8.133' || host === '100.111.167.54' || /kolonihave/i.test(host)) {
+      return 'garden';
+    }
+  }
+  return 'home';
+}
+
 export const defaultHubConfig: HubConfig = {
-  site: 'home',
+  site: bakedHubSite(),
   publicUrl: '',
   features: {
     camera: true,

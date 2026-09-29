@@ -290,6 +290,22 @@ def stage_backend(source: Path, dest: Path) -> None:
         _die("backend stage contains a page directory. Refusing to upload.")
 
 
+def stamp_site(index: Path, site: str) -> None:
+    """Write which hub this page belongs to into the HTML the kiosk paints first."""
+    if site not in {"home", "garden"}:
+        _die(f"refusing to stamp site {site!r}")
+    if not index.is_file():
+        _die("build has no index.html")
+    text = index.read_text(encoding="utf-8")
+    html_tag = re.compile(r"<html\b[^>]*>", re.I)
+    if not html_tag.search(text):
+        _die("build index.html has no <html>")
+    text = html_tag.sub(f'<html lang="da" data-hue-site="{site}">', text, count=1)
+    if f'data-hue-site="{site}"' not in text:
+        _die("site stamp missing from index.html")
+    index.write_text(text, encoding="utf-8")
+
+
 def stamp_build(static_dir: Path, sha: str) -> None:
     """Write the commit into the build that is about to be uploaded. No other tree."""
     if not _SHA.match(sha):
@@ -437,10 +453,15 @@ def cmd_static(args: list[str]) -> None:
     sites, replace_unstamped = _static_args(args)
     head = _guard_deploy(sites, replace_unstamped=replace_unstamped)
     out = _build_page(head)
-    archive = out.parent / "page.tgz"
     try:
-        subprocess.run(["tar", "-C", str(out), "-czf", str(archive), "."], check=True)
         for site in sites:
+            site_dir = out.parent / site
+            if site_dir.exists():
+                shutil.rmtree(site_dir)
+            shutil.copytree(out, site_dir)
+            stamp_site(site_dir / "index.html", site)
+            archive = out.parent / f"page-{site}.tgz"
+            subprocess.run(["tar", "-C", str(site_dir), "-czf", str(archive), "."], check=True)
             print(f"→ static {site} {_host(site)} (fresh build)")
             already = _install_page(site, archive, head)
             if not already:
