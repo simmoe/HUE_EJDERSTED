@@ -358,4 +358,22 @@
       height: 14px;
     }
   }
+
+  /* iPhone portrait only. Landscape kiosk keeps the 40vh dial. */
+  @media (orientation: portrait) {
+    .fossibot {
+      overflow-x: hidden;
+      min-width: 0;
+    }
+    .fossibot-io {
+      column-gap: clamp(12px, 3.5vw, 28px);
+      padding-inline: 0;
+      max-width: 100%;
+      min-width: 0;
+    }
+    .fossibot-dial {
+      width: min(32vw, 22vh, 140px);
+      height: min(32vw, 22vh, 140px);
+    }
+  }
 </style>
