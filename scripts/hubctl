@@ -160,11 +160,13 @@ def _scp(site: str, source: Path, dest: str) -> None:
 
 
 def _sudo(site: str, remote: str) -> None:
-    if SITES[site]["ssh_auth"] == "password":
-        pw = _pass(site).replace("'", "'\\''")
-        _ssh(site, f"echo '{pw}' | sudo -S {remote}")
-    else:
-        _ssh(site, f"sudo {remote}")
+    nopw = _ssh(site, f"sudo -n {remote}", check=False)
+    if nopw.returncode == 0:
+        return
+    if SITES[site]["ssh_auth"] != "password":
+        _die(f"{site}: sudo {remote} failed without a password")
+    pw = _pass(site).replace("'", "'\\''")
+    _ssh(site, f"echo '{pw}' | sudo -S {remote}")
 
 
 def _sites(arg: str) -> list[str]:
