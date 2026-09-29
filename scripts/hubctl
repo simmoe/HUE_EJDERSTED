@@ -34,6 +34,7 @@ SERVED_REMOTE = "/home/simmoe/HUE_EJDERSTED/served"
 BUILD_ID_NAME = "build-id"
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 VAULT = Path.home() / "Documents/Git/cursor-global-setup/.cursor-local/vault/secrets.payload.json"
+HOME_IDENTITY = Path.home() / ".ssh" / "hue_ejdersted_ed25519"
 SITES = {
     "home": {
         "lan": "192.168.86.16",
@@ -89,12 +90,16 @@ def _host(site: str) -> str:
     return f"simmoe@{cfg['lan']}"
 
 
-def _ssh(site: str, remote: str, *, check: bool = True) -> subprocess.CompletedProcess:
+def _home_identity() -> str | None:
+    if HOME_IDENTITY.is_file():
+        return str(HOME_IDENTITY)
+    return None
+
+
+def _ssh_cmd(site: str, remote: str) -> list[str]:
     host = _host(site)
-    if SITES[site]["ssh_auth"] == "password":
-        if not shutil.which("sshpass"):
-            _die("sshpass missing")
-        cmd = [
+    if SITES[site]["ssh_auth"] == "password" and shutil.which("sshpass"):
+        return [
             "sshpass",
             "-p",
             _pass(site),
@@ -110,15 +115,24 @@ def _ssh(site: str, remote: str, *, check: bool = True) -> subprocess.CompletedP
             host,
             remote,
         ]
-    else:
-        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote]
-    return subprocess.run(cmd, check=check)
+    ident = SITES[site].get("identity") or (_home_identity() if site == "home" else None)
+    if SITES[site]["ssh_auth"] == "password" and not ident:
+        _die("sshpass missing")
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+    if ident:
+        cmd += ["-i", ident, "-o", "IdentitiesOnly=yes"]
+    cmd += [host, remote]
+    return cmd
+
+
+def _ssh(site: str, remote: str, *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(_ssh_cmd(site, remote), check=check)
 
 
 def _scp(site: str, source: Path, dest: str) -> None:
     host = _host(site)
     remote = f"{host}:{dest}"
-    if SITES[site]["ssh_auth"] == "password":
+    if SITES[site]["ssh_auth"] == "password" and shutil.which("sshpass"):
         cmd = [
             "sshpass",
             "-p",
@@ -135,7 +149,13 @@ def _scp(site: str, source: Path, dest: str) -> None:
             remote,
         ]
     else:
-        cmd = ["scp", "-o", "BatchMode=yes", "-r", str(source), remote]
+        ident = SITES[site].get("identity") or (_home_identity() if site == "home" else None)
+        if SITES[site]["ssh_auth"] == "password" and not ident:
+            _die("sshpass missing")
+        cmd = ["scp", "-o", "BatchMode=yes", "-r"]
+        if ident:
+            cmd += ["-i", ident, "-o", "IdentitiesOnly=yes"]
+        cmd += [str(source), remote]
     subprocess.run(cmd, check=True)
 
 
@@ -211,29 +231,7 @@ def _require_published_main() -> str:
 
 
 def _ssh_text(site: str, remote: str) -> subprocess.CompletedProcess:
-    host = _host(site)
-    if SITES[site]["ssh_auth"] == "password":
-        if not shutil.which("sshpass"):
-            _die("sshpass missing")
-        cmd = [
-            "sshpass",
-            "-p",
-            _pass(site),
-            "ssh",
-            "-o",
-            "PreferredAuthentications=password",
-            "-o",
-            "PubkeyAuthentication=no",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "ConnectTimeout=8",
-            host,
-            remote,
-        ]
-    else:
-        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote]
-    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+    return subprocess.run(_ssh_cmd(site, remote), check=False, capture_output=True, text=True)
 
 
 def _remote_static_id(site: str) -> str:
