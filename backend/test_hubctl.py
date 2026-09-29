@@ -51,3 +51,44 @@ class PageCommitTests(unittest.TestCase):
     def test_stamp_is_used_when_the_page_has_no_build_id(self):
         self.assertEqual(hubctl.page_commit_to_guard("", OTHER), OTHER)
         self.assertEqual(hubctl.page_commit_to_guard("nope", OTHER), OTHER)
+
+
+class PromoteLivePageTests(unittest.TestCase):
+    def test_copies_the_running_page_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "backend" / "static"
+            src.mkdir(parents=True)
+            (src / "index.html").write_text("live", encoding="utf-8")
+            (src / "chunk.js").write_text("js", encoding="utf-8")
+            self.assertEqual(hubctl.promote_live_page(root), "copied")
+            self.assertEqual((root / "served" / "index.html").read_text(encoding="utf-8"), "live")
+            self.assertEqual((root / "served" / "chunk.js").read_text(encoding="utf-8"), "js")
+            self.assertEqual(hubctl.promote_live_page(root), "exists")
+
+    def test_does_nothing_when_there_is_no_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(hubctl.promote_live_page(Path(tmp)), "none")
+
+
+class UnstampedStaticTests(unittest.TestCase):
+    def test_blocks_an_unstamped_page(self):
+        self.assertTrue(hubctl.unstamped_page_blocks_static("", False))
+        self.assertTrue(hubctl.unstamped_page_blocks_static("nope", False))
+
+    def test_allows_a_baked_commit_or_an_explicit_replace(self):
+        self.assertFalse(hubctl.unstamped_page_blocks_static(SHA, False))
+        self.assertFalse(hubctl.unstamped_page_blocks_static("", True))
+
+
+class StaticArgsTests(unittest.TestCase):
+    def test_flag_is_optional(self):
+        self.assertEqual(hubctl._static_args(["garden"]), (["garden"], False))
+        self.assertEqual(
+            hubctl._static_args(["both", "--replace-unstamped"]),
+            (["home", "garden"], True),
+        )
+
+    def test_unknown_flag_is_refused(self):
+        with self.assertRaises(SystemExit):
+            hubctl._static_args(["garden", "--force"])

@@ -52,14 +52,14 @@ Den nye `hubctl static` uploader aldrig checkoutets `backend/static`. Den bygger
 
 Siden bor i `/home/simmoe/HUE_EJDERSTED/served`, søskende til `backend/`. En kopi af `backend/` kan ikke erstatte den, når processen er den nye og `served/index.html` findes.
 
-`hubctl backend` uploader kun Python. `static/` og `served/` kan ikke komme med. Den skriver ikke `static-id`. Den genstarter hue. Første gang den nye kode starter, og `served/` endnu ikke findes, serverer den stadig `backend/static`.
+`hubctl backend` uploader kun Python. `static/` og `served/` kan ikke komme med. Den skriver ikke `static-id`. Før første genstart kopierer Pi'en sin egen `backend/static` over i `served/`, hvis den mappe mangler. Den genstarter hue. Siden er den, der allerede kørte — ikke et build fra en Mac.
 
-`hubctl static` nægter en dirty tree, en HEAD der ikke er `origin/main`, og en side hvis indbagte commit ikke er stamfar til HEAD. Den bygger til en midlertidig mappe (`HUE_STATIC_OUT`). Den læser ikke `backend/static`. Sha'en skrives ind i `index.html` som `<meta name="hue-build">` og i filen `build-id`. Pi'en pakker ud i `served.new` og flytter den først over `served/`, når `build-id` er identisk med HEAD. `static-id` skrives i samme skridt. Stemmer det ikke, bliver den side der allerede ligger, liggende.
+`hubctl static` nægter en dirty tree, en HEAD der ikke er `origin/main`, og en side hvis indbagte commit ikke er stamfar til HEAD. Den nægter også, når siden ikke har et `build-id`, medmindre `--replace-unstamped` er med. Brug ikke det flag til at «rette» søndagens have-side. Den bygger til en midlertidig mappe (`HUE_STATIC_OUT`). Den læser ikke `backend/static`. Sha'en skrives ind i `index.html` som `<meta name="hue-build">` og i filen `build-id`. Pi'en pakker ud i `served.new` og flytter den først over `served/`, når `build-id` er identisk med HEAD. `static-id` skrives i samme skridt. Stemmer det ikke, bliver den side der allerede ligger, liggende.
 
 Næste deploy læser `served/build-id` før stemplet. Mangler den, bruges `backend/static/build-id`, og ellers stemplet. `/api/health` viser `staticId`, `buildId` og `staticMismatch`. Når de to sha'er er sat og forskellige, er stemplet ikke siden. Tro `buildId`.
 
-Første static-deploy, der opretter `served/`, genstarter hue, fordi processen vælger mappen ved opstart. Senere static-deploys bytter filer i den mappe, den allerede læser, og genstarter ikke. En hue-genstart stopper afspilning i haven.
+Efter `served/` er oprettet af backend-kopien, genstarter første `hubctl static` ikke hue (filerne byttes i den mappe processen allerede læser). En hue-genstart stopper afspilning i haven.
 
-Rækkefølgen, når Simon har sagt hvilken side der skal ud: pull, `hubctl backend` på den hub der skal have koden, derefter `hubctl static` på den hub han har navngivet. Indtil begge er kørt, viser kiosken stadig den gamle `backend/static`.
+Rækkefølgen, når Simon har sagt hvilken *ny* side der skal ud: pull, `hubctl backend` hvis Python skal med, derefter `hubctl static … --replace-unstamped` kun så længe siden mangler `build-id`. Uden flaget nægter kommandoen.
 
 Scp ikke `backend/`, `backend/static` eller `served` selv. Den her Macs `backend/static` er stadig lørdagens build. Lad den ligge.

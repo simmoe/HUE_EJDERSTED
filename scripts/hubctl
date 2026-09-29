@@ -2,13 +2,16 @@
 """Vault-aware hub helpers. Passwords never printed.
 
   scripts/hubctl status
-  scripts/hubctl static garden|home|both
+  scripts/hubctl static garden|home|both [--replace-unstamped]
   scripts/hubctl backend garden|home|both
   scripts/hubctl reload garden|home
 
 backend uploads source only and does not move static-id.
+On first backend copy, the Pi copies its live backend/static into served/
+so a later backend copy cannot replace the page.
 static builds a fresh page into served/ and stamps static-id only if
-the uploaded build-id matches HEAD.
+the uploaded build-id matches HEAD. It refuses when the live page has no
+build-id, unless --replace-unstamped is passed.
 """
 
 from __future__ import annotations
@@ -241,6 +244,41 @@ def _remote_static_id(site: str) -> str:
     return result.stdout.strip()
 
 
+def promote_live_page(root: Path) -> str:
+    """Copy backend/static to served/ if the live page is still in the old place.
+
+    Returns exists, copied, or none. Never writes a fake build-id.
+    """
+    served = root / "served"
+    src = root / "backend" / "static"
+    if (served / "index.html").is_file():
+        return "exists"
+    if not (src / "index.html").is_file():
+        return "none"
+    if served.exists():
+        shutil.rmtree(served)
+    shutil.copytree(src, served)
+    return "copied"
+
+
+def unstamped_page_blocks_static(build_id: str, replace_unstamped: bool) -> bool:
+    """An unstamped page cannot be replaced unless the caller says so."""
+    if _SHA.match(build_id.strip()):
+        return False
+    return not replace_unstamped
+
+
+def _static_args(args: list[str]) -> tuple[list[str], bool]:
+    flags = {a for a in args if a.startswith("--")}
+    positional = [a for a in args if not a.startswith("--")]
+    unknown = flags - {"--replace-unstamped"}
+    if unknown:
+        _die("unknown flag %s" % " ".join(sorted(unknown)))
+    if len(positional) != 1:
+        _die("hubctl static garden|home|both [--replace-unstamped]")
+    return _sites(positional[0]), "--replace-unstamped" in flags
+
+
 def stage_backend(source: Path, dest: Path) -> None:
     """Copy backend source. The page directory is not part of a backend upload."""
     shutil.copytree(
@@ -280,13 +318,18 @@ def page_commit_to_guard(build_id: str, static_id: str) -> str:
     return static_id
 
 
-def _require_hub_ancestor(site: str, head: str) -> None:
+def _require_hub_ancestor(site: str, head: str, *, replace_unstamped: bool | None = None) -> None:
     build_id = _ssh_text(site, f"cat {SERVED_REMOTE}/{BUILD_ID_NAME} 2>/dev/null || true").stdout
     if not _SHA.match(build_id.strip()):
         legacy = _ssh_text(
             site, f"cat /home/simmoe/HUE_EJDERSTED/backend/static/{BUILD_ID_NAME} 2>/dev/null || true"
         ).stdout
         build_id = legacy
+    if replace_unstamped is not None and unstamped_page_blocks_static(build_id, replace_unstamped):
+        _die(
+            f"{site} has no baked build-id. Refusing to replace an unstamped page. "
+            "Pass --replace-unstamped when this commit should become the page."
+        )
     current = page_commit_to_guard(build_id, _remote_static_id(site))
     if not current:
         print(f"{site} has no static-id. This deploy records {head[:12]}.")
@@ -302,11 +345,36 @@ def _require_hub_ancestor(site: str, head: str) -> None:
         )
 
 
-def _guard_deploy(sites: list[str]) -> str:
+def _guard_deploy(sites: list[str], *, replace_unstamped: bool | None = None) -> str:
     head = _require_published_main()
     for site in sites:
-        _require_hub_ancestor(site, head)
+        _require_hub_ancestor(site, head, replace_unstamped=replace_unstamped)
     return head
+
+
+def _promote_remote(site: str) -> str:
+    script = """set -eu
+base=/home/simmoe/HUE_EJDERSTED
+if [ -f "$base/served/index.html" ]; then
+  echo served:exists
+  exit 0
+fi
+if [ ! -f "$base/backend/static/index.html" ]; then
+  echo served:none
+  exit 0
+fi
+rm -rf "$base/served"
+cp -a "$base/backend/static" "$base/served"
+echo served:copied
+"""
+    result = _ssh_text(site, script)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or str(result.returncode)
+        _die(f"{site}: could not move the live page aside ({detail})")
+    text = (result.stdout or "").strip()
+    if "served:" not in text:
+        _die(f"{site}: live page move returned {text!r}")
+    return text
 
 
 def _build_page(head: str) -> Path:
@@ -365,9 +433,9 @@ echo "had:$had"
 
 def cmd_static(args: list[str]) -> None:
     if not args:
-        _die("hubctl static garden|home|both")
-    sites = _sites(args[0])
-    head = _guard_deploy(sites)
+        _die("hubctl static garden|home|both [--replace-unstamped]")
+    sites, replace_unstamped = _static_args(args)
+    head = _guard_deploy(sites, replace_unstamped=replace_unstamped)
     out = _build_page(head)
     archive = out.parent / "page.tgz"
     try:
@@ -396,8 +464,12 @@ def cmd_backend(args: list[str]) -> None:
         for site in sites:
             print(f"→ backend {site} {_host(site)} (source only)")
             _scp(site, stage, "/home/simmoe/HUE_EJDERSTED/")
+            moved = _promote_remote(site)
             _sudo(site, "systemctl restart hue")
-            print(f"✓ backend {site} {head[:12]} (hue restart, page untouched)")
+            if "served:copied" in moved:
+                print(f"✓ backend {site} {head[:12]} (hue restart, live page moved to served/)")
+            else:
+                print(f"✓ backend {site} {head[:12]} (hue restart, page untouched)")
     finally:
         shutil.rmtree(parent, ignore_errors=True)
 

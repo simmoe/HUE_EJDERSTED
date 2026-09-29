@@ -44,6 +44,6 @@ If the flag is missing or the commit differs:
 2. Read `release`, `staticId`, and `buildId` from `GET /api/health` on both hubs (`scripts/hubctl status`).
 3. Write the flag with HEAD, the two release strings, the two stamps, and the two build ids.
 
-`release` is the Pi's own SHA. `buildId` is the commit baked into the page (`served/build-id`). `staticId` is the stamp written after that upload. If `buildId` is set, that is the page: when it is not an ancestor of HEAD, say so and do not deploy. If `staticMismatch` is true, the stamp and the page disagree; trust `buildId`. `hubctl` enforces that on upload.
+`release` is the Pi's own SHA. `buildId` is the commit baked into the page (`served/build-id`). `staticId` is the stamp written after that upload. If `buildId` is set, that is the page: when it is not an ancestor of HEAD, say so and do not deploy. If `buildId` is empty, `hubctl static` refuses unless `--replace-unstamped` is passed; do not pass that flag to repair Sunday's garden overwrite. If `staticMismatch` is true, the stamp and the page disagree; trust `buildId`. `hubctl` enforces that on upload.
 
 Do not deploy, reset, or "fix" a mismatch unless Simon asked. The flag only records that this session already looked.

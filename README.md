@@ -54,7 +54,7 @@ cd frontend
 npm run build
 ```
 
-`frontend/svelte.config.js` writes the static build to `backend/static`, which is served by `backend/main.py`.
+A manual `npm run build` still writes `backend/static`. That folder is not the live page. `hubctl static` builds into a fresh directory and installs `/home/simmoe/HUE_EJDERSTED/served`. `hubctl backend` never uploads `backend/static`.
 
 ## Runtime Config
 

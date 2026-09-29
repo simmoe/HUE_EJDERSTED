@@ -26,12 +26,15 @@ Do not rediscover vault passwords or CDP. Detect the Mac LAN first
 is not `origin/main`, and a page whose baked commit is not an ancestor of HEAD.
 
 `hubctl backend` uploads Python only. It does not copy `backend/static` and it
-does not write `static-id`. The live page is `/home/simmoe/HUE_EJDERSTED/served`,
-which a backend copy cannot reach.
+does not write `static-id`. On first backend copy, the Pi copies its live
+`backend/static` into `/home/simmoe/HUE_EJDERSTED/served`. A later backend copy
+cannot reach that directory.
 
 `hubctl static` builds into a fresh directory from that commit, stamps the sha
 into `index.html` and `build-id`, and writes `static-id` only after the Pi's
 `build-id` matches HEAD. It never uploads the checkout's `backend/static`.
+It refuses when the live page has no `build-id`, unless
+`--replace-unstamped` is passed.
 
 Do not scp `backend/`, `backend/static`, or `served` by hand. If the command
 refuses, commit, push, and merge until this checkout contains the page's commit.
