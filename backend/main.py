@@ -42,6 +42,7 @@ import audio_targets
 import camera_presence
 import fossibot_ble
 import fossibot_log
+import gate_light
 import garden_lights
 import hub_config
 import kiosk_battery
@@ -1514,6 +1515,36 @@ async def hue_pair(data: dict = {}):
         await manager.broadcast({"type": "hue_status", **hue_bridge.status()})
         await manager.broadcast({"type": "hue_rooms", "rooms": rooms})
     return result
+
+
+_gate_scene = 1
+
+
+@app.get("/api/gate/scene")
+async def gate_scene_get():
+    return {"ok": True, "scene": _gate_scene, "scenes": gate_light.SCENES}
+
+
+@app.post("/api/gate/scene")
+async def gate_scene_post(request: Request):
+    global _gate_scene
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        scene = int((body or {}).get("scene"))
+    except (TypeError, ValueError):
+        scene = gate_light.next_scene(_gate_scene)
+    if scene < 1 or scene > gate_light.SCENES:
+        return JSONResponse({"ok": False, "error": "scene"}, status_code=400)
+    try:
+        await asyncio.to_thread(gate_light.mqtt_publish, scene)
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    _gate_scene = scene
+    return {"ok": True, "scene": scene, "scenes": gate_light.SCENES}
 
 
 @app.get("/api/lights")

@@ -38,6 +38,7 @@ HOME_IDENTITY = Path.home() / ".ssh" / "hue_ejdersted_ed25519"
 SITES = {
     "home": {
         "lan": "192.168.86.16",
+        "ts": "100.108.41.111",
         "adb": "192.168.86.15:5555",
         "url": "https://192.168.86.16:8443",
         "ssh_auth": "password",
@@ -83,6 +84,8 @@ def _host(site: str) -> str:
     cfg = SITES[site]
     if site == "home" and ip.startswith("192.168.86."):
         return f"simmoe@{cfg['lan']}"
+    if site == "home":
+        return f"simmoe@{cfg['ts']}"
     if site == "garden" and ip.startswith("192.168.8."):
         return f"simmoe@{cfg['lan']}"
     if site == "garden":
