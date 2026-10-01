@@ -1,4 +1,9 @@
-"""Scenes for the circular gate window. LED 1 and LED 54 meet at the bottom."""
+"""Scenes for the circular gate window. LED 1 and LED 55 meet at the bottom.
+
+The bottom ten LEDs are bare bulbs, five on each side of that seam. They stay
+off. Above them the light fades up both sides and is full across the top.
+Colours stay dark enough that the hue survives the LED.
+"""
 
 import math
 import random
@@ -6,34 +11,37 @@ import time
 from machine import Pin
 from neopixel import NeoPixel
 
-N = 54
+N = 55
 SCENES = 4
 FADE_MS = 1800
+# Distance from the bottom seam, in LED steps. At or below this, the bulb is visible.
+_BARE = 4.5
+# Above this the top is at full strength.
+_TOP = 16.0
 mode = 1
 mqtt_up = False
 _prev = 1
 _mode_at = 0
-_flies = None
+_fly = None
 
-# Ten warm, light colours. These values are the fade's maximum.
+# Saturated, and well below white. The top of the window shows these at full.
 _COLOURS = (
-    (255, 176, 72),
-    (255, 206, 156),
-    (255, 148, 64),
-    (255, 188, 132),
-    (255, 214, 128),
-    (255, 168, 146),
-    (255, 154, 108),
-    (255, 196, 164),
-    (255, 132, 86),
-    (255, 184, 96),
+    (140, 22, 4),
+    (110, 14, 6),
+    (96, 18, 2),
+    (150, 36, 8),
+    (88, 12, 10),
+    (124, 28, 6),
+    (72, 16, 4),
+    (132, 20, 8),
+    (100, 24, 16),
+    (118, 30, 4),
 )
 _FLIES = (
-    (200, 150, 48),
-    (220, 110, 32),
-    (180, 160, 80),
-    (210, 96, 28),
-    (160, 120, 40),
+    (90, 28, 0),
+    (70, 16, 0),
+    (80, 34, 2),
+    (60, 14, 0),
 )
 
 
@@ -69,30 +77,42 @@ def _step(edge0, edge1, x):
     return _smooth((x - edge0) / (edge1 - edge0))
 
 
-def _height(i, drift):
+def _from_seam(i):
+    return min(i + 0.5, N - (i + 0.5))
+
+
+def _shade(i):
+    """0 on the bare bulbs, 1 across the top, a smooth fall down both sides."""
+    d = _from_seam(i)
+    if d <= _BARE:
+        return 0.0
+    if d >= _TOP:
+        return 1.0
+    return _smooth((d - _BARE) / (_TOP - _BARE))
+
+
+def _height(i):
     theta = 2 * math.pi * (i + 0.5) / N
-    h = (1 - math.cos(theta)) / 2 + drift
-    if h < 0:
-        return 0.0, theta
-    if h > 1:
-        return 1.0, theta
-    return h, theta
+    return (1 - math.cos(theta)) / 2, theta
 
 
 def _sunrise(t, buf):
-    # Slow, wide swings. The bottom embers and the top blue breathe; the middle stays dark.
-    breath = 0.5 + 0.5 * math.sin(t * 0.20)
-    drift = 0.05 * math.sin(t * 0.09)
+    # Red stays red, blue stays blue. Slow waves, never pushed up into white.
+    breath = 0.55 + 0.45 * math.sin(t * 0.18)
     for i in range(N):
-        h, theta = _height(i, drift)
-        warm = 1 - _step(0.02, 0.46, h)
-        blue = _step(0.60, 1.0, h)
-        ember = 0.5 + 0.5 * math.sin(t * 0.16 + theta * 2)
-        ring = 0.5 + 0.5 * math.sin(t * 0.33 + theta * 2)
-        lift = 0.5 + 0.5 * math.sin(t * 0.11 + h * 4)
-        level = 0.08 + 0.92 * (breath + ring + lift) / 3
-        wr, wg, wb = 255, 40 + 150 * ember, 8 + 16 * ember
-        br, bg, bb = 40, 86, 156
+        shade = _shade(i)
+        if shade <= 0:
+            buf[i] = (0, 0, 0)
+            continue
+        h, theta = _height(i)
+        warm = 1 - _step(0.18, 0.52, h)
+        blue = _step(0.48, 0.92, h)
+        ember = 0.5 + 0.5 * math.sin(t * 0.15 + theta * 1.4)
+        ring = 0.5 + 0.5 * math.sin(t * 0.27 + theta * 2)
+        level = (0.35 + 0.65 * breath) * (0.55 + 0.45 * ring) * shade
+        # The red they liked, without the bright yellow wash. Blue kept deep.
+        wr, wg, wb = 190, 14 + 18 * ember, 0
+        br, bg, bb = 16, 36, 150
         buf[i] = (
             _clip((wr * warm + br * blue) * level),
             _clip((wg * warm + bg * blue) * level),
@@ -100,42 +120,43 @@ def _sunrise(t, buf):
         )
 
 
-def _spawn(fly, now):
-    fly["pos"] = random.random() * N
-    fly["speed"] = random.choice((-1, 1)) * (0.6 + random.random() * 6.5)
-    fly["life"] = 5.0 + random.random() * 6.0
-    fly["born"] = now
-    fly["rgb"] = _FLIES[random.randrange(len(_FLIES))]
+def _lit_index():
+    while True:
+        i = random.randrange(N)
+        if _from_seam(i) > _BARE + 1:
+            return i
 
 
 def _night(t, buf):
-    global _flies
-    if _flies is None:
-        _flies = []
-        for n in range(5):
-            fly = {}
-            _spawn(fly, t - n * 1.8)
-            _flies.append(fly)
-    acc = [[0, 0, 0] for _ in range(N)]
-    for fly in _flies:
-        age = t - fly["born"]
-        if age >= fly["life"]:
-            _spawn(fly, t)
-            age = 0.0
-        env = math.sin(math.pi * age / fly["life"])
-        env = env * env
-        pos = fly["pos"] + fly["speed"] * age
-        direction = -1 if fly["speed"] >= 0 else 1
-        r, g, b = fly["rgb"]
-        for k, w in enumerate((1.0, 0.42, 0.16, 0.05)):
-            p = pos + direction * k
-            i = int(math.floor(p)) % N
-            gain = env * w
-            acc[i][0] += r * gain
-            acc[i][1] += g * gain
-            acc[i][2] += b * gain
+    # One lamp. It fades in and out, may step a couple of places, then the ring is black.
+    global _fly
     for i in range(N):
-        buf[i] = (_clip(acc[i][0]), _clip(acc[i][1]), _clip(acc[i][2]))
+        buf[i] = (0, 0, 0)
+    if _fly is None:
+        _fly = {"alive": False, "until": t + 2.0}
+    if not _fly["alive"]:
+        if t < _fly["until"]:
+            return
+        direction = random.choice((-1, 1))
+        _fly = {
+            "alive": True,
+            "born": t,
+            "life": 9.0 + random.random() * 7.0,
+            "pos": _lit_index(),
+            "speed": direction * random.choice((0.0, 0.12, 0.18, 0.25)),
+            "rgb": _FLIES[random.randrange(len(_FLIES))],
+        }
+    age = t - _fly["born"]
+    if age >= _fly["life"]:
+        _fly = {"alive": False, "until": t + 4.0 + random.random() * 8.0}
+        return
+    env = math.sin(math.pi * age / _fly["life"])
+    pos = _fly["pos"] + _fly["speed"] * age
+    i = int(round(pos)) % N
+    if _from_seam(i) <= _BARE:
+        return
+    r, g, b = _fly["rgb"]
+    buf[i] = (_clip(r * env), _clip(g * env), _clip(b * env))
 
 
 def _solids(t, buf):
@@ -143,15 +164,14 @@ def _solids(t, buf):
     cycle = t % span
     idx = int(cycle / 10.0) % len(_COLOURS)
     u = (cycle % 10.0) / 10.0
-    # Rise for most of the ten seconds, then ease back to black so the next colour starts dark.
     if u < 0.72:
         k = _step(0.0, 0.72, u)
     else:
         k = 1 - _step(0.72, 1.0, u)
     col = _COLOURS[idx]
-    rgb = (_clip(col[0] * k), _clip(col[1] * k), _clip(col[2] * k))
     for i in range(N):
-        buf[i] = rgb
+        shade = _shade(i) * k
+        buf[i] = (_clip(col[0] * shade), _clip(col[1] * shade), _clip(col[2] * shade))
 
 
 def _off(buf):
