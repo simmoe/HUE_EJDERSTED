@@ -86,8 +86,7 @@ def _host(site: str) -> str:
         return f"simmoe@{cfg['lan']}"
     if site == "home":
         return f"simmoe@{cfg['ts']}"
-    if site == "garden" and ip.startswith("192.168.8."):
-        return f"simmoe@{cfg['lan']}"
+    # The Pi sshd on the garden LAN does not take this Mac's key. Tailscale SSH does.
     if site == "garden":
         return f"simmoe@{cfg['ts']}"
     return f"simmoe@{cfg['lan']}"
