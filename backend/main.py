@@ -1014,6 +1014,7 @@ async def websocket_endpoint(ws: WebSocket):
             "solar": _solar_status(),
             "fossibot": _fossibot_status(),
             "power": _power_status(),
+            "gate": _gate_snapshot(),
         }))
 
         async for text in ws.iter_text():
@@ -1520,9 +1521,25 @@ async def hue_pair(data: dict = {}):
 _gate_scene = 1
 
 
+def _gate_snapshot() -> dict:
+    if hub_config.site() != "garden":
+        return {"scene": _gate_scene, "scenes": gate_light.SCENES, "status": "", "ip": ""}
+    try:
+        ip, mode, mqtt = gate_light.read_gate()
+    except gate_light.GateDown:
+        return {"scene": _gate_scene, "scenes": gate_light.SCENES, "status": "slukket", "ip": ""}
+    return {
+        "scene": mode,
+        "scenes": gate_light.SCENES,
+        "status": "" if mqtt else "mqtt",
+        "ip": ip,
+    }
+
+
 @app.get("/api/gate/scene")
 async def gate_scene_get():
-    return {"ok": True, "scene": _gate_scene, "scenes": gate_light.SCENES}
+    snap = await asyncio.to_thread(_gate_snapshot)
+    return {"ok": True, **snap}
 
 
 @app.post("/api/gate/scene")
@@ -1538,13 +1555,22 @@ async def gate_scene_post(request: Request):
     except (TypeError, ValueError):
         scene = gate_light.next_scene(_gate_scene)
     if scene < 1 or scene > gate_light.SCENES:
-        return JSONResponse({"ok": False, "error": "scene"}, status_code=400)
+        return JSONResponse({"ok": False, "status": "scene"}, status_code=400)
     try:
-        await asyncio.to_thread(gate_light.mqtt_publish, scene)
-    except OSError as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
-    _gate_scene = scene
-    return {"ok": True, "scene": scene, "scenes": gate_light.SCENES}
+        landed = await asyncio.to_thread(gate_light.commit_scene, scene)
+    except gate_light.GateDown:
+        return JSONResponse({"ok": False, "status": "slukket"}, status_code=503)
+    except gate_light.GateMqtt:
+        return JSONResponse({"ok": False, "status": "mqtt"}, status_code=503)
+    _gate_scene = landed["scene"]
+    payload = {
+        "scene": landed["scene"],
+        "scenes": gate_light.SCENES,
+        "status": "",
+        "ip": landed["ip"],
+    }
+    await manager.broadcast({"type": "gate_scene", **payload})
+    return {"ok": True, **payload}
 
 
 @app.get("/api/lights")
