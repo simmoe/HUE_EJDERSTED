@@ -1,4 +1,4 @@
-"""Subscribe to have_laage and switch the scene. Payload is 1, 2, or 3."""
+"""Subscribe to have_laage and switch the scene. Payload is 1, 2, 3, or 4."""
 
 import time
 

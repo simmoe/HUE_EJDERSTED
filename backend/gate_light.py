@@ -7,7 +7,7 @@ import socket
 BROKER = "mqtt.nextservices.dk"
 PORT = 1883
 TOPIC = "have_laage"
-SCENES = 3
+SCENES = 4
 
 
 def next_scene(current: int, scenes: int = SCENES) -> int:

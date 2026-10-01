@@ -3,7 +3,7 @@
   import Card from '$lib/Card.svelte';
 
   let scene = $state(1);
-  let scenes = $state(3);
+  let scenes = $state(4);
   let busy = false;
 
   onMount(() => {

@@ -10,7 +10,7 @@ class GateSceneTests(unittest.TestCase):
         for _ in range(gate_light.SCENES + 1):
             seen.append(scene)
             scene = gate_light.next_scene(scene)
-        self.assertEqual(seen, [1, 2, 3, 1])
+        self.assertEqual(seen, [1, 2, 3, 4, 1])
 
     def test_publish_packet_names_the_topic_and_the_scene(self):
         body = b"have_laage" 

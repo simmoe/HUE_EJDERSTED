@@ -7,7 +7,7 @@ from machine import Pin
 from neopixel import NeoPixel
 
 N = 54
-SCENES = 3
+SCENES = 4
 FADE_MS = 1800
 mode = 1
 mqtt_up = False
@@ -154,11 +154,18 @@ def _solids(t, buf):
         buf[i] = rgb
 
 
+def _off(buf):
+    for i in range(N):
+        buf[i] = (0, 0, 0)
+
+
 def _render(which, t, buf):
     if which == 2:
         _night(t, buf)
     elif which == 3:
         _solids(t, buf)
+    elif which == 4:
+        _off(buf)
     else:
         _sunrise(t, buf)
 
