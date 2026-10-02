@@ -30,6 +30,7 @@ import httpx
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 from zeroconf import ServiceBrowser, Zeroconf
 
 import audio_log
@@ -3663,20 +3664,44 @@ def _register_icon_routes() -> None:
 _register_icon_routes()
 
 
-@app.middleware("http")
-async def _icon_cache_headers(request: Request, call_next):
-    path = request.url.path
-    if path in _STALE_ICON_PATHS:
-        return Response(status_code=404, headers=_ICON_NO_CACHE)
-    response = await call_next(request)
-    if (
-        path.startswith("/favicon")
-        or path.startswith("/haven-icon")
-        or "apple-touch-icon" in path
-    ):
-        response.headers["Cache-Control"] = "no-store, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-    return response
+class _IconCacheMiddleware:
+    """Touch icon headers only. Do not read the body.
+
+    The old HTTP middleware buffered every file, and uvicorn then aborted
+    when that buffer disagreed with Content-Length. The browser was left
+    with a script that ends in the middle.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path") or ""
+        if path in _STALE_ICON_PATHS:
+            await Response(status_code=404, headers=_ICON_NO_CACHE)(scope, receive, send)
+            return
+        if not (
+            path.startswith("/favicon")
+            or path.startswith("/haven-icon")
+            or "apple-touch-icon" in path
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_cached(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["cache-control"] = "no-store, max-age=0"
+                headers["pragma"] = "no-cache"
+            await send(message)
+
+        await self.app(scope, receive, send_cached)
+
+
+app.add_middleware(_IconCacheMiddleware)
 
 # ─── Static files (SvelteKit build) — mount last ──────────────────────────────
 _PAGE = page_dir()
