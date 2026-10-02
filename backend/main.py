@@ -1522,24 +1522,12 @@ _gate_scene = 1
 
 
 def _gate_snapshot() -> dict:
-    if hub_config.site() != "garden":
-        return {"scene": _gate_scene, "scenes": gate_light.SCENES, "status": "", "ip": ""}
-    try:
-        ip, mode, mqtt = gate_light.read_gate()
-    except gate_light.GateDown:
-        return {"scene": _gate_scene, "scenes": gate_light.SCENES, "status": "slukket", "ip": ""}
-    return {
-        "scene": mode,
-        "scenes": gate_light.SCENES,
-        "status": "" if mqtt else "mqtt",
-        "ip": ip,
-    }
+    return {"scene": _gate_scene, "scenes": gate_light.SCENES, "status": "", "ip": ""}
 
 
 @app.get("/api/gate/scene")
 async def gate_scene_get():
-    snap = await asyncio.to_thread(_gate_snapshot)
-    return {"ok": True, **snap}
+    return {"ok": True, **_gate_snapshot()}
 
 
 @app.post("/api/gate/scene")
@@ -1557,17 +1545,15 @@ async def gate_scene_post(request: Request):
     if scene < 1 or scene > gate_light.SCENES:
         return JSONResponse({"ok": False, "status": "scene"}, status_code=400)
     try:
-        landed = await asyncio.to_thread(gate_light.commit_scene, scene)
-    except gate_light.GateDown:
-        return JSONResponse({"ok": False, "status": "slukket"}, status_code=503)
-    except gate_light.GateMqtt:
+        await asyncio.to_thread(gate_light.mqtt_publish, scene)
+    except OSError:
         return JSONResponse({"ok": False, "status": "mqtt"}, status_code=503)
-    _gate_scene = landed["scene"]
+    _gate_scene = scene
     payload = {
-        "scene": landed["scene"],
+        "scene": scene,
         "scenes": gate_light.SCENES,
         "status": "",
-        "ip": landed["ip"],
+        "ip": "",
     }
     await manager.broadcast({"type": "gate_scene", **payload})
     return {"ok": True, **payload}
