@@ -66,6 +66,13 @@ export interface AudioTargetStatus extends AudioTargetSummary {
   error?: string;
 }
 
+export interface GateScene {
+  scene: number;
+  scenes: number;
+  status: string;
+  ip: string;
+}
+
 export type SolarMode = 'auto' | 'on' | 'off';
 
 export interface SolarStatus {
@@ -184,7 +191,8 @@ export const defaultHubConfig: HubConfig = {
 };
 
 type ServerMsg =
-  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus; fossibot?: FossibotStatus; power?: PowerStatus }
+  | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus; fossibot?: FossibotStatus; power?: PowerStatus; gate?: GateScene }
+  | { type: 'gate_scene'; scene: number; scenes: number; status: string; ip: string }
   | ({ type: 'solar_status' } & SolarStatus)
   | ({ type: 'fossibot_status' } & FossibotStatus)
   | ({ type: 'power_status' } & PowerStatus)
@@ -231,6 +239,7 @@ class WSStore {
   solar = $state<SolarStatus>({ enabled: false });
   fossibot = $state<FossibotStatus>({ enabled: false });
   power = $state<PowerStatus>({ hold: null });
+  gate = $state<GateScene>({ scene: 1, scenes: 4, status: '', ip: '' });
   connected = $state(false);
 
   private ws: WebSocket | null = null;
@@ -371,6 +380,15 @@ class WSStore {
         if (msg.solar) this.solar = msg.solar;
         if (msg.fossibot) this.fossibot = msg.fossibot;
         if (msg.power) this.power = msg.power;
+        if (msg.gate) this.gate = msg.gate;
+        break;
+      case 'gate_scene':
+        this.gate = {
+          scene: msg.scene,
+          scenes: msg.scenes,
+          status: msg.status,
+          ip: msg.ip,
+        };
         break;
       case 'solar_status': {
         const { type, ...rest } = msg;

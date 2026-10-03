@@ -11,6 +11,7 @@
   import FossibotCard from '$lib/FossibotCard.svelte';
   import SwitchbotCard from '$lib/SwitchbotCard.svelte';
   import LightsCard from '$lib/LightsCard.svelte';
+  import GateCard from '$lib/GateCard.svelte';
   import CoverArt from '$lib/CoverArt.svelte';
   import { showFeedback } from '$lib/feedback.svelte';
   import {
@@ -2453,6 +2454,9 @@
           </div>
         {/if}
         {:else if enabled('lights')}
+          {#if isGarden()}
+            <GateCard />
+          {/if}
           <LightsCard />
         {/if}
 
