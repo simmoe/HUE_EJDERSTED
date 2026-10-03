@@ -261,6 +261,9 @@
   }
 
   onMount(() => {
+    if (document.documentElement.hasAttribute('data-hue-splash-off')) {
+      showSplash = false;
+    }
     document.getElementById('hue-boot-splash')?.remove();
     syncPageLayout();
     store.connect();
@@ -2524,7 +2527,7 @@
   .splash {
     position: fixed;
     inset: 0;
-    z-index: 1000;
+    z-index: 10001;
     background: #000;
     display: flex;
     align-items: center;
