@@ -1599,7 +1599,7 @@
       <section class="page page--primary-camera">
         <div class="col-header" aria-hidden="true"></div>
         <div class="scroll-inner camera-page">
-          <CameraCard />
+          <CameraCard live={!showSplash && !dimmed} />
         </div>
       </section>
     {/if}
@@ -2474,7 +2474,7 @@
     <section class="page">
       <div class="col-header" aria-hidden="true"></div>
       <div class="scroll-inner camera-page">
-        <CameraCard />
+        <CameraCard live={!showSplash && !dimmed} />
       </div>
     </section>
     {/if}

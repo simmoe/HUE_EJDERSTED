@@ -13,6 +13,8 @@
   import { applyWidestZoom, pickWideBackDeviceId } from '$lib/cameraWide';
   import { store } from '$lib/ws.svelte';
 
+  let { live = true }: { live?: boolean } = $props();
+
   let videoEl = $state<HTMLVideoElement | null>(null);
   let stream = $state<MediaStream | null>(null);
   let cameraOn = $state(false);
@@ -60,6 +62,9 @@
   let modalVideoEl = $state<HTMLVideoElement | null>(null);
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
+  let cardEl = $state<HTMLElement | null>(null);
+  let inView = $state(false);
+  const VIEWER_POLL_MS = 10_000;
   // Garden battery, read through the home hub's proxy. One line under the feed.
   type RemoteBattery = {
     online?: boolean;
@@ -385,7 +390,7 @@
     }
     if (viewerTimer) return;
     void refreshLatestSnapshot();
-    viewerTimer = setInterval(() => void refreshLatestSnapshot(), 2000);
+    viewerTimer = setInterval(() => void refreshLatestSnapshot(), VIEWER_POLL_MS);
   }
 
   function stopViewer() {
@@ -576,12 +581,28 @@
   });
 
   $effect(() => {
+    const el = cardEl;
+    if (!el) return;
+    const root = el.closest('.pages');
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        inView = !!entry?.isIntersecting;
+      },
+      { root: root instanceof Element ? root : null, threshold: 0.35 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  });
+
+  $effect(() => {
     const viewer = cameraMode() === 'viewer'
       || nativePublisher()
       || (cameraMode() === 'publisher' && publisherChecked && !canPublish);
-    if (viewer && store.config.features.camera) {
+    if (viewer && store.config.features.camera && live && inView) {
       stopCamera();
       startViewer();
+    } else {
+      stopViewer();
     }
   });
 
@@ -602,7 +623,7 @@
   status={gardenOffline ? '' : headerStatus()}
   online={!gardenOffline && (cameraOn || (latestAvailable && !kioskOffline))}
 >
-  <div class="cam-stack" class:offline={gardenOffline}>
+  <div class="cam-stack" class:offline={gardenOffline} bind:this={cardEl}>
     {#if gardenOffline}
     <button type="button" class="garden-offline" onclick={retryGarden}>
       haven offline

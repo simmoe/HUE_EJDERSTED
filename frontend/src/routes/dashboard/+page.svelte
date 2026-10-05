@@ -94,7 +94,7 @@
 
   onMount(() => {
     void refreshCamera();
-    pollTimer = setInterval(() => void refreshCamera(), 2000);
+    pollTimer = setInterval(() => void refreshCamera(), 10_000);
   });
 
   onDestroy(() => {

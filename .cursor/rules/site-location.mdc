@@ -18,6 +18,7 @@ ipconfig getifaddr en0
 | SSID `Alohomora` or LAN `192.168.8.x` | Haven (garden) | Pi `192.168.8.133:8443` (Tailscale `100.111.167.54`), kiosk ADB `192.168.8.135:5555` |
 
 - State the site in the first reply. Use that LAN for ADB and kiosk reload; Tailscale is the hop when the other site is needed.
+- Garden Tailscale rides a SIM that can be empty. See `garden-sim-data`. Do not treat a dead hop as a software hang.
 - iPhone hotspot (`172.20.10.x`) or any other SSID is neither. Say so. Do not guess home vs garden.
 - Do not ask Simon "er vi hjemme eller i haven?" until this check has run.
 

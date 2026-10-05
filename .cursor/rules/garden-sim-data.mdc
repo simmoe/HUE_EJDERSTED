@@ -1,0 +1,15 @@
+---
+description: Garden uplink is a finite SIM. Do not burn it, and do not treat Tailscale hangs as a software bug when the SIM is empty.
+alwaysApply: true
+---
+
+# Garden SIM data
+
+Haven's internet is **SIM wifi**. It runs out. That is a stop, not a slow Tailscale hop.
+
+- If garden HTTPS or SSH from off-site hangs or dies, say the SIM may be empty. Do not retry deploy, reload, or "extra check" in a loop. We do not know when data is back.
+- Until it is back, do not plan garden work that needs the live Pi or kiosk.
+- On Alohomora / `192.168.8.x`, stay on LAN. Never send garden-to-garden traffic over Tailscale.
+- Do not design data-heavy garden paths (continuous photos, video, large uploads) across the SIM.
+
+The concrete failure: the phone camera two metres from the Pi uploaded images to that Pi **over Tailscale**, so every frame left the allotment and came back. Same-site hops use the LAN (`192.168.8.133`), not `100.111.167.54`.
