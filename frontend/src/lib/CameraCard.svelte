@@ -34,6 +34,8 @@
   let latestAvailable = $state(false);
   let gardenUnreachable = $state(false);
   let viewerReady = $state(false);
+  let linkMs = $state<number | null>(null);
+  let linkOk = $state(true);
   type PresenceStatus = {
     presence?: string;
     state?: string;
@@ -319,9 +321,12 @@
   }
 
   async function refreshLatestSnapshot() {
+    const started = performance.now();
     try {
       const res = await fetch('/api/camera/status', { cache: 'no-store' });
       const data = await res.json().catch(() => null);
+      linkMs = Math.round(performance.now() - started);
+      linkOk = res.ok;
       gardenUnreachable = !res.ok;
       latestAvailable = !!data?.available;
       latestAge = typeof data?.age === 'number' ? data.age : null;
@@ -330,6 +335,8 @@
         latestImageUrl = `/api/camera/latest.jpg?t=${Date.now()}`;
       }
     } catch {
+      linkMs = Math.round(performance.now() - started);
+      linkOk = false;
       gardenUnreachable = true;
       latestAvailable = false;
       latestAge = null;
@@ -363,7 +370,14 @@
     }
   }
 
+  const LINK_SLOW_MS = 2500;
   const airLine = $derived(formatAirLine(air));
+  const linkLine = $derived.by(() => {
+    if (cameraMode() !== 'viewer') return '';
+    if (!linkOk) return 'alohomora · timeout';
+    if (linkMs != null && linkMs >= LINK_SLOW_MS) return `alohomora · langsom · ${Math.round(linkMs / 100) / 10} s`;
+    return '';
+  });
 
   const batteryLine = $derived.by(() => {
     if (!battery) return '';
@@ -700,6 +714,9 @@
       <div class="publish-status">sidst set {formatAge(latestAge)}</div>
     {:else if latestAge != null}
       <div class="publish-status cam-age">havekiosk · {Math.round(latestAge)} s siden</div>
+    {/if}
+    {#if linkLine}
+      <div class="publish-status">{linkLine}</div>
     {/if}
     {#if batteryLine}
       <div class="publish-status">{batteryLine}</div>
