@@ -230,14 +230,19 @@ class Spotify:
 
     @property
     def connected(self) -> bool:
-        return self.authenticated and not self._cfg.get("auth_error")
+        if not self.authenticated or self._cfg.get("auth_error"):
+            return False
+        expires = float(self._cfg.get("expires_at") or 0)
+        if expires and time.time() >= expires:
+            return False
+        return True
 
     def auth_message(self) -> str:
-        err = str(self._cfg.get("auth_error") or "")
-        if err == "revoked" or not self.authenticated:
+        if not self.connected:
+            err = str(self._cfg.get("auth_error") or "")
+            if err == "unreachable":
+                return "spotify svarede ikke"
             return "spotify ikke forbundet"
-        if err:
-            return "spotify svarede ikke"
         return ""
 
     def _set_auth_error(self, code: str) -> None:
