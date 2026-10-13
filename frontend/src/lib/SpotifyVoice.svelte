@@ -50,8 +50,14 @@
       }
       const data = (await r.json()) as Record<string, unknown>;
       if (data.ok === false) {
+        const reason = typeof data.reason === 'string' ? data.reason : '';
         const query = typeof data.query === 'string' ? data.query.trim() : '';
-        const detail = String(data.error || (query ? `Fandt ikke ${query}` : 'Fandt ikke noget')).trim();
+        const detail = String(
+          data.error
+          || (reason === 'disconnected' ? 'spotify ikke forbundet'
+            : reason === 'unreachable' ? 'spotify svarede ikke'
+            : query ? `Fandt ikke ${query}` : 'Fandt ikke noget'),
+        ).trim();
         showFeedback(detail, { kind: 'error', duration: 7000 });
         return;
       }

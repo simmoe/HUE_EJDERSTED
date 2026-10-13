@@ -201,6 +201,14 @@ def split_title_artist(query: str) -> tuple[str, str] | None:
     return title, artist
 
 
+def voice_search_error(reason: str, query: str = "") -> dict:
+    if reason == "disconnected":
+        return {"action": "search", "ok": False, "error": "spotify ikke forbundet", "reason": "disconnected"}
+    if reason == "unreachable":
+        return {"action": "search", "ok": False, "error": "spotify svarede ikke", "reason": "unreachable"}
+    return {"action": "search", "ok": False, "query": query, "error": f"Fandt ikke {query}", "reason": "empty"}
+
+
 class Spotify:
     def __init__(self):
         self._cfg = _load()
@@ -219,6 +227,30 @@ class Spotify:
     @property
     def authenticated(self) -> bool:
         return bool(self._cfg.get("refresh_token"))
+
+    @property
+    def connected(self) -> bool:
+        return self.authenticated and not self._cfg.get("auth_error")
+
+    def auth_message(self) -> str:
+        err = str(self._cfg.get("auth_error") or "")
+        if err == "revoked" or not self.authenticated:
+            return "spotify ikke forbundet"
+        if err:
+            return "spotify svarede ikke"
+        return ""
+
+    def _set_auth_error(self, code: str) -> None:
+        if self._cfg.get("auth_error") == code:
+            return
+        self._cfg["auth_error"] = code
+        _save(self._cfg)
+
+    def _clear_auth_error(self) -> None:
+        if "auth_error" not in self._cfg:
+            return
+        self._cfg.pop("auth_error", None)
+        _save(self._cfg)
 
     @property
     def granted_scope(self) -> str:
@@ -261,6 +293,7 @@ class Spotify:
         self._cfg["expires_at"] = time.time() + data["expires_in"] - 60
         if isinstance(data.get("scope"), str) and data["scope"].strip():
             self._cfg["granted_scope"] = data["scope"].strip()
+        self._cfg.pop("auth_error", None)
         _save(self._cfg)
         return True
 
@@ -276,6 +309,10 @@ class Spotify:
             "client_secret": self._cfg["client_secret"],
         })
         if r.status_code != 200:
+            body = (r.text or "").lower()
+            code = "revoked" if r.status_code == 400 and "invalid_grant" in body else "unreachable"
+            print(f"[Spotify] token refresh failed: HTTP {r.status_code}")
+            self._set_auth_error(code)
             return None
         data = r.json()
         self._cfg["access_token"] = data["access_token"]
@@ -284,6 +321,7 @@ class Spotify:
         self._cfg["expires_at"] = time.time() + data["expires_in"] - 60
         if isinstance(data.get("scope"), str) and data["scope"].strip():
             self._cfg["granted_scope"] = data["scope"].strip()
+        self._cfg.pop("auth_error", None)
         _save(self._cfg)
         return self._cfg["access_token"]
 
@@ -363,14 +401,28 @@ class Spotify:
 
     # ── API calls ─────────────────────────────────────────────────────────────
 
-    async def search(self, query: str, types: str = "track,artist,album,playlist", limit: int = 5) -> dict | None:
+    async def _search(self, query: str, types: str = "track,artist,album,playlist", limit: int = 5) -> tuple[dict | None, str]:
+        """Body on 200, else a reason: disconnected | unreachable."""
         h = await self._headers()
         if not h:
-            return None
-        r = await self._http.get(f"{API}/search", headers=h, params={
-            "q": query, "type": types, "limit": limit, "market": "DK",
-        })
-        return r.json() if r.status_code == 200 else None
+            return None, "disconnected"
+        try:
+            r = await self._http.get(f"{API}/search", headers=h, params={
+                "q": query, "type": types, "limit": limit, "market": "DK",
+            })
+        except httpx.HTTPError:
+            return None, "unreachable"
+        if r.status_code in (401, 403):
+            self._set_auth_error("revoked")
+            return None, "disconnected"
+        if r.status_code != 200:
+            return None, "unreachable"
+        data = r.json() if r.content else {}
+        return (data if isinstance(data, dict) else {}), ""
+
+    async def search(self, query: str, types: str = "track,artist,album,playlist", limit: int = 5) -> dict | None:
+        body, _reason = await self._search(query, types=types, limit=limit)
+        return body
 
     async def play(self, uri: str | None = None, context_uri: str | None = None, device_id: str | None = None) -> bool:
         h = await self._headers()
@@ -1524,17 +1576,31 @@ class Spotify:
         # "keep going by this is the kit" → track:"keep going" artist:"this is the kit".
         # Spotify's free-text search guesses badly at the artist otherwise.
         results = None
+        reason = ""
+
+        async def take(q: str, types: str, limit: int) -> dict | None:
+            nonlocal reason
+            body, why = await self._search(q, types=types, limit=limit)
+            if why:
+                reason = why
+                return None
+            return body
+
         if not force_artist and not force_album:
             split = split_title_artist(query)
             if split:
                 title, artist = split
-                results = await self.search(
-                    f'track:"{title}" artist:"{artist}"', types="track", limit=3
+                results = await take(
+                    f'track:"{title}" artist:"{artist}"', "track", 3
                 )
+                if reason:
+                    return voice_search_error(reason, query)
                 if not ((results or {}).get("tracks") or {}).get("items"):
                     results = None
         if results is None:
-            track_first = await self.search(query, types="track", limit=5)
+            track_first = await take(query, "track", 5)
+            if reason:
+                return voice_search_error(reason, query)
             tracks_only = [
                 x
                 for x in ((track_first or {}).get("tracks") or {}).get("items") or []
@@ -1543,9 +1609,11 @@ class Spotify:
             if tracks_only and pick_best_track(query, tracks_only):
                 results = track_first
             else:
-                results = await self.search(query, types="track,artist,album,playlist", limit=3)
+                results = await take(query, "track,artist,album,playlist", 3)
+                if reason:
+                    return voice_search_error(reason, query)
         if not results:
-            return {"action": "search", "ok": False, "query": query, "error": f"Fandt ikke {query}"}
+            return voice_search_error("empty", query)
 
         tracks = [x for x in (results.get("tracks") or {}).get("items") or [] if isinstance(x, dict) and x.get("uri")]
         artists = [x for x in (results.get("artists") or {}).get("items") or [] if isinstance(x, dict) and x.get("uri")]
@@ -1572,7 +1640,7 @@ class Spotify:
                     "name": track["name"],
                     "artist": ", ".join(a["name"] for a in track.get("artists", [])),
                 }
-            return {"action": "search", "ok": False, "query": query, "error": f"Fandt ikke kunstneren {query}"}
+            return {**voice_search_error("empty", query), "error": f"Fandt ikke kunstneren {query}"}
 
         if force_album and albums:
             inner = await self.build_album_queue_from_album_uri(albums[0]["uri"])
@@ -1628,4 +1696,4 @@ class Spotify:
                 "label": playlists[0].get("name", ""),
             }
 
-        return {"action": "search", "ok": False, "query": query, "error": f"Fandt ikke {query}"}
+        return voice_search_error("empty", query)

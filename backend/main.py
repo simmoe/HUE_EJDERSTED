@@ -1863,7 +1863,12 @@ async def hub_firebase_config():
 async def spotify_status():
     if not hub_config.feature_enabled("spotify"):
         return {"configured": False, "authenticated": False, "disabled": True}
-    return {"configured": spotify.configured, "authenticated": spotify.authenticated}
+    return {
+        "configured": spotify.configured,
+        "authenticated": spotify.authenticated,
+        "connected": spotify.connected,
+        "error": spotify.auth_message(),
+    }
 
 @app.get("/api/spotify/login")
 async def spotify_login():

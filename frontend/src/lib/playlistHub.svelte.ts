@@ -1075,13 +1075,18 @@ function applyVoiceQueue(rows: QTrack[]) {
 export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleResult {
   if (data.ok === false) {
     const query = typeof data.query === 'string' ? data.query.trim() : '';
+    const reason = typeof data.reason === 'string' ? data.reason : '';
     return {
       handled: false,
       error: typeof data.error === 'string' && data.error
         ? data.error
-        : query
-          ? `Fandt ikke ${query}`
-          : 'Fandt ikke noget',
+        : reason === 'disconnected'
+          ? 'spotify ikke forbundet'
+          : reason === 'unreachable'
+            ? 'spotify svarede ikke'
+            : query
+              ? `Fandt ikke ${query}`
+              : 'Fandt ikke noget',
     };
   }
 
