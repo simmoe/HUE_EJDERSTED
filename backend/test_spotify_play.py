@@ -49,6 +49,38 @@ class LibrespotStatusTests(unittest.TestCase):
         )
         self.assertFalse(row["is_playing"])
 
+    def test_clock_past_the_track_is_not_playing(self):
+        row = spotify.librespot_status_to_now_playing(
+            {
+                "paused": False,
+                "stopped": False,
+                "track": {
+                    "uri": "spotify:track:abc",
+                    "name": "Glory",
+                    "position": 374826,
+                    "duration": 231205,
+                },
+            }
+        )
+        self.assertFalse(row["is_playing"])
+        self.assertEqual(row["progress_ms"], 374826)
+
+
+class GardenPlayerStaleTests(unittest.TestCase):
+    def test_dead_a2dp_is_stale(self):
+        self.assertTrue(spotify.garden_player_is_stale({"is_playing": True}, False))
+
+    def test_live_idle_player_is_not_stale(self):
+        self.assertFalse(spotify.garden_player_is_stale(None, True))
+
+    def test_progress_past_the_end_is_stale(self):
+        self.assertTrue(
+            spotify.garden_player_is_stale(
+                {"progress_ms": 374826, "duration_ms": 231205, "is_playing": True},
+                True,
+            )
+        )
+
 
 class FindSpeakerTests(unittest.IsolatedAsyncioTestCase):
     async def test_home_picks_m5_never_phone_or_kiosk(self):

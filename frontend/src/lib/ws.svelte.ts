@@ -66,9 +66,14 @@ export interface AudioTargetStatus extends AudioTargetSummary {
   error?: string;
 }
 
+export type GateMode = 'auto' | 'on' | 'off';
+
 export interface GateScene {
   scene: number;
   scenes: number;
+  mode?: GateMode;
+  on?: boolean;
+  online?: boolean;
   status: string;
   ip: string;
 }
@@ -192,7 +197,7 @@ export const defaultHubConfig: HubConfig = {
 
 type ServerMsg =
   | { type: 'init'; devices: Device[]; volumes: Record<string, VolumeState>; hue_status: HueStatus; hue_rooms: HueRoom[]; lights?: GardenLight[]; now_playing: Record<string, NowPlaying>; config?: HubConfig; solar?: SolarStatus; fossibot?: FossibotStatus; power?: PowerStatus; gate?: GateScene }
-  | { type: 'gate_scene'; scene: number; scenes: number; status: string; ip: string }
+  | { type: 'gate_scene'; scene: number; scenes: number; status: string; ip: string; mode?: GateMode; on?: boolean; online?: boolean }
   | ({ type: 'solar_status' } & SolarStatus)
   | ({ type: 'fossibot_status' } & FossibotStatus)
   | ({ type: 'power_status' } & PowerStatus)
@@ -239,7 +244,7 @@ class WSStore {
   solar = $state<SolarStatus>({ enabled: false });
   fossibot = $state<FossibotStatus>({ enabled: false });
   power = $state<PowerStatus>({ hold: null });
-  gate = $state<GateScene>({ scene: 1, scenes: 4, status: '', ip: '' });
+  gate = $state<GateScene>({ scene: 0, scenes: 3, mode: 'auto', on: false, online: false, status: '', ip: '' });
   connected = $state(false);
 
   private ws: WebSocket | null = null;
@@ -384,10 +389,13 @@ class WSStore {
         break;
       case 'gate_scene':
         this.gate = {
-          scene: msg.scene,
-          scenes: msg.scenes,
-          status: msg.status,
-          ip: msg.ip,
+          scene: typeof msg.scene === 'number' ? msg.scene : this.gate.scene,
+          scenes: typeof msg.scenes === 'number' && msg.scenes > 0 ? msg.scenes : this.gate.scenes,
+          mode: msg.mode ?? this.gate.mode,
+          on: typeof msg.on === 'boolean' ? msg.on : this.gate.on,
+          online: typeof msg.online === 'boolean' ? msg.online : this.gate.online,
+          status: msg.online === false ? 'offline' : msg.status === 'offline' ? 'offline' : '',
+          ip: typeof msg.ip === 'string' ? msg.ip : this.gate.ip,
         };
         break;
       case 'solar_status': {
@@ -471,6 +479,11 @@ class WSStore {
         this.pending.delete(deviceId);
       }, 80)
     );
+  }
+
+  setGateMode(mode: GateMode) {
+    this.gate = { ...this.gate, mode };
+    this.ws?.send(JSON.stringify({ type: 'set_gate_mode', mode }));
   }
 
   setSolarMode(mode: SolarMode) {

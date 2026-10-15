@@ -12,15 +12,15 @@ from machine import Pin
 from neopixel import NeoPixel
 
 N = 55
-SCENES = 4
+SCENES = 3
 FADE_MS = 1800
 # Distance from the bottom seam, in LED steps. At or below this, the bulb is visible.
 _BARE = 4.5
 # Above this the top is at full strength.
 _TOP = 16.0
-mode = 1
+mode = 0
 mqtt_up = False
-_prev = 1
+_prev = 0
 _mode_at = 0
 _fly = None
 
@@ -48,7 +48,9 @@ _FLIES = (
 def set_mode(n):
     global mode, _prev, _mode_at
     n = int(n)
-    if n < 1 or n > SCENES or n == mode:
+    if n == 4:
+        n = 0
+    if n < 0 or n > SCENES or n == mode:
         return
     _prev = mode
     mode = n
@@ -184,7 +186,7 @@ def _render(which, t, buf):
         _night(t, buf)
     elif which == 3:
         _solids(t, buf)
-    elif which == 4:
+    elif which == 0 or which == 4:
         _off(buf)
     else:
         _sunrise(t, buf)

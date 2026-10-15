@@ -56,6 +56,7 @@
           data.error
           || (reason === 'disconnected' ? 'spotify ikke forbundet'
             : reason === 'unreachable' ? 'spotify svarede ikke'
+            : reason === 'not_registered' ? 'spotify-appen kender ikke denne konto'
             : query ? `Fandt ikke ${query}` : 'Fandt ikke noget'),
         ).trim();
         showFeedback(detail, { kind: 'error', duration: 7000 });

@@ -87,6 +87,10 @@ Home and garden share playlist library data, but not physical player state.
 - `ejdersted/security_garden` is the garden security/presence state: armed flag,
   presence state, alert flag, camera/model health, timestamps, confidence and
   evidence metadata.
+- `ejdersted/gate_garden` is the garden gate window: `mode` (on/auto/off),
+  last `cycle` (1–3), commanded `on`, and MQTT `online`. Only a kiosk tap
+  writes `cycle`. AUTO lights from sunset until 02:00. Browsers must not
+  write this document.
 - `ejdersted/fossibot_garden` is the latest Fossibot snapshot (SoC, solar/AC/total
   in W, output W, USB/DC/AC, charging). History lives in the `samples` subcollection,
   one document per 5-minute UTC bucket. The garden backend writes these;

@@ -1,10 +1,16 @@
-"""Subscribe to have_laage and switch the scene. Payload is 1, 2, 3, or 4."""
+"""Subscribe to have_laage. Payload 1–3 is a cycle; 0 (or legacy 4) is off.
+
+Presence is MQTT last-will plus a retained heartbeat on have_laage/status.
+The cycle itself lives in Firestore on the hub — this board only renders
+the last command it was given.
+"""
 
 import time
 
 import lights
 
 _TOPIC = b"have_laage"
+_STATUS = b"have_laage/status"
 _HOST = "mqtt.nextservices.dk"
 
 
@@ -23,15 +29,18 @@ def _run():
         client = None
         try:
             client = MQTTClient("laage-have", _HOST, port=1883, keepalive=30)
+            client.set_last_will(_STATUS, b"offline", retain=True)
             client.set_callback(_on)
             client.connect()
             client.subscribe(_TOPIC)
+            client.publish(_STATUS, b"online", retain=True)
             lights.mqtt_up = True
             last = time.ticks_ms()
             while True:
                 client.check_msg()
                 if time.ticks_diff(time.ticks_ms(), last) > 15000:
                     client.ping()
+                    client.publish(_STATUS, b"online", retain=True)
                     last = time.ticks_ms()
                 time.sleep_ms(200)
         except Exception as exc:

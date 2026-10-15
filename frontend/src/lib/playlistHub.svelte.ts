@@ -1084,9 +1084,11 @@ export function handleVoicePayload(data: Record<string, unknown>): VoiceHandleRe
           ? 'spotify ikke forbundet'
           : reason === 'unreachable'
             ? 'spotify svarede ikke'
-            : query
-              ? `Fandt ikke ${query}`
-              : 'Fandt ikke noget',
+            : reason === 'not_registered'
+              ? 'spotify-appen kender ikke denne konto'
+              : query
+                ? `Fandt ikke ${query}`
+                : 'Fandt ikke noget',
     };
   }
 

@@ -26,6 +26,8 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+import threading
+
 import httpx
 from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -57,7 +59,7 @@ import zigbee_lights
 import solar
 import switchbot_bot
 from hue import HueBridge, start_hue_mdns
-from spotify import Spotify, BEO_A9_IP, BEO_M5_IP
+from spotify import Spotify, BEO_A9_IP, BEO_M5_IP, garden_player_is_stale
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -202,6 +204,9 @@ FOSSIBOT_OUTBOX_FILE = REPO_ROOT / "fossibot_outbox.json"
 solar_ctrl: solar.SolarController | None = None
 solar_status_cache: dict = {}
 power_ctrl: power.PowerPolicy | None = None
+gate_ctrl: gate_light.GateController | None = None
+_gate_stop = threading.Event()
+_gate_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _solar_status() -> dict:
@@ -677,9 +682,18 @@ def _ensure_silence_wav() -> Path:
 async def _spotify_is_playing() -> bool:
     try:
         np = await spotify.now_playing()
-        return bool(np and np.get("is_playing"))
     except Exception:
         return False
+    a2dp_online = True
+    if hub_config.site() == "garden" and hub_config.feature_enabled("audio"):
+        targets = _configured_audio_targets()
+        target = next((t for t in targets if t.default), targets[0] if targets else None)
+        if target:
+            status = await audio_targets.target_status(target)
+            a2dp_online = bool(status.get("online"))
+    if garden_player_is_stale(np, a2dp_online):
+        return False
+    return bool(np and np.get("is_playing"))
 
 
 async def _pulse_garden_audio_keepalive() -> None:
@@ -804,6 +818,7 @@ async def poll_loop():
 
         if hub_config.site() == "garden":
             await _garden_audio_keepalive_tick()
+            await _gate_tick()
         await _podcast_player_tick()
 
         # ── Garden WiFi lights (LEDVANCE / Tuya) ─────────────────────────────
@@ -928,6 +943,7 @@ async def lifespan(app: FastAPI):
         )
         power_ctrl = power.PowerPolicy(POWER_STATE_FILE, band=band)
         print(f"[power] policy ready (band={band.off:g}/{band.on:g} %, mode={power_ctrl.mode}, hold={power_ctrl.hold})")
+        await _start_gate()
 
     if hub_config.feature_enabled("podcasts"):
         await podcast_catalog.hydrate(
@@ -973,6 +989,7 @@ async def lifespan(app: FastAPI):
     yield
 
     poll_task.cancel()
+    _gate_stop.set()
     if fossibot_task is not None:
         fossibot_task.cancel()
     kiosk_task.cancel()
@@ -1082,6 +1099,13 @@ async def websocket_endpoint(ws: WebSocket):
                 ok, error = await _set_power_mode(str(msg.get("mode") or ""))
                 if not ok:
                     print(f"[power] mode rejected: {error}")
+            elif msg.get("type") == "set_gate_mode":
+                await _set_gate_mode(str(msg.get("mode") or ""))
+            elif msg.get("type") == "set_gate_cycle":
+                try:
+                    await _set_gate_cycle(int(msg.get("scene") or msg.get("cycle")))
+                except (TypeError, ValueError):
+                    pass
             elif msg.get("type") == "set_hue_brightness":
                 if not hub_config.feature_enabled("hue"):
                     continue
@@ -1519,11 +1543,109 @@ async def hue_pair(data: dict = {}):
     return result
 
 
-_gate_scene = 1
-
-
 def _gate_snapshot() -> dict:
-    return {"scene": _gate_scene, "scenes": gate_light.SCENES, "status": "", "ip": ""}
+    if gate_ctrl is None:
+        return {
+            "scene": 0,
+            "scenes": gate_light.SCENES,
+            "mode": "auto",
+            "on": False,
+            "online": False,
+            "status": "",
+            "ip": gate_light.GATE_IP,
+        }
+    return gate_ctrl.snapshot()
+
+
+def _gate_persist(fields: dict) -> None:
+    async def write() -> None:
+        await gate_light.persist_fields(
+            fields,
+            firebase_config=_load_firebase_config(),
+            http_client=_http,
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = _gate_loop
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(write(), loop)
+        return
+    loop.create_task(write())
+
+
+def _on_gate_status(payload: bytes) -> None:
+    if gate_ctrl is None:
+        return
+    online = gate_ctrl.note_status(payload)
+    if online is True:
+        gate_ctrl.apply(force=True)
+    loop = _gate_loop
+    if loop is not None:
+        asyncio.run_coroutine_threadsafe(_broadcast_gate(), loop)
+
+
+async def _broadcast_gate() -> None:
+    await manager.broadcast({"type": "gate_scene", **_gate_snapshot()})
+
+
+async def _start_gate() -> None:
+    global gate_ctrl, _gate_loop
+    _gate_loop = asyncio.get_running_loop()
+    _gate_stop.clear()
+    cfg = hub_config.solar_config()
+    gate_ctrl = gate_light.GateController(
+        lat=float(cfg.get("lat", 55.6761)),
+        lon=float(cfg.get("lon", 12.5683)),
+        tz=str(cfg.get("tz", "Europe/Copenhagen")),
+        persist=_gate_persist,
+    )
+    doc = await gate_light.fetch_doc(
+        firebase_config=_load_firebase_config(),
+        http_client=_http,
+    )
+    gate_ctrl.hydrate(doc)
+    print(
+        f"[gate] hydrated mode={gate_ctrl.mode} cycle={gate_ctrl.cycle}",
+        flush=True,
+    )
+    gate_light.start_status_watch(_on_gate_status, stop=_gate_stop)
+    await asyncio.to_thread(gate_ctrl.apply)
+
+
+async def _gate_tick() -> None:
+    if gate_ctrl is None:
+        return
+    before = gate_ctrl.snapshot()
+    await asyncio.to_thread(gate_ctrl.apply)
+    stale = gate_ctrl.mark_stale_if_needed()
+    after = gate_ctrl.snapshot()
+    if stale or before != after:
+        await _broadcast_gate()
+
+
+async def _set_gate_mode(mode: str) -> dict | JSONResponse:
+    if gate_ctrl is None:
+        return JSONResponse({"ok": False, "status": "gate"}, status_code=404)
+    try:
+        payload = await asyncio.to_thread(gate_ctrl.set_mode, mode)
+    except ValueError:
+        return JSONResponse({"ok": False, "status": "mode"}, status_code=400)
+    await _broadcast_gate()
+    return {"ok": True, **payload}
+
+
+async def _set_gate_cycle(scene: int) -> dict | JSONResponse:
+    if gate_ctrl is None:
+        return JSONResponse({"ok": False, "status": "gate"}, status_code=404)
+    try:
+        payload = await asyncio.to_thread(gate_ctrl.set_cycle, scene)
+    except ValueError:
+        return JSONResponse({"ok": False, "status": "scene"}, status_code=400)
+    await _broadcast_gate()
+    return {"ok": True, **payload}
 
 
 @app.get("/api/gate/scene")
@@ -1531,33 +1653,31 @@ async def gate_scene_get():
     return {"ok": True, **_gate_snapshot()}
 
 
-@app.post("/api/gate/scene")
-async def gate_scene_post(request: Request):
-    global _gate_scene
+@app.post("/api/gate/mode")
+async def gate_mode_post(request: Request):
     body = {}
     try:
         body = await request.json()
     except Exception:
         body = {}
+    return await _set_gate_mode(str((body or {}).get("mode") or ""))
+
+
+@app.post("/api/gate/scene")
+async def gate_scene_post(request: Request):
+    body = {}
     try:
-        scene = int((body or {}).get("scene"))
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw = (body or {}).get("scene")
+    if raw is None and gate_ctrl is not None:
+        return await _set_gate_cycle(gate_light.next_scene(gate_ctrl.cycle or 0))
+    try:
+        scene = int(raw)
     except (TypeError, ValueError):
-        scene = gate_light.next_scene(_gate_scene)
-    if scene < 1 or scene > gate_light.SCENES:
         return JSONResponse({"ok": False, "status": "scene"}, status_code=400)
-    try:
-        await asyncio.to_thread(gate_light.mqtt_publish, scene)
-    except OSError:
-        return JSONResponse({"ok": False, "status": "mqtt"}, status_code=503)
-    _gate_scene = scene
-    payload = {
-        "scene": scene,
-        "scenes": gate_light.SCENES,
-        "status": "",
-        "ip": "",
-    }
-    await manager.broadcast({"type": "gate_scene", **payload})
-    return {"ok": True, **payload}
+    return await _set_gate_cycle(scene)
 
 
 @app.get("/api/lights")
@@ -2370,11 +2490,23 @@ async def _prepare_garden_spotify_audio() -> str:
         return ""
     await _stop_rss_player()
     await _stop_garden_sr_player()
+    targets = _configured_audio_targets()
+    target = next((t for t in targets if t.default), targets[0] if targets else None)
+    before = await audio_targets.target_status(target) if target else {"online": False}
+    try:
+        snap = await spotify.now_playing()
+    except Exception:
+        snap = None
     try:
         await _garden_bluealsa_device()
     except RuntimeError as exc:
         _audio("spotify.prepare", ok=False, detail=str(exc))
         return str(exc)
+    if garden_player_is_stale(snap, bool(before.get("online"))):
+        if not await spotify.rebind_garden_player():
+            detail = "Afspilleren startede ikke efter højttaleren kom tilbage"
+            _audio("spotify.prepare", ok=False, detail=detail)
+            return detail
     return ""
 
 

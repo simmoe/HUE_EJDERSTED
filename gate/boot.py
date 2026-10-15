@@ -5,6 +5,11 @@ import network
 import webrepl
 import wifi
 
+# Reserved on the Alohomora Huawei B535 (MAC 9C:CC:01:33:C7:A4).
+LAN_IP = "192.168.8.146"
+LAN_MASK = "255.255.255.0"
+LAN_GW = "192.168.8.1"
+
 pwr = Pin(19, Pin.OUT)
 pwr.value(1)
 dot = NeoPixel(Pin(20), 1)
@@ -18,6 +23,7 @@ def show(rgb):
 show((40, 10, 0))
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
+wlan.ifconfig((LAN_IP, LAN_MASK, LAN_GW, LAN_GW))
 try:
     wlan.config(hostname="laage")
 except Exception:

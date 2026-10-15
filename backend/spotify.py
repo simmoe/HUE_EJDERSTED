@@ -127,6 +127,10 @@ def librespot_status_to_now_playing(data: dict) -> dict | None:
     except (TypeError, ValueError):
         duration = 0
     playing = not bool(data.get("paused")) and not bool(data.get("stopped"))
+    # After the speaker dies, go-librespot keeps the clock running into a
+    # dead A2DP sink. Past-the-end is not playback — it is a stale session.
+    if duration and progress >= duration:
+        playing = False
     return {
         "name": str(track.get("name") or ""),
         "artist": artist,
@@ -139,6 +143,20 @@ def librespot_status_to_now_playing(data: dict) -> dict | None:
         "next_name": "",
         "next_artist": "",
     }
+
+
+def garden_player_is_stale(now_playing: dict | None, a2dp_online: bool) -> bool:
+    """True when librespot must reopen BlueALSA before the next play."""
+    if not a2dp_online:
+        return True
+    if not isinstance(now_playing, dict):
+        return False
+    try:
+        progress = int(now_playing.get("progress_ms") or 0)
+        duration = int(now_playing.get("duration_ms") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(duration and progress >= duration)
 
 
 def pick_best_track(query: str, tracks: list[dict]) -> dict | None:
@@ -201,11 +219,31 @@ def split_title_artist(query: str) -> tuple[str, str] | None:
     return title, artist
 
 
+def search_http_reason(status_code: int, body: str = "") -> str:
+    """Map a Spotify search HTTP status to a voice reason. 403 development-mode
+    allowlist is not a dead token."""
+    if status_code == 200:
+        return ""
+    if status_code == 401:
+        return "disconnected"
+    text = (body or "").lower()
+    if status_code == 403 and "not registered" in text:
+        return "not_registered"
+    return "unreachable"
+
+
 def voice_search_error(reason: str, query: str = "") -> dict:
     if reason == "disconnected":
         return {"action": "search", "ok": False, "error": "spotify ikke forbundet", "reason": "disconnected"}
     if reason == "unreachable":
         return {"action": "search", "ok": False, "error": "spotify svarede ikke", "reason": "unreachable"}
+    if reason == "not_registered":
+        return {
+            "action": "search",
+            "ok": False,
+            "error": "spotify-appen kender ikke denne konto",
+            "reason": "not_registered",
+        }
     return {"action": "search", "ok": False, "query": query, "error": f"Fandt ikke {query}", "reason": "empty"}
 
 
@@ -242,6 +280,8 @@ class Spotify:
             err = str(self._cfg.get("auth_error") or "")
             if err == "unreachable":
                 return "spotify svarede ikke"
+            if err == "not_registered":
+                return "spotify-appen kender ikke denne konto"
             return "spotify ikke forbundet"
         return ""
 
@@ -375,6 +415,16 @@ class Spotify:
                 return True
         return False
 
+    async def rebind_garden_player(self) -> bool:
+        """Reopen librespot on a live A2DP sink after the speaker dropped."""
+        if not await self._systemctl_librespot("restart"):
+            return False
+        for _ in range(15):
+            await asyncio.sleep(1)
+            if await self._garden_player_ready():
+                return True
+        return False
+
     async def _play_garden_uris(
         self,
         uris: list[str],
@@ -407,7 +457,7 @@ class Spotify:
     # ── API calls ─────────────────────────────────────────────────────────────
 
     async def _search(self, query: str, types: str = "track,artist,album,playlist", limit: int = 5) -> tuple[dict | None, str]:
-        """Body on 200, else a reason: disconnected | unreachable."""
+        """Body on 200, else a reason: disconnected | unreachable | not_registered."""
         h = await self._headers()
         if not h:
             return None, "disconnected"
@@ -417,11 +467,17 @@ class Spotify:
             })
         except httpx.HTTPError:
             return None, "unreachable"
-        if r.status_code in (401, 403):
+        why = search_http_reason(r.status_code, r.text or "")
+        if why == "disconnected":
             self._set_auth_error("revoked")
-            return None, "disconnected"
-        if r.status_code != 200:
-            return None, "unreachable"
+            return None, why
+        if why == "not_registered":
+            # Token is accepted; the Spotify app is in development mode.
+            self._clear_auth_error()
+            return None, why
+        if why:
+            return None, why
+        self._clear_auth_error()
         data = r.json() if r.content else {}
         return (data if isinstance(data, dict) else {}), ""
 

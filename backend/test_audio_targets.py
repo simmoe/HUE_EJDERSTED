@@ -52,6 +52,40 @@ class GardenAudioErrorTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "A2DP-lydprofilen mangler"):
                 await main._garden_bluealsa_device()
 
+    async def test_prepare_rebinds_librespot_after_the_speaker_returns(self):
+        target = audio_targets.AudioTarget(
+            id="garden",
+            name="Garden speaker",
+            type="bluealsa",
+            mac="F4:4E:FD:57:3A:AB",
+            default=True,
+        )
+        offline = {"online": False, "connected": False, "playback": False}
+        online = {"online": True, "connected": True, "playback": True}
+        stale = {
+            "is_playing": True,
+            "uri": "spotify:track:abc",
+            "progress_ms": 374826,
+            "duration_ms": 231205,
+        }
+        with (
+            patch.object(main.hub_config, "site", return_value="garden"),
+            patch.object(main, "_configured_audio_targets", return_value=[target]),
+            patch.object(main, "_stop_rss_player", AsyncMock()),
+            patch.object(main, "_stop_garden_sr_player", AsyncMock()),
+            patch.object(
+                main.audio_targets,
+                "target_status",
+                AsyncMock(side_effect=[offline, online]),
+            ),
+            patch.object(main.audio_targets, "connect_target", AsyncMock(return_value=online)),
+            patch.object(main.spotify, "now_playing", AsyncMock(return_value=stale)),
+            patch.object(main.spotify, "rebind_garden_player", AsyncMock(return_value=True)) as rebind,
+        ):
+            detail = await main._prepare_garden_spotify_audio()
+        self.assertEqual(detail, "")
+        rebind.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

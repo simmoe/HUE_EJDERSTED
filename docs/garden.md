@@ -48,6 +48,30 @@ Chrome will not, and we already have a trusted cert for the hostname.
 `deploy.sh garden` refreshes the cert when Tailscale is available. Renew timer:
 `scripts/hue-tls-renew.service` + `.timer`.
 
+## Alohomora LAN
+
+| Enhed | IP | Port | MAC |
+| --- | --- | --- | --- |
+| Huawei B535 | `192.168.8.1` | — | — |
+| Garden Pi | `192.168.8.133` | `8443` | `88:A2:9E:0A:F9:0E` |
+| Kiosk ADB | `192.168.8.135` | `5555` | — |
+| Flare (Tuya) | `192.168.8.138` | — | — |
+| Havelåge `laage` | `192.168.8.146` | netprog `9011`, WebREPL `8266` | `9C:CC:01:33:C7:A4` |
+
+The gate ESP keeps `192.168.8.146` in `gate/boot.py`. Bind the same MAC → IP
+as a DHCP static on the B535 so a fresh image still lands there.
+
+Push firmware over LAN: `PUT http://192.168.8.146:9011/<file>`.
+
+The window is TÆND / AUTO / SLUK, same three buttons as the solar relay.
+Cycle `1–3` lives only in Firestore `ejdersted/gate_garden`. Nothing else
+writes it — not boot, not MQTT reconnect. Sluk is state, not scene 4.
+
+AUTO: last cycle from sunset until 02:00, then off. TÆND and SLUK keep that
+same cycle. MQTT `have_laage` carries the live command (`1–3` or `0`).
+Presence is last-will plus a retained heartbeat on `have_laage/status`.
+If the M5 Nano C6's own solar cell is empty, the card is offline.
+
 ## Runtime Config
 
 Garden-specific values should come from the machine/global setup as environment

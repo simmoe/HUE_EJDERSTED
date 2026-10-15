@@ -67,7 +67,8 @@ på et kendt target, hvis højttaleren har været koblet til en telefon.
 | Enhed | IP | Port | Bemærkning |
 |---|---|---|---|
 | Raspberry Pi 5 (home server) | `192.168.86.16` | `8443` (HTTPS) | SSH user: `simmoe`; password/key is local-only |
-| Raspberry Pi (garden, Tailscale) | `kolonihave-pi.tail7947c4.ts.net` | `8443` (HTTPS) | Kameraejer; privat tailnet-adgang |
+| Raspberry Pi (garden, Tailscale) | `kolonihave-pi.tail7947c4.ts.net` / `192.168.8.133` | `8443` (HTTPS) | Kameraejer; privat tailnet-adgang |
+| Havelåge (`laage`) | `192.168.8.146` | `9011` / `8266` | MicroPython; MQTT `have_laage`; MAC `9C:CC:01:33:C7:A4` |
 | Mac (dev) | `192.168.86.13` | `8443` (HTTPS) | Kun til udvikling |
 | Kiosk-telefon (Samsung Galaxy A12) | `192.168.86.15` | ADB: variabel | Trådløs ADB port skifter ved genstart |
 | Philips Hue Bridge | `192.168.86.25` | HTTPS (clipv2) | |
