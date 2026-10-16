@@ -54,6 +54,7 @@ import light_bus
 import light_scenes
 import lights_log
 import power
+import outdoor_air
 import zigbee_air
 import zigbee_lights
 import solar
@@ -1318,6 +1319,7 @@ async def get_air_status():
     row = zigbee_air.status()
     if not row.get("online"):
         row = await zigbee_air.refresh()
+    row.update(await outdoor_air.snapshot(_http))
     return row
 
 

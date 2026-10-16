@@ -57,9 +57,21 @@
       </div>
       <div class="air-col">
         <span class="air-label">fugt</span>
-        <span class="air-reading">
-          <span class="air-value">{reading(air.humidity)}</span>
-          <span class="air-unit">%</span>
+        <span class="air-compare">
+          <span class="air-half">
+            <span class="air-reading">
+              <span class="air-value">{reading(air.humidity)}</span>
+              <span class="air-unit">%</span>
+            </span>
+            <span class="air-hint">inde</span>
+          </span>
+          <span class="air-half">
+            <span class="air-reading">
+              <span class="air-value">{reading(air.outdoorHumidity)}</span>
+              <span class="air-unit">%</span>
+            </span>
+            <span class="air-hint">ude</span>
+          </span>
         </span>
       </div>
     </div>
@@ -113,6 +125,26 @@
     text-transform: lowercase;
   }
 
+  .air-compare {
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+  }
+
+  .air-half {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .air-hint {
+    color: #8a8a8a;
+    font-size: 0.58rem;
+    letter-spacing: 0.06em;
+    text-transform: lowercase;
+  }
+
   .air-reading {
     display: flex;
     align-items: baseline;
@@ -124,6 +156,10 @@
     font-size: 2.4rem;
     font-weight: 100;
     line-height: 1;
+  }
+
+  .air-half .air-value {
+    font-size: 2rem;
   }
 
   .air-unit {

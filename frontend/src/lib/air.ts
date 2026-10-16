@@ -3,6 +3,8 @@ export type AirStatus = {
   pm25?: number | null;
   tempC?: number | null;
   humidity?: number | null;
+  outdoorHumidity?: number | null;
+  outdoorSource?: string;
   voc?: number | null;
 };
 
