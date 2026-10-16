@@ -4,7 +4,7 @@
   import { doc, getFirestore, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
   import Card from '$lib/Card.svelte';
   import { formatAirLine, type AirStatus } from '$lib/air';
-  import { CAMERA_FACING_DOC, parseFacing, type CameraFacing } from '$lib/cameraFacing';
+  import { CAMERA_FACING_DOC, facingLabel, parseFacing, type CameraFacing } from '$lib/cameraFacing';
   import {
     indexOfEvidence,
     parseEvidenceList,
@@ -24,6 +24,8 @@
   // the choice lives in Firestore so Ejdersted can switch it.
   let facingMode = $state<CameraFacing>('environment');
   let facingReady = $state(false);
+  let facingBusy = $state(false);
+  let facingBusyTimer: ReturnType<typeof setTimeout> | null = null;
   let facingUnsub: (() => void) | null = null;
   let openingCamera = false;
   let publishStatus = $state('');
@@ -507,6 +509,15 @@
     }
   }
 
+  function markFacingSwitch() {
+    facingBusy = true;
+    if (facingBusyTimer) clearTimeout(facingBusyTimer);
+    facingBusyTimer = setTimeout(() => {
+      facingBusy = false;
+      facingBusyTimer = null;
+    }, 1400);
+  }
+
   function applyFacing(next: CameraFacing) {
     if (facingMode === next) {
       facingReady = true;
@@ -514,12 +525,14 @@
     }
     facingMode = next;
     facingReady = true;
+    markFacingSwitch();
     if (canPublish && cameraOn) void openCamera();
   }
 
   async function setFacing(next: CameraFacing) {
     if (facingMode === next) return;
     facingMode = next;
+    markFacingSwitch();
     void writeFacing(next);
     if (canPublish && cameraOn) void openCamera();
   }
@@ -627,6 +640,7 @@
   });
 
   onDestroy(() => {
+    if (facingBusyTimer) clearTimeout(facingBusyTimer);
     stopCamera();
     stopViewer();
   });
@@ -666,6 +680,9 @@
         <div class="camera-placeholder">venter på havekiosken</div>
       {/if}
     </button>
+    {#if facingBusy}
+      <div class="facing-flash" aria-hidden="true">{facingLabel(facingMode)}</div>
+    {/if}
     {#if !kioskOffline}
       <div class="presence-bar">
         <div class="presence-left">
@@ -700,12 +717,14 @@
           type="button"
           class="action-btn"
           class:active={facingMode === 'user'}
+          class:loading={facingBusy && facingMode === 'user'}
           onclick={() => void setFacing('user')}
         >front</button>
         <button
           type="button"
           class="action-btn"
           class:active={facingMode === 'environment'}
+          class:loading={facingBusy && facingMode === 'environment'}
           onclick={() => void setFacing('environment')}
         >bag</button>
       </div>
@@ -722,7 +741,7 @@
       <div class="publish-status">{batteryLine}</div>
     {/if}
     {#if airLine}
-      <div class="publish-status">{airLine}</div>
+      <div class="publish-status" class:warn={airLine.includes('fugt')}>{airLine}</div>
     {/if}
     {#if canPublish && publishStatus}
       <div class="publish-status">{publishStatus}</div>
@@ -903,6 +922,32 @@
     text-align: center;
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.45);
+  }
+
+  .publish-status.warn {
+    color: #c07a72;
+  }
+
+  .facing-flash {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.42);
+    color: #f2f2f2;
+    font-size: 0.78rem;
+    font-weight: 300;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    pointer-events: none;
+    animation: facing-flash 1.4s ease forwards;
+  }
+
+  @keyframes facing-flash {
+    0% { opacity: 0; }
+    18% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { opacity: 0; }
   }
 
   .presence-bar {

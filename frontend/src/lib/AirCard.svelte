@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import Card from '$lib/Card.svelte';
-  import { airQualityBand, airQualityLabel, type AirBand, type AirStatus } from '$lib/air';
+  import { airQualityBand, airQualityLabel, indoorHumidityHigh, type AirBand, type AirStatus } from '$lib/air';
 
   const BANDS: AirBand[] = ['god', 'middel', 'dårlig'];
 
@@ -12,10 +12,14 @@
     value == null || Number.isNaN(value) ? '–' : String(Math.round(value));
 
   const band = $derived(air.online ? airQualityBand(air.pm25 ?? null) : '');
+  const wet = $derived(air.online && indoorHumidityHigh(air.humidity));
 
   const status = () => {
     if (!air.online) return 'offline';
-    return airQualityLabel(air.pm25 ?? null);
+    const airBand = airQualityLabel(air.pm25 ?? null);
+    if (airBand && wet) return `${airBand} · fugt`;
+    if (wet) return 'fugt';
+    return airBand;
   };
 
   async function refresh() {
@@ -58,7 +62,7 @@
       <div class="air-col">
         <span class="air-label">fugt</span>
         <span class="air-compare">
-          <span class="air-half">
+          <span class="air-half" class:warn={wet}>
             <span class="air-reading">
               <span class="air-value">{reading(air.humidity)}</span>
               <span class="air-unit">%</span>
@@ -160,6 +164,11 @@
 
   .air-half .air-value {
     font-size: 2rem;
+  }
+
+  .air-half.warn .air-value,
+  .air-half.warn .air-hint {
+    color: #c07a72;
   }
 
   .air-unit {

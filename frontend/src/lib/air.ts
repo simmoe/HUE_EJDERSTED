@@ -8,9 +8,18 @@ export type AirStatus = {
   voc?: number | null;
 };
 
+export const INDOOR_HUMIDITY_WARN = 75;
+
+export function indoorHumidityHigh(humidity: number | null | undefined): boolean {
+  return humidity != null && !Number.isNaN(humidity) && humidity >= INDOOR_HUMIDITY_WARN;
+}
+
 export function formatAirLine(air: AirStatus | null | undefined): string {
   if (!air?.online) return '';
   const band = airQualityBand(air.pm25 ?? null);
+  const wet = indoorHumidityHigh(air.humidity);
+  if (band && wet) return `luft: ${band} · fugt`;
+  if (wet) return 'luft: fugt';
   return band ? `luft: ${band}` : '';
 }
 
