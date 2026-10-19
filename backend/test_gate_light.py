@@ -164,6 +164,52 @@ class GateControllerTests(unittest.TestCase):
         self.ctrl.set_online(True)
         self.assertEqual(self.ctrl.snapshot()["status"], "")
 
+    def test_reconnect_uses_lan_even_when_mqtt_is_offline(self):
+        self.ctrl = gate_light.GateController(
+            publish=self.published.append,
+            persist=self.writes.append,
+            clock_trusted=lambda: True,
+            probe_lan=lambda: {"ip": gate_light.GATE_IP, "mode": 0, "mqtt": False},
+            peek_status=lambda: False,
+        )
+        self.ctrl.hydrate({"mode": "on", "cycle": 2})
+        snap = self.ctrl.reconnect(_dt(12))
+        self.assertTrue(snap["online"])
+        self.assertEqual(self.published, [2])
+
+    def test_reconnect_trusts_mqtt_when_lan_is_dark(self):
+        self.ctrl = gate_light.GateController(
+            publish=self.published.append,
+            persist=self.writes.append,
+            clock_trusted=lambda: True,
+            probe_lan=lambda: None,
+            peek_status=lambda: True,
+        )
+        snap = self.ctrl.reconnect(_dt(12))
+        self.assertTrue(snap["online"])
+
+    def test_reconnect_stays_offline_when_both_are_dark(self):
+        self.ctrl = gate_light.GateController(
+            publish=self.published.append,
+            persist=self.writes.append,
+            clock_trusted=lambda: True,
+            probe_lan=lambda: None,
+            peek_status=lambda: False,
+        )
+        snap = self.ctrl.reconnect(_dt(12))
+        self.assertFalse(snap["online"])
+        self.assertEqual(snap["status"], "offline")
+        self.assertEqual(self.published, [])
+
+
+class GateProbeParseTests(unittest.TestCase):
+    def test_netprog_line(self):
+        self.assertEqual(
+            gate_light.parse_netprog("laage 192.168.8.146 mode 0 mqtt 1\n"),
+            {"ip": "192.168.8.146", "mode": 0, "mqtt": True},
+        )
+        self.assertIsNone(gate_light.parse_netprog("no"))
+
 
 if __name__ == "__main__":
     unittest.main()

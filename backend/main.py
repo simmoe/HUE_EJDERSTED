@@ -1665,6 +1665,15 @@ async def gate_mode_post(request: Request):
     return await _set_gate_mode(str((body or {}).get("mode") or ""))
 
 
+@app.post("/api/gate/reconnect")
+async def gate_reconnect():
+    if gate_ctrl is None:
+        return JSONResponse({"ok": False, "status": "gate"}, status_code=404)
+    payload = await asyncio.to_thread(gate_ctrl.reconnect)
+    await _broadcast_gate()
+    return {"ok": True, **payload}
+
+
 @app.post("/api/gate/scene")
 async def gate_scene_post(request: Request):
     body = {}

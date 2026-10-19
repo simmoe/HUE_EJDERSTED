@@ -29,9 +29,13 @@ VALID_MODES = ("on", "auto", "off")
 OFF_HOUR = 2
 STALE_S = 75.0
 GATE_IP = "192.168.8.146"
+NETPROG_PORT = 9011
+PROBE_TIMEOUT_S = 2.0
 
 PublishFn = Callable[[int], None]
 PersistFn = Callable[[dict[str, Any]], None]
+ProbeLanFn = Callable[[], dict[str, Any] | None]
+PeekStatusFn = Callable[[], bool | None]
 
 
 def next_scene(current: int, scenes: int = SCENES) -> int:
@@ -162,6 +166,96 @@ def parse_status_payload(raw: bytes | str) -> bool | None:
     return None
 
 
+def parse_netprog(text: str) -> dict[str, Any] | None:
+    parts = text.strip().split()
+    if len(parts) < 6 or parts[0] != "laage":
+        return None
+    try:
+        return {"ip": parts[1], "mode": int(parts[3]), "mqtt": int(parts[5]) == 1}
+    except (TypeError, ValueError):
+        return None
+
+
+def probe_lan_http(
+    ip: str = GATE_IP,
+    port: int = NETPROG_PORT,
+    timeout: float = PROBE_TIMEOUT_S,
+) -> dict[str, Any] | None:
+    """GET the M5 netprog line. None if the board is not on this LAN."""
+    try:
+        sock = socket.create_connection((ip, port), timeout=timeout)
+    except OSError:
+        return None
+    try:
+        sock.settimeout(timeout)
+        sock.sendall(b"GET / HTTP/1.0\r\nHost: %s\r\n\r\n" % ip.encode())
+        buf = b""
+        while True:
+            chunk = sock.recv(512)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > 2048:
+                break
+    except OSError:
+        return None
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    _, _, body = buf.partition(b"\r\n\r\n")
+    return parse_netprog(body.decode("ascii", "replace"))
+
+
+def peek_mqtt_status(
+    broker: str = BROKER,
+    port: int = PORT,
+    topic: str = STATUS_TOPIC,
+    timeout: float = 3.0,
+) -> bool | None:
+    """One-shot read of the retained have_laage/status word."""
+    sock = None
+    try:
+        sock = socket.create_connection((broker, port), timeout=timeout)
+        sock.settimeout(timeout)
+        client = b"hue-laage-peek"
+        connect = b"\x00\x04MQTT\x04\x02\x00\x0a" + len(client).to_bytes(2, "big") + client
+        sock.sendall(_packet(0x10, connect))
+        ack = sock.recv(4)
+        if len(ack) < 4 or ack[0] != 0x20 or ack[3] != 0:
+            return None
+        topic_b = topic.encode()
+        subscribe = b"\x00\x01" + len(topic_b).to_bytes(2, "big") + topic_b + b"\x00"
+        sock.sendall(_packet(0x82, subscribe))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            header = sock.recv(1)
+            if not header:
+                return None
+            kind = header[0] & 0xF0
+            remaining = _read_remaining(sock)
+            body = _recv_exact(sock, remaining) if remaining else b""
+            if kind == 0x30:
+                if len(body) < 2:
+                    continue
+                tlen = int.from_bytes(body[:2], "big")
+                return parse_status_payload(body[2 + tlen :])
+        return None
+    except OSError:
+        return None
+    finally:
+        if sock is not None:
+            try:
+                sock.sendall(b"\xe0\x00")
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
 class GateController:
     def __init__(
         self,
@@ -172,6 +266,8 @@ class GateController:
         publish: PublishFn | None = None,
         persist: PersistFn | None = None,
         clock_trusted: Callable[[], bool] | None = None,
+        probe_lan: ProbeLanFn | None = None,
+        peek_status: PeekStatusFn | None = None,
     ):
         self.lat = float(lat)
         self.lon = float(lon)
@@ -179,6 +275,8 @@ class GateController:
         self._publish = publish or (lambda scene: mqtt_publish(scene))
         self._persist = persist
         self._clock_trusted = clock_trusted or solar.clock_is_trusted
+        self._probe_lan = probe_lan or probe_lan_http
+        self._peek_status = peek_status or peek_mqtt_status
         self.mode = "auto"
         self.cycle: int | None = None
         self.on = False
@@ -275,6 +373,24 @@ class GateController:
             self.online = False
         self._write({"online": False})
         return True
+
+    def reconnect(self, now: datetime | None = None) -> dict[str, Any]:
+        """Tap-to-retry: LAN netprog first, then the retained MQTT word."""
+        lan = None
+        mqtt = None
+        try:
+            lan = self._probe_lan()
+        except Exception:
+            lan = None
+        try:
+            mqtt = self._peek_status()
+        except Exception:
+            mqtt = None
+        online = bool(lan) or mqtt is True
+        self.set_online(online)
+        if online:
+            self.apply(now, force=True)
+        return self.snapshot()
 
     def apply(self, now: datetime | None = None, *, force: bool = False) -> bool:
         now = now or datetime.now(self.tz)

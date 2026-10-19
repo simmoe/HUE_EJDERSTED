@@ -4,6 +4,7 @@
   import { store, type GateMode, type GateScene } from '$lib/ws.svelte';
 
   let busy = $state(false);
+  let probing = $state(false);
 
   const scene = $derived(store.gate.scene);
   const scenes = $derived(store.gate.scenes > 0 ? store.gate.scenes : 3);
@@ -13,7 +14,7 @@
       : 'auto',
   );
   const online = $derived(store.gate.online === true);
-  const status = $derived(online ? '' : 'offline');
+  const status = $derived(probing ? '…' : online ? '' : 'offline');
 
   function apply(data: Partial<GateScene>) {
     store.gate = {
@@ -56,9 +57,23 @@
   function setMode(nextMode: GateMode) {
     store.setGateMode(nextMode);
   }
+
+  async function retry() {
+    if (probing || online) return;
+    probing = true;
+    try {
+      const r = await fetch('/api/gate/reconnect', { method: 'POST' });
+      const data = await r.json();
+      if (r.ok) apply(data);
+    } catch {
+      /* still offline */
+    } finally {
+      probing = false;
+    }
+  }
 </script>
 
-<Card name="Låge" {status} online={online && !!store.gate.on}>
+<Card name="Låge" {status} online={online && !!store.gate.on} pulse={probing} onstatus={!online ? retry : undefined}>
   <div class="gate">
     <button type="button" class="scene" onclick={next} disabled={busy} aria-label={busy ? 'Skifter' : `Cyklus ${scene || '–'}`}>
       {#if busy}· · ·{:else}{scene || '·'}{/if}
