@@ -59,23 +59,18 @@
           <span class="air-unit">°</span>
         </span>
       </div>
+      <div class="air-col" class:warn={wet}>
+        <span class="air-label">inde</span>
+        <span class="air-reading">
+          <span class="air-value">{reading(air.humidity)}</span>
+          <span class="air-unit">%</span>
+        </span>
+      </div>
       <div class="air-col">
-        <span class="air-label">fugt</span>
-        <span class="air-compare">
-          <span class="air-half" class:warn={wet}>
-            <span class="air-reading">
-              <span class="air-value">{reading(air.humidity)}</span>
-              <span class="air-unit">%</span>
-            </span>
-            <span class="air-hint">inde</span>
-          </span>
-          <span class="air-half">
-            <span class="air-reading">
-              <span class="air-value">{reading(air.outdoorHumidity)}</span>
-              <span class="air-unit">%</span>
-            </span>
-            <span class="air-hint">ude</span>
-          </span>
+        <span class="air-label">ude</span>
+        <span class="air-reading">
+          <span class="air-value">{reading(air.outdoorHumidity)}</span>
+          <span class="air-unit">%</span>
         </span>
       </div>
     </div>
@@ -106,12 +101,15 @@
   }
 
   .air-cols {
-    display: flex;
-    align-items: center;
-    justify-content: space-around;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
+    align-content: center;
+    justify-items: center;
     flex: 1;
     min-width: 0;
-    gap: 12px;
+    row-gap: 18px;
+    column-gap: 20px;
   }
 
   .air-col {
@@ -129,26 +127,6 @@
     text-transform: lowercase;
   }
 
-  .air-compare {
-    display: flex;
-    align-items: flex-end;
-    gap: 16px;
-  }
-
-  .air-half {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .air-hint {
-    color: #8a8a8a;
-    font-size: 0.58rem;
-    letter-spacing: 0.06em;
-    text-transform: lowercase;
-  }
-
   .air-reading {
     display: flex;
     align-items: baseline;
@@ -162,12 +140,8 @@
     line-height: 1;
   }
 
-  .air-half .air-value {
-    font-size: 2rem;
-  }
-
-  .air-half.warn .air-value,
-  .air-half.warn .air-hint {
+  .air-col.warn .air-label,
+  .air-col.warn .air-value {
     color: #c07a72;
   }
 
