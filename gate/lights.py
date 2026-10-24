@@ -1,12 +1,11 @@
-"""Scenes for the circular gate window. LED 1 and LED 55 meet at the bottom.
+"""Gate window scenes. LED 1 and LED 55 meet at the bottom.
 
-The bottom ten LEDs are bare bulbs, five on each side of that seam. They stay
-off. Above them the light fades up both sides and is full across the top.
-Colours stay dark enough that the hue survives the LED.
+Cycles 1–3 share one slow “saber moon” animation. Peak brightness depends on
+the cycle; MQTT level (low / medium / max) scales it further for battery life.
+Mode 0 is off.
 """
 
 import math
-import random
 import time
 from machine import Pin
 from neopixel import NeoPixel
@@ -14,35 +13,32 @@ from neopixel import NeoPixel
 N = 55
 SCENES = 3
 FADE_MS = 1800
-# Distance from the bottom seam, in LED steps. At or below this, the bulb is visible.
 _BARE = 4.5
-# Above this the top is at full strength.
-_TOP = 16.0
+_TOP_SHADE = 16.0
+
 mode = 0
 mqtt_up = False
+_level = "medium"
 _prev = 0
 _mode_at = 0
-_fly = None
 
-# Saturated, and well below white. The top of the window shows these at full.
-_COLOURS = (
-    (140, 22, 4),
-    (110, 14, 6),
-    (96, 18, 2),
-    (150, 36, 8),
-    (88, 12, 10),
-    (124, 28, 6),
-    (72, 16, 4),
-    (132, 20, 8),
-    (100, 24, 16),
-    (118, 30, 4),
-)
-_FLIES = (
-    (90, 28, 0),
-    (70, 16, 0),
-    (80, 34, 2),
-    (60, 14, 0),
-)
+# Brown-gold night white (from the old night fly palette).
+_NIGHT = (118, 30, 4)
+_CYCLE_PEAK = {1: 0.28, 2: 0.38, 3: 0.50}
+_LEVEL_SCALE = {"low": 0.45, "medium": 0.70, "max": 1.0}
+
+I_TOP = N // 2
+I_HORN_A = 16
+I_HORN_B = 19
+
+D_TOP = 10.0
+D_GROW = 4.0
+D_HOLD = 30.0
+D_COLLAPSE = 5.0
+D_DISC = 30.0
+_PERIOD = D_TOP + D_GROW + D_HOLD + D_COLLAPSE + D_DISC
+
+_arc_cache = None
 
 
 def set_mode(n):
@@ -55,6 +51,13 @@ def set_mode(n):
     _prev = mode
     mode = n
     _mode_at = time.ticks_ms()
+
+
+def set_level(name):
+    global _level
+    n = str(name).strip().lower()
+    if n in _LEVEL_SCALE:
+        _level = n
 
 
 def _clip(v):
@@ -73,107 +76,139 @@ def _smooth(t):
     return t * t * (3 - 2 * t)
 
 
-def _step(edge0, edge1, x):
-    if edge1 == edge0:
-        return 0.0
-    return _smooth((x - edge0) / (edge1 - edge0))
-
-
 def _from_seam(i):
     return min(i + 0.5, N - (i + 0.5))
 
 
 def _shade(i):
-    """0 on the bare bulbs, 1 across the top, a smooth fall down both sides."""
     d = _from_seam(i)
     if d <= _BARE:
         return 0.0
-    if d >= _TOP:
+    if d >= _TOP_SHADE:
         return 1.0
-    return _smooth((d - _BARE) / (_TOP - _BARE))
+    return _smooth((d - _BARE) / (_TOP_SHADE - _BARE))
 
 
-def _height(i):
-    theta = 2 * math.pi * (i + 0.5) / N
-    return (1 - math.cos(theta)) / 2, theta
+def _path(i0, i1):
+    if i0 == i1:
+        return [i0]
+    d_fwd = (i1 - i0) % N
+    d_back = (i0 - i1) % N
+    out = []
+    if d_fwd <= d_back:
+        i = i0
+        while True:
+            out.append(i)
+            if i == i1:
+                break
+            i = (i + 1) % N
+    else:
+        i = i0
+        while True:
+            out.append(i)
+            if i == i1:
+                break
+            i = (i - 1) % N
+    return out
 
 
-def _sunrise(t, buf):
-    # Red stays red, blue stays blue. Slow waves, never pushed up into white.
-    breath = 0.55 + 0.45 * math.sin(t * 0.18)
-    for i in range(N):
-        shade = _shade(i)
-        if shade <= 0:
-            buf[i] = (0, 0, 0)
-            continue
-        h, theta = _height(i)
-        warm = 1 - _step(0.18, 0.52, h)
-        blue = _step(0.48, 0.92, h)
-        ember = 0.5 + 0.5 * math.sin(t * 0.15 + theta * 1.4)
-        ring = 0.5 + 0.5 * math.sin(t * 0.27 + theta * 2)
-        level = (0.35 + 0.65 * breath) * (0.55 + 0.45 * ring) * shade
-        # The red they liked, without the bright yellow wash. Blue kept deep.
-        wr, wg, wb = 190, 14 + 18 * ember, 0
-        br, bg, bb = 16, 36, 150
-        buf[i] = (
-            _clip((wr * warm + br * blue) * level),
-            _clip((wg * warm + bg * blue) * level),
-            _clip((wb * warm + bb * blue) * level),
-        )
+def _arc_indices():
+    global _arc_cache
+    if _arc_cache is None:
+        a = _path(I_TOP, I_HORN_A)
+        b = _path(I_TOP, I_HORN_B)
+        seen = {}
+        for seq in (a, b):
+            for j, idx in enumerate(seq):
+                if idx not in seen or j < seen[idx]:
+                    seen[idx] = j
+        _arc_cache = sorted(seen.keys(), key=lambda k: seen[k])
+    return _arc_cache
 
 
-def _lit_index():
-    while True:
-        i = random.randrange(N)
-        if _from_seam(i) > _BARE + 1:
-            return i
+def _peak_scale():
+    base = _CYCLE_PEAK.get(mode, _CYCLE_PEAK[2])
+    return base * _LEVEL_SCALE.get(_level, 0.7)
 
 
-def _night(t, buf):
-    # One lamp. It fades in and out, may step a couple of places, then the ring is black.
-    global _fly
+def _scale_rgb(rgb, level):
+    r, g, b = rgb
+    return (_clip(r * level), _clip(g * level), _clip(b * level))
+
+
+def _top_breath(phase_u, peak):
+    """Single top LED, 5 s in and 5 s out."""
+    u = phase_u / D_TOP
+    env = math.sin(math.pi * u)
     for i in range(N):
         buf[i] = (0, 0, 0)
-    if _fly is None:
-        _fly = {"alive": False, "until": t + 2.0}
-    if not _fly["alive"]:
-        if t < _fly["until"]:
-            return
-        direction = random.choice((-1, 1))
-        _fly = {
-            "alive": True,
-            "born": t,
-            "life": 9.0 + random.random() * 7.0,
-            "pos": _lit_index(),
-            "speed": direction * random.choice((0.0, 0.12, 0.18, 0.25)),
-            "rgb": _FLIES[random.randrange(len(_FLIES))],
-        }
-    age = t - _fly["born"]
-    if age >= _fly["life"]:
-        _fly = {"alive": False, "until": t + 4.0 + random.random() * 8.0}
+    if env <= 0:
         return
-    env = math.sin(math.pi * age / _fly["life"])
-    pos = _fly["pos"] + _fly["speed"] * age
-    i = int(round(pos)) % N
-    if _from_seam(i) <= _BARE:
-        return
-    r, g, b = _fly["rgb"]
-    buf[i] = (_clip(r * env), _clip(g * env), _clip(b * env))
+    buf[I_TOP] = _scale_rgb(_NIGHT, peak * env)
 
 
-def _solids(t, buf):
-    span = 10.0 * len(_COLOURS)
-    cycle = t % span
-    idx = int(cycle / 10.0) % len(_COLOURS)
-    u = (cycle % 10.0) / 10.0
-    if u < 0.72:
-        k = _step(0.0, 0.72, u)
-    else:
-        k = 1 - _step(0.72, 1.0, u)
-    col = _COLOURS[idx]
+def _arc_strength(idx, grow_k, collapse_k):
+    arc = _arc_indices()
+    if idx not in arc:
+        return 0.0
+    pos = arc.index(idx)
+    span = max(len(arc) - 1, 1)
+    along = pos / span
+    top_w = 1.0 - 0.55 * along
+    if grow_k < 1.0:
+        if along > grow_k:
+            return 0.0
+        edge = 1.0 - _smooth((along - grow_k * 0.85) / max(0.15, 1.0 - grow_k * 0.85)) if along > grow_k * 0.85 else 1.0
+        return top_w * edge * grow_k
+    if collapse_k < 1.0:
+        if along > collapse_k:
+            return 0.0
+        return top_w * _smooth(collapse_k - along) / max(collapse_k, 0.001)
+    return top_w
+
+
+def _draw_arc(buf, peak, grow_k=1.0, collapse_k=1.0):
     for i in range(N):
-        shade = _shade(i) * k
-        buf[i] = (_clip(col[0] * shade), _clip(col[1] * shade), _clip(col[2] * shade))
+        s = _shade(i)
+        if s <= 0:
+            buf[i] = (0, 0, 0)
+            continue
+        a = _arc_strength(i, grow_k, collapse_k)
+        if a <= 0:
+            buf[i] = (0, 0, 0)
+            continue
+        buf[i] = _scale_rgb(_NIGHT, peak * s * a)
+
+
+def _disc_breath(phase_u, peak):
+    u = phase_u / D_DISC
+    env = 0.15 * (0.5 - 0.5 * math.cos(2 * math.pi * u))
+    for i in range(N):
+        s = _shade(i)
+        if s <= 0:
+            buf[i] = (0, 0, 0)
+            continue
+        buf[i] = _scale_rgb(_NIGHT, peak * s * env)
+
+
+def _saber(t, buf):
+    peak = _peak_scale()
+    if peak <= 0 or mode not in _CYCLE_PEAK:
+        _off(buf)
+        return
+    phase = t % _PERIOD
+    if phase < D_TOP:
+        _top_breath(phase, peak)
+    elif phase < D_TOP + D_GROW:
+        k = _smooth((phase - D_TOP) / D_GROW)
+        _draw_arc(buf, peak, grow_k=k, collapse_k=1.0)
+    elif phase < D_TOP + D_GROW + D_HOLD:
+        _draw_arc(buf, peak, grow_k=1.0, collapse_k=1.0)
+    elif phase < D_TOP + D_GROW + D_HOLD + D_COLLAPSE:
+        k = 1.0 - _smooth((phase - D_TOP - D_GROW - D_HOLD) / D_COLLAPSE)
+        _draw_arc(buf, peak, grow_k=1.0, collapse_k=k)
+    else:
+        _disc_breath(phase - D_TOP - D_GROW - D_HOLD - D_COLLAPSE, peak)
 
 
 def _off(buf):
@@ -182,14 +217,10 @@ def _off(buf):
 
 
 def _render(which, t, buf):
-    if which == 2:
-        _night(t, buf)
-    elif which == 3:
-        _solids(t, buf)
-    elif which == 0 or which == 4:
-        _off(buf)
+    if which in _CYCLE_PEAK:
+        _saber(t, buf)
     else:
-        _sunrise(t, buf)
+        _off(buf)
 
 
 def _mix(a, b, k):

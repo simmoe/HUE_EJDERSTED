@@ -21,7 +21,9 @@ import solar
 BROKER = "mqtt.nextservices.dk"
 PORT = 1883
 TOPIC = "have_laage"
+LEVEL_TOPIC = "have_laage/level"
 STATUS_TOPIC = "have_laage/status"
+LEVELS = ("low", "medium", "max")
 DOC = "ejdersted/gate_garden"
 SCENES = 3
 CYCLES = frozenset({1, 2, 3})
@@ -33,6 +35,7 @@ NETPROG_PORT = 9011
 PROBE_TIMEOUT_S = 2.0
 
 PublishFn = Callable[[int], None]
+PublishLevelFn = Callable[[str], None]
 PersistFn = Callable[[dict[str, Any]], None]
 ProbeLanFn = Callable[[], dict[str, Any] | None]
 PeekStatusFn = Callable[[], bool | None]
@@ -98,6 +101,41 @@ def command_for(want_on: bool, cycle: int | None) -> int:
     return 0
 
 
+def parse_level(raw: Any) -> str | None:
+    level = str(raw or "").strip().lower()
+    return level if level in LEVELS else None
+
+
+def desired_level(
+    now: datetime,
+    sunset_today: datetime | None,
+    sunset_yesterday: datetime | None,
+    *,
+    want_on: bool,
+) -> str:
+    """Battery-friendly brightness tier while the gate is on at night."""
+    if not want_on:
+        return "low"
+    if sunset_today is None:
+        return "medium"
+    mins = (now - sunset_today).total_seconds() / 60.0
+    if mins < 0:
+        if sunset_yesterday is not None and now >= sunset_yesterday:
+            mins = (now - sunset_yesterday).total_seconds() / 60.0
+        else:
+            return "low"
+    if mins < 75:
+        return "low"
+    if mins < 150:
+        return "medium"
+    hour = now.hour
+    if hour >= 22 or hour < 1:
+        return "max"
+    if hour == 1:
+        return "medium"
+    return "medium"
+
+
 def desired_command(
     mode: str,
     cycle: int | None,
@@ -137,12 +175,37 @@ def mqtt_publish(
     number = int(scene)
     if number < 0 or number > SCENES:
         raise ValueError("scene")
+    mqtt_publish_text(str(number), broker=broker, port=port, topic=topic, retain=retain)
+
+
+def mqtt_publish_level(
+    level: str,
+    broker: str = BROKER,
+    port: int = PORT,
+    topic: str = LEVEL_TOPIC,
+    *,
+    retain: bool = True,
+) -> None:
+    parsed = parse_level(level)
+    if parsed is None:
+        raise ValueError("level")
+    mqtt_publish_text(parsed, broker=broker, port=port, topic=topic, retain=retain)
+
+
+def mqtt_publish_text(
+    payload: str,
+    broker: str = BROKER,
+    port: int = PORT,
+    topic: str = TOPIC,
+    *,
+    retain: bool = True,
+) -> None:
     client = b"hue-laage"
     connect = b"\x00\x04MQTT\x04\x02\x00\x0f" + len(client).to_bytes(2, "big") + client
     topic_b = topic.encode()
-    payload = str(number).encode()
+    body = payload.encode()
     flags = 0x31 if retain else 0x30
-    publish = len(topic_b).to_bytes(2, "big") + topic_b + payload
+    publish = len(topic_b).to_bytes(2, "big") + topic_b + body
     sock = socket.create_connection((broker, port), timeout=4)
     try:
         sock.settimeout(4)
@@ -264,6 +327,7 @@ class GateController:
         lon: float = 12.5683,
         tz: str | ZoneInfo = "Europe/Copenhagen",
         publish: PublishFn | None = None,
+        publish_level: PublishLevelFn | None = None,
         persist: PersistFn | None = None,
         clock_trusted: Callable[[], bool] | None = None,
         probe_lan: ProbeLanFn | None = None,
@@ -273,6 +337,7 @@ class GateController:
         self.lon = float(lon)
         self.tz = tz if isinstance(tz, ZoneInfo) else ZoneInfo(str(tz))
         self._publish = publish or (lambda scene: mqtt_publish(scene))
+        self._publish_level = publish_level or (lambda level: mqtt_publish_level(level))
         self._persist = persist
         self._clock_trusted = clock_trusted or solar.clock_is_trusted
         self._probe_lan = probe_lan or probe_lan_http
@@ -283,6 +348,7 @@ class GateController:
         self.online = False
         self.last_status_at = 0.0
         self._last_command: int | None = None
+        self._last_level: str | None = None
         self._lock = threading.Lock()
 
     def hydrate(self, doc: dict[str, Any] | None) -> None:
@@ -396,23 +462,35 @@ class GateController:
         now = now or datetime.now(self.tz)
         sunset_today, sunset_yesterday = self.sunsets(now)
         with self._lock:
-            cmd = desired_command(
+            want = desired_on(
                 self.mode,
-                self.cycle,
                 now,
                 sunset_today,
                 sunset_yesterday,
                 clock_trusted=self._clock_trusted(),
             )
-            if not force and cmd == self._last_command:
+            cmd = command_for(want, self.cycle)
+            level = desired_level(
+                now,
+                sunset_today,
+                sunset_yesterday,
+                want_on=want,
+            )
+            same_cmd = not force and cmd == self._last_command
+            same_level = not force and level == self._last_level
+            if same_cmd and same_level:
                 self.on = cmd in CYCLES
                 return False
         try:
-            self._publish(cmd)
+            if not same_cmd:
+                self._publish(cmd)
+            if not same_level:
+                self._publish_level(level)
         except OSError:
             return False
         with self._lock:
             self._last_command = cmd
+            self._last_level = level
             self.on = cmd in CYCLES
         self._write({"on": cmd in CYCLES})
         return True

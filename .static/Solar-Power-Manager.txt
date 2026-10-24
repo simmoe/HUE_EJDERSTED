@@ -1,0 +1,130 @@
+
+
+--- page 1 ---
+
+Solar Power Manager User Manual    
+Version: V1.0 Date: 2019.02.20   1 / 6 
+Solar Power Manager 
+User Manual 
+ 
+OVERVIEW  
+This solar power management module is designed for 6V~24V solar panel. It can 
+charge the 3.7V Li battery through solar panel or USB connection, and provides 5V/1A 
+regulated output. 
+The module features MPPT (Maximum Power Point Tracking) function and multi 
+protection circuits, therefore, it is able to keep working with high-efficiency, stability, 
+and safety. It is suited for solar powered, low-power IoT, and other environmental 
+protection projects. 
+FEATURES  
+⚫ Supports MPPT (Maximum Power Point Tracking) function, maximizing the 
+efficiency of the solar panel 
+⚫ Supports solar panel / USB connection battery charging 
+⚫ For 6V~24V solar panel, DC-002 jack input or screw terminal input 
+⚫ Onboard MPPT SET switch, select the level closed to input level to improve 
+charging efficiency 
+⚫ Two 5V output interfaces: pinheaders and USB port 
+⚫ Onboard high capacity aluminum electrolytic capacitor and SMD ceramic 
+capacitor, reducing the ripple, stable performance
+
+
+--- page 2 ---
+
+Solar Power Manager User Manual    
+Version: V1.0 Date: 2019.02.20   2 / 6 
+⚫ 14500 battery holder and PH2.0 battery connector, for connecting multi kinds of 
+3.7V Li battery 
+⚫ Several LED indicators, for monitoring the status of solar panel and battery 
+⚫ Multi protection circuits: over charge / over discharge / reverse protection / over 
+heat / over current, stable and safe to use 
+SPECIFICATIONS  
+⚫ Solar panel input voltage (SOLAR IN): 6V~24V 
+⚫ Micro USB input voltage (USB IN): 5V 
+⚫ Pinheader / USB output (USB OUT): 5V 1A 
+⚫ Charging cutoff voltage: 4.2V±1％ 
+⚫ Over discharging protection voltage: 2.9V±1％ 
+⚫ Solar panel charge efficiency: ~78% 
+⚫ USB charge efficiency: ~82% 
+⚫ 3.7V battery boost output efficiency: ~86% 
+⚫ Max quiescent current: <2mA 
+⚫ Operating temperature: -40℃~85℃ 
+⚫ Dimension: 65.2mm × 56.2mm × 22.9mm 
+WATH’ S ON BOARD
+
+
+--- page 3 ---
+
+Solar Power Manager User Manual    
+Version: V1.0 Date: 2019.02.20   3 / 6 
+ 
+1. Solar panel charging input: charged by solar panel, DC-002 jack or screw 
+terminal 
+2. USB charging input: charged by USB connection, connect a 5V power adapter 
+through the Micro USB port 
+3. 5V/1A power output: provides regulated 5V/1A output, USB port or 2.54mm 
+pinheader 
+4. Battery interfaces: for connecting 3.7V Li battery, PH2.0 connector or 14500 
+battery holder 
+5. CS8501: USB power management chip, for USB charging and 5V/1A boost output 
+6. CN3791: solar power management chip, for solar panel charging and buck input 
+7. Li battery protection chip: Li battery over charge / over discharge protection 
+8. Battery switch
+
+
+--- page 4 ---
+
+Solar Power Manager User Manual    
+Version: V1.0 Date: 2019.02.20   4 / 6 
+9. MPPTSET switch (bottom side): 
+supported level: 6V/9V/12V/18V/24V 
+select the level closed to input level to improve charging efficiency 
+10. BOOT key 
+11. Battery capacity indicators 
+12. USB charging indicators: 
+USB Charge: on when USB charging 
+USB Done: on when the battery is full charged by USB 
+13. Solar panel charging indicators: 
+Solar Charge: on when solar panel charging 
+Solar Done: on when the battery is full charged by solar panel 
+Solar Warning: on when solar panel reverse connection 
+14. Battery warning: on when battery reverse connection 
+15. Power output indicator: 5V/1A output 
+CAPACITY INFICATORS  
+Voltage (V) VD1 VD2 VD3 VD4 
+3.87-4.2 ON ON ON ON 
+3.7-3.87 ON ON ON OFF 
+3.55-3.7 ON ON OFF OFF 
+3.4-3.55 ON OFF OFF OFF 
+<3.4 OFF OFF OFF OFF
+
+
+--- page 5 ---
+
+Solar Power Manager User Manual    
+Version: V1.0 Date: 2019.02.20   5 / 6 
+USAGE  
+1. Mounting battery: Turn Battery Switch into ON, then mount 14500 battery to 
+battery holder in correct direction or connecting battery to PH2.0 DIP socket. If 
+you connect battery incorrectly, the Battery Warning indicator will light on, in this 
+case, you need to change the direction of battery mounted. If battery is mounted 
+correctly, indicator ON will light on. (Note: You cannot connect power adapter for 
+charging when Warning indicator is ON, otherwise Manager board is damaged) 
+2. Solar panel charging indicator: Connect solar panel to DC-002 socket or KF350-2P 
+green socket. If panel is connected correctly, Solar Charge indicator light on, if 
+panel is connected in wrong direction, Solar Warning light on. Solar Done turns on 
+and Solar Charge turns off when battery is full charged. 
+3. Micro USB charging indicator: Connect 5V power adapter to Micro USB interface, 
+USB Charger indicator lights on. Solar Done turns on and Solar Charge turns off 
+when battery is full charged. 
+4. Charge and Done indicator will blink alternately when Power adapter is plugged 
+without battery or the battery switch is turned off. 
+5. You can power external device via USB Type A interface with USB cable, or connect 
+to the 2x2 yellow pins. 
+(Note that, you cannot short 2x2 yellow pins, avoid of circuit damaging)
+
+
+--- page 6 ---
+
+Solar Power Manager User Manual    
+Version: V1.0 Date: 2019.02.20   6 / 6 
+APPLICATIONS  
+【Solar energy charging】

@@ -68,7 +68,8 @@ Cycle `1–3` lives only in Firestore `ejdersted/gate_garden`. Nothing else
 writes it — not boot, not MQTT reconnect. Sluk is state, not scene 4.
 
 AUTO: last cycle from sunset until 02:00, then off. TÆND and SLUK keep that
-same cycle. MQTT `have_laage` carries the live command (`1–3` or `0`).
+same cycle. MQTT `have_laage` carries the live command (`1–3` or `0`). Retained
+`have_laage/level` is `low`, `medium`, or `max` (Pi sets it from sunset time).
 Presence is last-will plus a retained heartbeat on `have_laage/status`.
 If the M5 Nano C6's own solar cell is empty, the card is offline.
 

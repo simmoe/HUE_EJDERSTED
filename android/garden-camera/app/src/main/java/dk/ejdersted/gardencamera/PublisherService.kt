@@ -7,6 +7,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.lifecycle.LifecycleService
 import java.util.concurrent.Executors
@@ -17,6 +18,7 @@ class PublisherService : LifecycleService() {
     private lateinit var camera: Camera2Engine
     private var facing = "environment"
     private var ready = false
+    private var roomDark = false
     private val snap = Runnable { capture() }
     private val poll = Runnable { pollFacing() }
 
@@ -81,6 +83,8 @@ class PublisherService : LifecycleService() {
             main.post {
                 if (next != facing) {
                     facing = next
+                    roomDark = false
+                    camera.setBorrowedTorch(false)
                     Log.i("GardenCam", "facing $facing")
                     openCurrent()
                 }
@@ -96,7 +100,44 @@ class PublisherService : LifecycleService() {
         }
         camera.capture { bytes ->
             HubPoster.postJpeg(bytes)
+            if (facing == "user") {
+                io.execute {
+                    val mean = jpegLuma(bytes)
+                    main.post { applyRoomDark(mean) }
+                }
+            }
             main.postDelayed(snap, 2000)
         }
+    }
+
+    private fun applyRoomDark(mean: Float) {
+        if (facing != "user") return
+        val dark = if (roomDark) mean < TORCH_OFF else mean < TORCH_ON
+        if (dark == roomDark) return
+        roomDark = dark
+        Log.i("GardenCam", "front luma=$mean dark=$dark")
+        camera.setBorrowedTorch(dark)
+    }
+
+    private fun jpegLuma(jpeg: ByteArray): Float {
+        val opts = BitmapFactory.Options().apply { inSampleSize = 32 }
+        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts) ?: return 255f
+        val pixels = IntArray(bmp.width * bmp.height)
+        bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        bmp.recycle()
+        if (pixels.isEmpty()) return 255f
+        var sum = 0L
+        for (p in pixels) {
+            val r = (p shr 16) and 0xff
+            val g = (p shr 8) and 0xff
+            val b = p and 0xff
+            sum += (r * 3 + g * 6 + b) / 10
+        }
+        return sum.toFloat() / pixels.size
+    }
+
+    companion object {
+        private const val TORCH_ON = 18f
+        private const val TORCH_OFF = 30f
     }
 }

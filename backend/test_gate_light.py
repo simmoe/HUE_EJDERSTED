@@ -83,12 +83,38 @@ class GateScheduleTests(unittest.TestCase):
         )
 
 
+class DesiredLevelTests(unittest.TestCase):
+    def test_ramps_after_sunset(self):
+        sunset = _dt(18, 0)
+        self.assertEqual(
+            gate_light.desired_level(_dt(18, 30), sunset, None, want_on=True),
+            "low",
+        )
+        self.assertEqual(
+            gate_light.desired_level(_dt(19, 30), sunset, None, want_on=True),
+            "medium",
+        )
+        self.assertEqual(
+            gate_light.desired_level(_dt(23, 0), sunset, None, want_on=True),
+            "max",
+        )
+
+    def test_off_is_low(self):
+        sunset = _dt(18, 0)
+        self.assertEqual(
+            gate_light.desired_level(_dt(23, 0), sunset, None, want_on=False),
+            "low",
+        )
+
+
 class GateControllerTests(unittest.TestCase):
     def setUp(self):
         self.published = []
+        self.levels = []
         self.writes = []
         self.ctrl = gate_light.GateController(
             publish=self.published.append,
+            publish_level=self.levels.append,
             persist=self.writes.append,
             clock_trusted=lambda: True,
         )
@@ -106,6 +132,7 @@ class GateControllerTests(unittest.TestCase):
         self.ctrl.hydrate({"mode": "auto", "cycle": 2})
         self.ctrl.set_mode("on", night)
         self.assertEqual(self.published, [2])
+        self.assertIn("medium", self.levels)
         self.ctrl.set_mode("off", night)
         self.assertEqual(self.published, [2, 0])
         self.assertEqual(self.ctrl.cycle, 2)
@@ -126,6 +153,7 @@ class GateControllerTests(unittest.TestCase):
         self.assertEqual(self.published, [0])
         self.ctrl.apply(_dt(21))
         self.assertEqual(self.published, [0, 1])
+        self.assertIn("medium", self.levels)
         self.ctrl.apply(_dt(2, 0, day=16))
         self.assertEqual(self.published[-1], 0)
 
@@ -134,6 +162,7 @@ class GateControllerTests(unittest.TestCase):
         self.ctrl.apply(_dt(12))
         self.ctrl.apply(_dt(12))
         self.assertEqual(self.published, [3])
+        self.assertEqual(len(self.levels), 1)
 
     def test_coming_online_republishes_without_touching_cycle(self):
         self.ctrl.hydrate({"mode": "on", "cycle": 2})
@@ -167,6 +196,7 @@ class GateControllerTests(unittest.TestCase):
     def test_reconnect_uses_lan_even_when_mqtt_is_offline(self):
         self.ctrl = gate_light.GateController(
             publish=self.published.append,
+            publish_level=self.levels.append,
             persist=self.writes.append,
             clock_trusted=lambda: True,
             probe_lan=lambda: {"ip": gate_light.GATE_IP, "mode": 0, "mqtt": False},
@@ -180,6 +210,7 @@ class GateControllerTests(unittest.TestCase):
     def test_reconnect_trusts_mqtt_when_lan_is_dark(self):
         self.ctrl = gate_light.GateController(
             publish=self.published.append,
+            publish_level=self.levels.append,
             persist=self.writes.append,
             clock_trusted=lambda: True,
             probe_lan=lambda: None,
@@ -191,6 +222,7 @@ class GateControllerTests(unittest.TestCase):
     def test_reconnect_stays_offline_when_both_are_dark(self):
         self.ctrl = gate_light.GateController(
             publish=self.published.append,
+            publish_level=self.levels.append,
             persist=self.writes.append,
             clock_trusted=lambda: True,
             probe_lan=lambda: None,

@@ -10,13 +10,21 @@ import time
 import lights
 
 _TOPIC = b"have_laage"
+_LEVEL = b"have_laage/level"
 _STATUS = b"have_laage/status"
 _HOST = "mqtt.nextservices.dk"
 
 
-def _on(_topic, msg):
+def _on(topic, msg):
     try:
-        n = int(msg.decode().strip())
+        text = msg.decode().strip()
+    except Exception:
+        return
+    if topic == _LEVEL:
+        lights.set_level(text)
+        return
+    try:
+        n = int(text)
     except Exception:
         return
     lights.set_mode(n)
@@ -33,6 +41,7 @@ def _run():
             client.set_callback(_on)
             client.connect()
             client.subscribe(_TOPIC)
+            client.subscribe(_LEVEL)
             client.publish(_STATUS, b"online", retain=True)
             lights.mqtt_up = True
             last = time.ticks_ms()
