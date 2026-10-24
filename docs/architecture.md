@@ -95,6 +95,9 @@ Home and garden share playlist library data, but not physical player state.
   in W, output W, USB/DC/AC, charging). History lives in the `samples` subcollection,
   one document per 5-minute UTC bucket. The garden backend writes these;
   browsers must not. Garden 230 V is manual tænd/sluk (`power_state.json` on the Pi);
+- `ejdersted/air_garden` is the latest indoor Vindstyrka reading (temp, humidity,
+  PM2.5, VOC) plus outdoor humidity from DMI at HF Musikbyen. Same 5-minute
+  `samples` subcollection on the garden hub only;
   each SwitchBot press it makes is logged to the `events` subcollection.
 - `ejdersted/audio_home` and `ejdersted/audio_garden` hold playback handoff
   events (`events/{id}`). Each hub also keeps a local JSONL at

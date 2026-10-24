@@ -326,7 +326,7 @@ classes with this one.
 
 Fossibot samples (SoC, solar / AC-in / total-in W, out W, `acOn`/`dcOn`/`usbOn`) are written to Firestore
 `ejdersted/fossibot_garden` plus `samples/{yyyyMMddTHHmm}` every five minutes,
-and immediately when a port or online/charging flag flips. Intended rules for
+and immediately when a port or online/charging flag flips. Air (Vindstyrka temp/humidity/PM2.5/VOC plus DMI outdoor humidity) logs to `ejdersted/air_garden` on the same five-minute bucket schedule. Intended rules for
 p5-diary-ca5f7. Live rules (fetched 2026-08-30) are still the 2022 test-mode
 catch-all until 2027-03-24; the fossibot match uses that same window. Do not
 deploy these rules to p5-firebase-eebc1.

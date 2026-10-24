@@ -6,6 +6,7 @@
 // Assumed data on this project includes the diary app plus Ejdersted:
 //   ejdersted/radioPlaylists, savedAlbums, player_home, player_garden, security_garden
 //   ejdersted/fossibot_garden + fossibot_garden/samples/{yyyyMMddTHHmm}
+//   ejdersted/air_garden + air_garden/samples/{yyyyMMddTHHmm}
 //   ejdersted/audio_home + audio_garden /events/{id} (hub-written playback log)
 // The live catch-all is test-mode until 2027-03-24. Keep it. New matches
 // use the same window so other sites on this project stay unchanged.
@@ -19,6 +20,13 @@ service cloud.firestore {
     }
 
     match /ejdersted/fossibot_garden {
+      allow read, write: if request.time < timestamp.date(2027, 3, 24);
+      match /samples/{sampleId} {
+        allow read, write: if request.time < timestamp.date(2027, 3, 24);
+      }
+    }
+
+    match /ejdersted/air_garden {
       allow read, write: if request.time < timestamp.date(2027, 3, 24);
       match /samples/{sampleId} {
         allow read, write: if request.time < timestamp.date(2027, 3, 24);

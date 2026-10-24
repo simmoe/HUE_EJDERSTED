@@ -44,6 +44,7 @@ import sr
 import audio_targets
 import camera_presence
 import fossibot_ble
+import air_log
 import fossibot_log
 import gate_light
 import garden_lights
@@ -202,6 +203,7 @@ _notify_tasks: dict[str, asyncio.Task] = {}
 SOLAR_STATE_FILE = REPO_ROOT / "solar_state.json"
 POWER_STATE_FILE = REPO_ROOT / "power_state.json"
 FOSSIBOT_OUTBOX_FILE = REPO_ROOT / "fossibot_outbox.json"
+AIR_OUTBOX_FILE = REPO_ROOT / "air_outbox.json"
 solar_ctrl: solar.SolarController | None = None
 solar_status_cache: dict = {}
 power_ctrl: power.PowerPolicy | None = None
@@ -218,6 +220,8 @@ fossibot_monitor: fossibot_ble.FossibotMonitor | None = None
 fossibot_status_cache: dict = {"enabled": False}
 _fossibot_log_at: float = 0.0
 _fossibot_log_key: tuple | None = None
+_air_log_at: float = 0.0
+_air_log_key: tuple | None = None
 _last_ac_on: bool | None = None
 _lights_after_ac_task: asyncio.Task | None = None
 
@@ -365,6 +369,46 @@ async def _fossibot_loop() -> None:
         except Exception as exc:
             print(f"[fossibot] poll failed: {exc}")
         await asyncio.sleep(max(5.0, monitor.poll_sec))
+
+
+async def _air_log_loop() -> None:
+    global _air_log_at, _air_log_key
+    if hub_config.site() != "garden":
+        return
+    log_sec = air_log.DEFAULT_LOG_SEC
+    while True:
+        try:
+            row = zigbee_air.status()
+            if not row.get("online"):
+                row = await zigbee_air.refresh()
+            row.update(await outdoor_air.snapshot(_http))
+            now = time.time()
+            firebase = _load_firebase_config()
+            if air_log.should_log(
+                row,
+                last_at=_air_log_at,
+                last_key=_air_log_key,
+                now=now,
+                interval_sec=log_sec,
+            ):
+                await air_log.persist(
+                    row,
+                    firebase_config=firebase,
+                    http_client=_http,
+                    outbox_path=AIR_OUTBOX_FILE,
+                )
+                _air_log_at = now
+                _air_log_key = air_log.sample_key(row)
+            await air_log.flush_outbox(
+                AIR_OUTBOX_FILE,
+                firebase_config=firebase,
+                http_client=_http,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[air] log failed: {exc}")
+        await asyncio.sleep(max(30.0, zigbee_air.POLL_S))
 
 # ─── Hue ───────────────────────────────────────────────────────────────────────
 hue_bridge: HueBridge                    # initialised in lifespan
@@ -974,6 +1018,11 @@ async def lifespan(app: FastAPI):
             lights_log.log("zigbee.up", ok=False, error=str(exc)[:160])
     poll_task = asyncio.create_task(poll_loop())
     fossibot_task = asyncio.create_task(_fossibot_loop()) if fossibot_monitor else None
+    air_log_task = (
+        asyncio.create_task(_air_log_loop())
+        if hub_config.site() == "garden" and hub_config.feature_enabled("lights")
+        else None
+    )
     kiosk_task = asyncio.create_task(_kiosk_status_loop())
 
     zc = Zeroconf()
@@ -993,6 +1042,8 @@ async def lifespan(app: FastAPI):
     _gate_stop.set()
     if fossibot_task is not None:
         fossibot_task.cancel()
+    if air_log_task is not None:
+        air_log_task.cancel()
     kiosk_task.cancel()
     if _lights_after_ac_task is not None:
         _lights_after_ac_task.cancel()
