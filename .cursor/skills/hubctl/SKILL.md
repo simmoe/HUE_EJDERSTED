@@ -7,6 +7,12 @@ description: Deploy static/backend, read kiosk heartbeat, and reload kiosk Chrom
 
 Run from the repo root. Never print vault passwords.
 
+**Garden deploy from Vesterbro:** `hubctl` uses Tailscale SSH to `simmoe@100.111.167.54`.
+Before `backend garden`, `static garden`, or `reload garden`, verify SSH works
+(`ssh -o BatchMode=yes simmoe@100.111.167.54 'echo ok'`). If Tailscale asks for
+an extra check, open the `login.tailscale.com/a/…` link for Simon to approve —
+do not start a long `hubctl` run that will hang until auth is done.
+
 ```bash
 scripts/hubctl status
 scripts/hubctl static garden|home|both [--replace-unstamped]
