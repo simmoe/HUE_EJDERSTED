@@ -150,6 +150,11 @@ port if it is free. Relæ 5 V/GND remains on the Pi header.
 The old powerbank/UPS island is optional. USB sleep was the empty-port
 problem, not “USB cannot power a Pi”.
 
+## Electrical topology
+
+Load map (12 V / 5 V / 230 V, what is *not* on Fossibot): **`docs/electrical-topology.md`**.
+Use it for power budgeting and camera-interval work — not for PV/solar array sizing.
+
 ## Fossibot DC group (12 V) — from the F2400 manual
 
 Source: `.static/FOSSiBOT-F2400.txt` (OCR of the scanned user manual;
@@ -167,8 +172,9 @@ press off. Separate from the USB button and the AC button.
 Anderson on the side is **input** (solar via Anderson-to-MC4, or the ACC car
 charging cable into the Anderson port) — not a 12 V load socket.
 
-Garden plan: Pi on a USB-C PD car charger in the cigarette socket; Huawei B535
-on one DC5521 (12 V / 1 A, centre-positive). XT60 is surplus for this hop.
+Installed: **Huawei B535** and **Pi 5** (12 V → USB-C PD) each on Fossibot **12 V
+DC**; **A12** and **IKEA Vindstyrka** each on a **5 V USB** port. See
+`docs/electrical-topology.md`. XT60 is surplus for this hop.
 
 ## AC policy (SwitchBot) — manual tænd / sluk
 

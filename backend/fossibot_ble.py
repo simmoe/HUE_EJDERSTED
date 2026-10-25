@@ -19,6 +19,8 @@ from typing import Any
 
 STATUS_POLL = bytes.fromhex("110400000050a6f2")
 SOC_REGISTER = 56
+# Reg 20 often reads 0 on the F2400 while loads are on; reg 21 tracks real output W.
+OUT_WATTS_REGISTER = 21
 # Highest register we print from a status dump (time-to-empty).
 LAST_STATUS_REGISTER = 59
 MIN_FRAME_FOR_SOC = 6 + (SOC_REGISTER + 1) * 2
@@ -133,7 +135,7 @@ def parse_status(frame: bytes, address: str = "", name: str = "") -> FossibotSta
         solar_watts=_reg(payload, 4),
         ac_in_watts=_reg(payload, 3),
         total_in_watts=_reg(payload, 6),
-        total_out_watts=_reg(payload, 20),
+        total_out_watts=_reg(payload, OUT_WATTS_REGISTER) or _reg(payload, 20),
         usb_on=_reg(payload, 24) != 0 or bool(caps & (1 << 9)),
         dc_on=_reg(payload, 25) != 0 or bool(caps & (1 << 10)),
         ac_on=_reg(payload, 26) != 0 or bool(caps & (1 << 11)),

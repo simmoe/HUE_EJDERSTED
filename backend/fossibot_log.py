@@ -9,6 +9,7 @@ empty, hold from a kiosk tap), so a dark hut can be explained afterwards.
 
 Writes follow the same REST path as ``security_garden``. Client SDKs must not
 write these documents. Read is for later interpretation (SoC, solar/AC/total in, out, AC/DC/USB).
+`outWatts` is total load (BLE reg 21 on the F2400; reg 20 is often stuck at 0).
 """
 
 from __future__ import annotations

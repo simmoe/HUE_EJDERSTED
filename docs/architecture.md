@@ -9,6 +9,10 @@ long-lived Git branches.
 | `home` | Ejderstedgade/Vesterbro | read-only `viewer` | Private internal HTTPS; no public ingress or port forwarding |
 | `garden` | Kolonihaven | `publisher` and feed owner | Trusted HTTPS through Tailscale MagicDNS |
 
+**Garden power (loads only):** Pi and router on Fossibot **12 V**; phone on **5 V
+USB**; **230 V default off**. Canonical diagram and budgeting notes:
+[`docs/electrical-topology.md`](electrical-topology.md).
+
 Private and HTTPS describe different properties. The home hub uses HTTPS on its
 private network, but that does not make it internet-accessible. The garden hub
 is reachable only by members of the tailnet; it is not publicly port-forwarded.

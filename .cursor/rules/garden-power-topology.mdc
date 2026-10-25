@@ -1,0 +1,16 @@
+---
+description: Garden Fossibot rails (12V Pi+router, 5V phone, 230V default off). Read when discussing power, USB load, camera interval, DC/USB, Fossibot samples, or empty-hut savings — not for turning on 230V unless Simon asks.
+globs:
+alwaysApply: false
+---
+
+# Garden power topology
+
+Read **`docs/electrical-topology.md`** before advising on strøm, kamera-frekvens,
+Fossibot `outWatts`/`socPercent`, or “tænd lys”.
+
+- **12 V (direct on Fossibot):** Huawei router + Pi 5 (Pi via 12 V → USB-C PD; unreliable on 5 V USB alone).
+- **5 V USB (direct on Fossibot, two ports):** Galaxy A12 + IKEA Vindstyrka — continuous loads; phone SOC ~100 % is irrelevant.
+- **230 V:** mains lamps; **default off** when empty. Do not use AC/230 V to “light the room” for camera tests unless Simon explicitly asks.
+- **Vindstyrka:** Zigbee over the air from Pi’s coordinator; **power from Fossibot 5 V USB**, not 12 V.
+- Budget in **load W/Wh per rail**, independent of solar in.
