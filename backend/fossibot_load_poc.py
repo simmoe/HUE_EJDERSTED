@@ -129,7 +129,7 @@ async def run_poc(address: str | None, polls: int, interval: float, timeout: flo
         net_w = (pub["inWatts"] or 0) - (pub["outWatts"] or 0)
 
     print("--- estimates ---")
-    print(f"BLE outWatts (reg 20): {pub['outWatts']} W")
+    print(f"BLE outWatts (reg 21): {pub['outWatts']} W")
     r21 = last.raw_registers.get(21)
     if r21:
         print(f"reg 21 (output candidate): {r21} W?")

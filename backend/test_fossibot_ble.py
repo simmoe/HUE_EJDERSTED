@@ -70,8 +70,25 @@ class FossibotBleParseTests(unittest.TestCase):
         self.assertEqual(public["solarWatts"], 187)
         self.assertEqual(public["acInWatts"], 410)
         self.assertEqual(public["inWatts"], 597)
+        self.assertEqual(public["outWatts"], 42)
         self.assertFalse(public["dcOn"])
         self.assertTrue(public["online"])
+
+    def test_out_watts_is_reg_21_while_ac_is_off(self):
+        frame = bytearray(6 + 80 * 2)
+        frame[0:2] = b"\x11\x04"
+
+        def put(index: int, value: int) -> None:
+            offset = 6 + index * 2
+            frame[offset : offset + 2] = value.to_bytes(2, "big")
+
+        put(20, 2291)
+        put(21, 18)
+        put(26, 0)
+        status = fossibot_ble.parse_status(bytes(frame))
+        assert status is not None
+        self.assertFalse(status.ac_on)
+        self.assertEqual(status.total_out_watts, 18)
 
     def test_ac_on_from_capability_bit_when_toggle_is_zero(self):
         frame = bytearray(6 + 80 * 2)
