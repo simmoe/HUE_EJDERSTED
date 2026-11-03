@@ -19,10 +19,12 @@ from typing import Any
 
 STATUS_POLL = bytes.fromhex("110400000050a6f2")
 SOC_REGISTER = 56
-# Reg 20 is measured output watts. It still moves when the 230 V outlet is
-# off and only the 12 V and 5 V groups are on. Reg 21 sits near the 2400 W
-# nameplate and is not that load.
+# Reg 20 is total output, and it is the number we show while it is above 0.
+# With the 230 V outlet off it reads 0 even though 12 V and USB are on.
+# Reg 39 is the port total that still moves in that case. Reg 18 and 21 are
+# AC volts times ten (about 2280 when the outlet is up), not watts.
 OUT_WATTS_REGISTER = 20
+PORT_OUT_WATTS_REGISTER = 39
 # Highest register we print from a status dump (time-to-empty).
 LAST_STATUS_REGISTER = 59
 MIN_FRAME_FOR_SOC = 6 + (SOC_REGISTER + 1) * 2
@@ -114,6 +116,13 @@ def parse_soc(frame: bytes) -> int | None:
     return _reg(payload, SOC_REGISTER)
 
 
+def output_watts(total: int, ports: int) -> int:
+    """Prefer the total. Use the port gauge when the total has dropped to 0."""
+    if total > 0:
+        return total
+    return ports
+
+
 def parse_registers(frame: bytes, count: int = 70) -> dict[int, int] | None:
     payload = _status_payload(frame, 6 + count * 2)
     if payload is None:
@@ -128,7 +137,7 @@ def parse_status(frame: bytes, address: str = "", name: str = "") -> FossibotSta
     raw_soc = _reg(payload, SOC_REGISTER)
     flags = _reg(payload, 48)
     caps = _reg(payload, 41)
-    raw = {index: _reg(payload, index) for index in (3, 4, 6, 20, 21, 24, 25, 26, 27, 41, 48, 56, 58, 59)}
+    raw = {index: _reg(payload, index) for index in (3, 4, 6, 20, 21, 24, 25, 26, 27, 39, 41, 48, 56, 58, 59)}
     return FossibotStatus(
         address=address,
         name=name or address,
@@ -137,7 +146,7 @@ def parse_status(frame: bytes, address: str = "", name: str = "") -> FossibotSta
         solar_watts=_reg(payload, 4),
         ac_in_watts=_reg(payload, 3),
         total_in_watts=_reg(payload, 6),
-        total_out_watts=_reg(payload, OUT_WATTS_REGISTER),
+        total_out_watts=output_watts(_reg(payload, OUT_WATTS_REGISTER), _reg(payload, PORT_OUT_WATTS_REGISTER)),
         usb_on=_reg(payload, 24) != 0 or bool(caps & (1 << 9)),
         dc_on=_reg(payload, 25) != 0 or bool(caps & (1 << 10)),
         ac_on=_reg(payload, 26) != 0 or bool(caps & (1 << 11)),

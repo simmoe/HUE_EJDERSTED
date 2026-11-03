@@ -87,10 +87,28 @@ class FossibotBleParseTests(unittest.TestCase):
         put(24, 0)
         put(25, 0)
         put(26, 0)
+        put(39, 113)
         status = fossibot_ble.parse_status(bytes(frame))
         assert status is not None
         self.assertFalse(status.ac_on)
         self.assertEqual(status.total_out_watts, 91)
+
+    def test_out_watts_uses_port_total_when_reg_20_is_zero(self):
+        frame = bytearray(6 + 80 * 2)
+        frame[0:2] = b"\x11\x04"
+
+        def put(index: int, value: int) -> None:
+            offset = 6 + index * 2
+            frame[offset : offset + 2] = value.to_bytes(2, "big")
+
+        put(18, 67)
+        put(20, 0)
+        put(21, 10)
+        put(26, 0)
+        put(39, 15)
+        status = fossibot_ble.parse_status(bytes(frame))
+        assert status is not None
+        self.assertEqual(status.total_out_watts, 15)
 
     def test_ac_on_from_capability_bit_when_toggle_is_zero(self):
         frame = bytearray(6 + 80 * 2)

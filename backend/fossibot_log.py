@@ -9,7 +9,7 @@ empty, hold from a kiosk tap), so a dark hut can be explained afterwards.
 
 Writes follow the same REST path as ``security_garden``. Client SDKs must not
 write these documents. Read is for later interpretation (SoC, solar/AC/total in, out, AC/DC/USB).
-`outWatts` is measured load from BLE reg 20, including 12 V and USB while the 230 V outlet is off. Reg 21 is not that figure.
+`outWatts` is BLE reg 20 while that is above 0. With the 230 V outlet off, reg 20 reads 0 and `outWatts` is reg 39, the port total. Reg 18 and 21 are AC voltage, not watts.
 """
 
 from __future__ import annotations
