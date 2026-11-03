@@ -19,9 +19,10 @@ from typing import Any
 
 STATUS_POLL = bytes.fromhex("110400000050a6f2")
 SOC_REGISTER = 56
-# Reg 21 is the measured output, including 12 V and USB while 230 V is off.
-# Reg 20 is not that load: it sits near the 2400 W nameplate, or at 0.
-OUT_WATTS_REGISTER = 21
+# Reg 20 is measured output watts. It still moves when the 230 V outlet is
+# off and only the 12 V and 5 V groups are on. Reg 21 sits near the 2400 W
+# nameplate and is not that load.
+OUT_WATTS_REGISTER = 20
 # Highest register we print from a status dump (time-to-empty).
 LAST_STATUS_REGISTER = 59
 MIN_FRAME_FOR_SOC = 6 + (SOC_REGISTER + 1) * 2

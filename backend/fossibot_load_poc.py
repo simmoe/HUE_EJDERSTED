@@ -129,10 +129,10 @@ async def run_poc(address: str | None, polls: int, interval: float, timeout: flo
         net_w = (pub["inWatts"] or 0) - (pub["outWatts"] or 0)
 
     print("--- estimates ---")
-    print(f"BLE outWatts (reg 21): {pub['outWatts']} W")
+    print(f"BLE outWatts (reg 20): {pub['outWatts']} W")
     r21 = last.raw_registers.get(21)
     if r21:
-        print(f"reg 21 (output candidate): {r21} W?")
+        print(f"reg 21 (nameplate, not load): {r21}")
     if tte_w is not None:
         print(f"from time-to-empty ({last.time_to_empty_min} min @ {last.soc_percent:.1f}%): ~{tte_w:.0f} W discharge")
     else:

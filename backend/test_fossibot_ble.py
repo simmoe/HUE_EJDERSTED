@@ -44,8 +44,8 @@ class FossibotBleParseTests(unittest.TestCase):
         put(3, 410)
         put(4, 187)
         put(6, 597)
-        put(20, 0)
-        put(21, 42)
+        put(20, 42)
+        put(21, 2282)
         put(24, 1)
         put(25, 0)
         put(26, 1)
@@ -74,7 +74,7 @@ class FossibotBleParseTests(unittest.TestCase):
         self.assertFalse(public["dcOn"])
         self.assertTrue(public["online"])
 
-    def test_out_watts_is_reg_21_while_ac_is_off(self):
+    def test_out_watts_is_reg_20_while_ac_outlet_is_off(self):
         frame = bytearray(6 + 80 * 2)
         frame[0:2] = b"\x11\x04"
 
@@ -82,13 +82,15 @@ class FossibotBleParseTests(unittest.TestCase):
             offset = 6 + index * 2
             frame[offset : offset + 2] = value.to_bytes(2, "big")
 
-        put(20, 2291)
-        put(21, 18)
+        put(20, 91)
+        put(21, 2283)
+        put(24, 0)
+        put(25, 0)
         put(26, 0)
         status = fossibot_ble.parse_status(bytes(frame))
         assert status is not None
         self.assertFalse(status.ac_on)
-        self.assertEqual(status.total_out_watts, 18)
+        self.assertEqual(status.total_out_watts, 91)
 
     def test_ac_on_from_capability_bit_when_toggle_is_zero(self):
         frame = bytearray(6 + 80 * 2)
