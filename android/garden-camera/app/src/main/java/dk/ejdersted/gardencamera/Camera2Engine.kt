@@ -26,8 +26,6 @@ class Camera2Engine(private val context: Context) {
     private var previewTexture: SurfaceTexture? = null
     private var previewSurface: Surface? = null
     private var jpegOrientation = 90
-    private var torch = false
-    private var borrowedTorch = false
 
     fun pickId(front: Boolean): String? = CameraIds.pick(manager, front)
 
@@ -37,7 +35,6 @@ class Camera2Engine(private val context: Context) {
             closeLocked()
             val chars = manager.getCameraCharacteristics(id)
             jpegOrientation = jpegOrientation(chars)
-            torch = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             val reader = ImageReader.newInstance(1280, 960, ImageFormat.JPEG, 2)
             this.reader = reader
             val texture = SurfaceTexture(0)
@@ -45,7 +42,7 @@ class Camera2Engine(private val context: Context) {
             previewTexture = texture
             val preview = Surface(texture)
             previewSurface = preview
-            Log.i(TAG, "open camera $id jpegOri=$jpegOrientation torch=$torch")
+            Log.i(TAG, "open camera $id jpegOri=$jpegOrientation")
             manager.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
                     camera = device
@@ -56,7 +53,6 @@ class Camera2Engine(private val context: Context) {
                                 session = s
                                 val previewReq = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                                 previewReq.addTarget(preview)
-                                applyTorch(previewReq)
                                 s.setRepeatingRequest(previewReq.build(), null, handler)
                                 onReady()
                             }
@@ -99,7 +95,6 @@ class Camera2Engine(private val context: Context) {
             val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
             req.addTarget(r.surface)
             req.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
-            applyTorch(req)
             sess.capture(req.build(), null, handler)
         }
     }
@@ -108,33 +103,7 @@ class Camera2Engine(private val context: Context) {
         handler.post { closeLocked() }
     }
 
-    /** Back LED while the front camera is open. No-op on the back camera itself. */
-    fun setBorrowedTorch(on: Boolean) {
-        handler.post {
-            if (torch || on == borrowedTorch) return@post
-            borrowBackTorch(on)
-        }
-    }
-
-    private fun borrowBackTorch(on: Boolean) {
-        val back = pickId(false) ?: return
-        try {
-            manager.setTorchMode(back, on)
-            borrowedTorch = on
-            Log.i(TAG, "borrowed back torch $on")
-        } catch (e: Exception) {
-            Log.e(TAG, "borrowed back torch $on failed", e)
-        }
-    }
-
-    private fun applyTorch(req: CaptureRequest.Builder) {
-        if (!torch) return
-        req.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-        req.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
-    }
-
     private fun closeLocked() {
-        if (borrowedTorch) borrowBackTorch(false)
         try {
             session?.close()
         } catch (_: Exception) {
