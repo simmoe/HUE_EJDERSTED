@@ -9,6 +9,19 @@ export function evidenceImageUrl(id: string): string {
   return `/api/security/evidence/${id}.jpg`;
 }
 
+export function formatEvidenceWhen(iso?: string | null, unix?: number | null): string {
+  const date = iso ? new Date(iso) : unix ? new Date(unix * 1000) : null;
+  if (!date || Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('da-DK', {
+    timeZone: 'Europe/Copenhagen',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function parseEvidenceList(payload: unknown): EvidenceItem[] {
   const items = payload && typeof payload === 'object' ? (payload as { items?: unknown }).items : null;
   if (!Array.isArray(items)) return [];
@@ -23,10 +36,7 @@ export function parseEvidenceList(payload: unknown): EvidenceItem[] {
     const createdAtIso = typeof (row as { createdAtIso?: unknown }).createdAtIso === 'string'
       ? (row as { createdAtIso: string }).createdAtIso
       : null;
-    const url = typeof (row as { url?: unknown }).url === 'string'
-      ? (row as { url: string }).url
-      : evidenceImageUrl(id);
-    out.push({ id, createdAt, createdAtIso, url });
+    out.push({ id, createdAt, createdAtIso, url: evidenceImageUrl(id) });
   }
   return out;
 }

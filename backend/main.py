@@ -3811,8 +3811,9 @@ async def garden_security_evidence(event_id: str):
     evidence = camera_security.evidence_file(event_id)
     if evidence is None:
         return JSONResponse({"ok": False, "error": "Evidence not found"}, status_code=404)
-    return FileResponse(
-        evidence,
+    body = camera_presence.strip_evidence_stamp(evidence.read_bytes())
+    return Response(
+        content=body,
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store, max-age=0"},
     )

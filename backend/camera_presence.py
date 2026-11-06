@@ -142,6 +142,40 @@ def _stamp_font(size: int):
     return ImageFont.load_default()
 
 
+def strip_evidence_stamp(body: bytes) -> bytes:
+    """Drop a bottom date bar so the still is just the photo."""
+    if Image is None:
+        return body
+    try:
+        with Image.open(io.BytesIO(body)) as img:
+            frame = img.convert("RGB")
+            width, height = frame.size
+            pixels = frame.load()
+            limit = max(8, int(height * 0.22))
+            cut = height
+            for y in range(height - 1, height - 1 - limit, -1):
+                total = 0
+                step = max(1, width // 80)
+                n = 0
+                for x in range(0, width, step):
+                    r, g, b = pixels[x, y][:3]
+                    total += r + g + b
+                    n += 1
+                avg = total / (3 * n)
+                if avg < 80:
+                    cut = y
+                    continue
+                break
+            if cut >= height - 8:
+                return body
+            cropped = frame.crop((0, 0, width, cut))
+            out = io.BytesIO()
+            cropped.save(out, format="JPEG", quality=88)
+            return out.getvalue()
+    except Exception:
+        return body
+
+
 def stamp_evidence(body: bytes, ts: float) -> bytes:
     if Image is None:
         return body
@@ -700,7 +734,7 @@ class CameraPresenceService:
         src = frame["body"] if frame and frame.get("body") else body
         bbox = frame.get("bbox") if frame else (person.bbox if person.ok else None)
         at = float(frame.get("at") or now) if frame else now
-        return stamp_evidence(crop_to_person(src, bbox), at)
+        return crop_to_person(src, bbox)
 
     async def _capture_evidence(
         self,

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { formatEvidenceWhen } from '$lib/cameraEvidence';
 
   type CameraStatus = {
     ok: boolean;
@@ -22,6 +23,7 @@
     lastPersonAtIso?: string | null;
     lastEvidenceAtIso?: string | null;
     lastEvidenceUrl?: string;
+    lastEventId?: string;
     evidenceUrl?: string;
     personConfidence?: number;
     motionScore?: number;
@@ -62,7 +64,11 @@
     return `${Math.round(seconds / 86400)} dage siden`;
   }
 
-  const evidenceUrl = () => security?.lastEvidenceUrl || security?.evidenceUrl || '';
+  const evidenceUrl = () => {
+    const id = typeof security?.lastEventId === 'string' ? security.lastEventId : '';
+    if (id && !id.includes('/') && !id.includes('..')) return `/api/security/evidence/${id}.jpg`;
+    return security?.lastEvidenceUrl || security?.evidenceUrl || '';
+  };
 
   async function refreshCamera() {
     try {
@@ -142,6 +148,9 @@
       <div class="evidence-frame">
         <img src={evidenceUrl()} alt="Evidence fra seneste person-detektion" />
       </div>
+      {#if security?.lastEvidenceAtIso}
+        <p class="evidence-caption">{formatEvidenceWhen(security.lastEvidenceAtIso)}</p>
+      {/if}
       <button type="button" class="modal-close" onclick={() => (evidenceOpen = false)}>Luk</button>
     </div>
   </div>
@@ -315,6 +324,14 @@
     position: relative;
     overflow: hidden;
     border-radius: 16px;
+  }
+
+  .evidence-caption {
+    margin: 10px 4px 0;
+    color: #d0d0d0;
+    font-size: 0.95rem;
+    font-weight: 500;
+    text-align: center;
   }
 
   .evidence-modal img {

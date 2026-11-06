@@ -15,6 +15,17 @@ describe('parseEvidenceList', () => {
     assert.equal(items[0].id, 'person-b');
     assert.equal(items[1].url, '/api/security/evidence/person-a.jpg');
   });
+
+  it('never keeps a storage url — the hub strips the baked date bar on the local jpeg', () => {
+    const items = parseEvidenceList({
+      items: [{
+        id: 'person-x',
+        createdAt: 1,
+        url: 'https://firebasestorage.googleapis.com/v0/b/x/o/ejdersted%2Fgarden%2Fevents%2Fperson-x%2Fsnapshot.jpg?alt=media',
+      }],
+    });
+    assert.equal(items[0].url, '/api/security/evidence/person-x.jpg');
+  });
 });
 
 describe('evidenceIdFromUrl', () => {

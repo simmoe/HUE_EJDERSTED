@@ -6,6 +6,7 @@
   import { formatAirLine, type AirStatus } from '$lib/air';
   import { CAMERA_FACING_DOC, facingLabel, parseFacing, type CameraFacing } from '$lib/cameraFacing';
   import {
+    formatEvidenceWhen,
     indexOfEvidence,
     parseEvidenceList,
     type EvidenceItem,
@@ -50,6 +51,7 @@
     lastEvidenceAt?: number | null;
     lastEvidenceAtIso?: string | null;
     lastEvidenceUrl?: string;
+    lastEventId?: string;
     evidenceUrl?: string;
     motionScore?: number;
     personConfidence?: number;
@@ -147,6 +149,12 @@
   const currentEvidence = $derived(evidenceItems[evidenceIndex] ?? null);
   const currentEvidenceUrl = $derived(currentEvidence?.url || evidenceUrl());
   const evidenceCount = $derived(evidenceItems.length);
+  const evidenceWhen = $derived(
+    formatEvidenceWhen(
+      currentEvidence?.createdAtIso || latestPresence.lastEvidenceAtIso || latestPresence.lastPersonAtIso,
+      currentEvidence?.createdAt || latestPresence.lastEvidenceAt || latestPresence.lastPersonAt,
+    ),
+  );
 
   function openEvidence() {
     evidenceOpen = true;
@@ -208,7 +216,11 @@
     return kioskOffline ? 'kiosk offline' : 'kiosk live';
   };
 
-  const evidenceUrl = () => latestPresence.lastEvidenceUrl || latestPresence.evidenceUrl || '';
+  const evidenceUrl = () => {
+    const id = typeof latestPresence.lastEventId === 'string' ? latestPresence.lastEventId : '';
+    if (id && !id.includes('/') && !id.includes('..')) return `/api/security/evidence/${id}.jpg`;
+    return latestPresence.lastEvidenceUrl || latestPresence.evidenceUrl || '';
+  };
   const presenceState = () => latestPresence.presence || latestPresence.state || 'unknown';
   const cameraMode = () => store.config.camera?.mode ?? (store.config.site === 'garden' ? 'publisher' : 'viewer');
   // Garden Chrome cannot open the 115° lens. A CameraX service on the A12
@@ -778,6 +790,9 @@
           >›</button>
         {/if}
       </div>
+      {#if evidenceWhen}
+        <p class="evidence-caption">{evidenceWhen}</p>
+      {/if}
       <button type="button" class="modal-close" onclick={closeEvidence}>luk</button>
     </div>
   </div>
@@ -1087,6 +1102,15 @@
     object-fit: contain;
     display: block;
     border-radius: 16px;
+  }
+
+  .evidence-caption {
+    margin: 10px 4px 0;
+    color: #d0d0d0;
+    font-size: 0.95rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    text-align: center;
   }
 
   .evidence-count {

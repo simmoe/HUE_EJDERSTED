@@ -99,6 +99,24 @@ class EvidenceStillTests(unittest.TestCase):
         Image.new("RGB", (width, height), color).save(buf, format="JPEG", quality=90)
         return buf.getvalue()
 
+    def test_strip_removes_the_bottom_date_bar(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from PIL import Image
+
+        ts = datetime(2026, 9, 15, 9, 47, tzinfo=ZoneInfo("Europe/Copenhagen")).timestamp()
+        stamped = camera_presence.stamp_evidence(self.jpeg(320, 240, (180, 90, 40)), ts)
+        stripped = camera_presence.strip_evidence_stamp(stamped)
+        with Image.open(__import__("io").BytesIO(stripped)) as out:
+            self.assertLess(out.size[1], 240)
+            px = out.load()
+            y = out.size[1] - 1
+            total = 0
+            for x in range(out.size[0]):
+                r, g, b = px[x, y][:3]
+                total += r + g + b
+            self.assertGreater(total / (3 * out.size[0]), 80)
+
     def test_stamp_uses_copenhagen_clock(self):
         from datetime import datetime
         from zoneinfo import ZoneInfo
