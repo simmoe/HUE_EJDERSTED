@@ -64,20 +64,6 @@
 
   const evidenceUrl = () => security?.lastEvidenceUrl || security?.evidenceUrl || '';
 
-  function formatEvidenceStamp(): string {
-    const iso = security?.lastEvidenceAtIso || security?.lastPersonAtIso;
-    if (!iso) return '';
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleString('da-DK', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
   async function refreshCamera() {
     try {
       const res = await fetch('/api/camera/status', { cache: 'no-store' });
@@ -155,9 +141,6 @@
     <div class="evidence-modal" role="dialog" aria-modal="true">
       <div class="evidence-frame">
         <img src={evidenceUrl()} alt="Evidence fra seneste person-detektion" />
-        {#if formatEvidenceStamp()}
-          <div class="evidence-stamp">{formatEvidenceStamp()}</div>
-        {/if}
       </div>
       <button type="button" class="modal-close" onclick={() => (evidenceOpen = false)}>Luk</button>
     </div>
@@ -340,20 +323,6 @@
     max-height: 78vh;
     object-fit: contain;
     border-radius: 16px;
-  }
-
-  .evidence-stamp {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 14px 16px 12px;
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
-    color: #f7f7f7;
-    font-size: 0.95rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    pointer-events: none;
   }
 
   .modal-close {

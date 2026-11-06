@@ -144,20 +144,6 @@
     return `${Math.round(seconds / 86400)} dage siden`;
   }
 
-  function formatEvidenceStamp(item?: EvidenceItem | null): string {
-    const iso = item?.createdAtIso || latestPresence.lastEvidenceAtIso || latestPresence.lastPersonAtIso;
-    const unix = item?.createdAt || latestPresence.lastEvidenceAt || latestPresence.lastPersonAt;
-    const date = iso ? new Date(iso) : unix ? new Date(unix * 1000) : null;
-    if (!date || Number.isNaN(date.getTime())) return '';
-    return date.toLocaleString('da-DK', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
   const currentEvidence = $derived(evidenceItems[evidenceIndex] ?? null);
   const currentEvidenceUrl = $derived(currentEvidence?.url || evidenceUrl());
   const evidenceCount = $derived(evidenceItems.length);
@@ -774,13 +760,8 @@
         onpointerup={onEvidencePointerUp}
       >
         <img src={currentEvidenceUrl} alt="Evidence fra person-detektion" />
-        {#if formatEvidenceStamp(currentEvidence) || evidenceCount > 1}
-          <div class="evidence-stamp">
-            {formatEvidenceStamp(currentEvidence)}
-            {#if evidenceCount > 1}
-              <span class="evidence-count">{evidenceIndex + 1} / {evidenceCount}</span>
-            {/if}
-          </div>
+        {#if evidenceCount > 1}
+          <div class="evidence-count">{evidenceIndex + 1} / {evidenceCount}</div>
         {/if}
         {#if evidenceCount > 1}
           <button
@@ -1108,28 +1089,18 @@
     border-radius: 16px;
   }
 
-  .evidence-stamp {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 14px 16px 12px;
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
-    color: #f7f7f7;
-    font-size: 0.95rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    pointer-events: none;
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
   .evidence-count {
-    opacity: 0.7;
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #f7f7f7;
+    font-size: 0.8rem;
     font-weight: 500;
     letter-spacing: 0.06em;
-    flex: 0 0 auto;
+    pointer-events: none;
   }
 
   .evidence-nav {
