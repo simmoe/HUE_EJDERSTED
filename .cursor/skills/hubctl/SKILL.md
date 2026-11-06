@@ -7,6 +7,9 @@ description: Deploy static/backend, read kiosk heartbeat, and reload kiosk Chrom
 
 Run from the repo root. Never print vault passwords.
 
+This repo always **pushes `main` and deploys** after a change unless Simon
+says otherwise. Do not leave work only on the Mac.
+
 **Garden deploy from Vesterbro:** `hubctl` uses Tailscale SSH to `simmoe@100.111.167.54`.
 Before `backend garden`, `static garden`, or `reload garden`, verify SSH works
 (`ssh -o BatchMode=yes simmoe@100.111.167.54 'echo ok'`). If Tailscale asks for

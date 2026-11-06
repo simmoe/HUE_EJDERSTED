@@ -48,24 +48,11 @@ DEFAULT_SHOWS: list[dict[str, str]] = [
     },
     {
         "source": "rss",
-        "id": "song-exploder",
-        "fallback_name": "Song Exploder",
+        "id": "win-win",
+        "fallback_name": "Win-Win with Liv Boeree",
         "order": "latest",
-        "feed": "https://feed.songexploder.net/SongExploder",
-    },
-    {
-        "source": "rss",
-        "id": "splittet-til-atomer",
-        "fallback_name": "Splittet til atomer",
-        "order": "latest",
-        "feed": "https://api.dr.dk/podcasts/v1/feeds/splittet-til-atomer.xml?format=podcast",
-    },
-    {
-        "source": "rss",
-        "id": "portraetalbum",
-        "fallback_name": "Portrætalbum",
-        "order": "latest",
-        "feed": "https://www.omnycontent.com/d/playlist/414edbb4-4b91-4960-8650-ad4000dbc027/d32c8e84-d488-459e-982c-ae1900df1a62/19111071-6b3e-469e-a67f-ae1900dfd1f2/podcast.rss",
+        "spotify_id": "03bGVUaFZmJUmEvSHNDPdI",
+        "feed": "https://anchor.fm/s/eefcd0ac/podcast/rss",
     },
 ]
 

@@ -1,11 +1,29 @@
 ---
-description: This repo develops only on main — never a feature branch
+description: One branch, then always push and deploy unless Simon says otherwise
 alwaysApply: true
 ---
 
-# One branch: main
+# One branch: main. Then push and deploy.
 
-This repository has **one** development branch: `main`. Work lands there directly. No PRs, no cleanup branches, no Cursor cloud branches.
+This repository has **one** development branch: `main`. Work lands there
+directly. No PRs, no cleanup branches, no Cursor cloud branches, no `cursor/*`.
 
-- If `git branch --show-current` is not `main`, stop. Merge or move the work onto `main` before any other edit.
-- Never `git checkout -b`, never push a side branch, never keep working on `playback-cleanup` or `cursor/*`.
+- If `git branch --show-current` is not `main`, stop. Merge or move the work
+  onto `main` before any other edit.
+- Never `git checkout -b`. Never push a side branch. Never keep working on
+  `playback-cleanup` or `cursor/*`.
+- If a Cursor action asks to create a branch, **refuse it** and stay on `main`.
+
+## After the work is done
+
+Unless Simon explicitly says not to (for example “kun lokalt”, “ikke deploy”,
+“ikke push endnu”):
+
+1. Commit on `main`.
+2. `git push origin main`.
+3. Deploy with `scripts/hubctl` so the Pis match HEAD.
+
+Kiosk-visible chrome: `hubctl static both` and reload both kiosks when ADB is
+up (see `kiosk-ui-both-hubs`). Backend-only: `hubctl backend` on the hub that
+runs the code (usually both, so they stay in sync). Garden from Vesterbro:
+Tailscale SSH first (`hubctl` skill).

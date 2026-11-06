@@ -23,11 +23,12 @@ class ParseCatalogTests(unittest.TestCase):
         )
         self.assertEqual([row["id"] for row in shows], ["portraetalbum", "4914"])
 
-    def test_defaults_include_the_new_music_shows(self):
+    def test_defaults_include_win_win_not_the_old_music_shows(self):
         by_id = {row["id"]: row for row in podcast_catalog.DEFAULT_SHOWS}
-        self.assertEqual(by_id["song-exploder"]["feed"], "https://feed.songexploder.net/SongExploder")
-        self.assertIn("/feeds/splittet-til-atomer", by_id["splittet-til-atomer"]["feed"])
-        self.assertIn("omnycontent.com", by_id["portraetalbum"]["feed"])
+        self.assertEqual(by_id["win-win"]["feed"], "https://anchor.fm/s/eefcd0ac/podcast/rss")
+        self.assertNotIn("song-exploder", by_id)
+        self.assertNotIn("splittet-til-atomer", by_id)
+        self.assertNotIn("portraetalbum", by_id)
 
 
 class CatalogCacheTests(unittest.IsolatedAsyncioTestCase):
@@ -39,7 +40,7 @@ class CatalogCacheTests(unittest.IsolatedAsyncioTestCase):
 
     def test_current_falls_back_to_defaults(self):
         self.assertEqual(podcast_catalog.current()[0]["id"], "fodboldlisten")
-        self.assertIn("portraetalbum", {row["id"] for row in podcast_catalog.current()})
+        self.assertIn("win-win", {row["id"] for row in podcast_catalog.current()})
 
     async def test_empty_firebase_doc_seeds_defaults(self):
         http = AsyncMock()
