@@ -1538,7 +1538,7 @@
       <div class="splash-home-stack">
         <div class="splash-home" role="img" aria-label="Ejdersted"></div>
         <svg class="splash-word" viewBox="0 0 1000 110" role="img" aria-label="Ejderstedgade">
-          <text x="0" y="82" textLength="1000" lengthAdjust="spacing" fill="#060daa" font-family="Lexend Deca, Roboto, sans-serif" font-weight="200" font-size="72">EJDERSTEDGADE</text>
+          <text x="0" y="82" textLength="1000" lengthAdjust="spacing" fill="#a8e0f8" font-family="Lexend Deca, Roboto, sans-serif" font-weight="200" font-size="72">EJDERSTEDGADE</text>
         </svg>
       </div>
     </div>
@@ -2573,7 +2573,7 @@
   .splash-home {
     width: 100%;
     aspect-ratio: 1;
-    background: #060daa;
+    background: #a8e0f8;
     -webkit-mask: url(/ejdersted-mark.png) center / contain no-repeat;
     mask: url(/ejdersted-mark.png) center / contain no-repeat;
     -webkit-mask-mode: luminance;
