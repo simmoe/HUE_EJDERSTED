@@ -1535,7 +1535,12 @@
   {#if showSplash}
     <div class="splash" onclick={dismissSplash} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && dismissSplash()}>
       <img class="splash-garden" src="/web-app-manifest-512x512.png" alt="haven" />
-      <div class="splash-home" role="img" aria-label="Ejdersted"></div>
+      <div class="splash-home-stack">
+        <div class="splash-home" role="img" aria-label="Ejdersted"></div>
+        <svg class="splash-word" viewBox="0 0 1000 110" role="img" aria-label="Ejderstedgade">
+          <text x="0" y="82" textLength="1000" lengthAdjust="spacing" fill="#060daa" font-family="Lexend Deca, Roboto, sans-serif" font-weight="200" font-size="72">EJDERSTEDGADE</text>
+        </svg>
+      </div>
     </div>
   {/if}
 
@@ -2546,7 +2551,7 @@
   }
 
   .splash-garden,
-  .splash-home {
+  .splash-home-stack {
     display: none;
   }
 
@@ -2556,16 +2561,29 @@
     height: auto;
   }
 
-  :global(html[data-hue-site='home']) .splash-home,
-  :global(html:not([data-hue-site])) .splash-home {
-    display: block;
+  :global(html[data-hue-site='home']) .splash-home-stack,
+  :global(html:not([data-hue-site])) .splash-home-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     width: min(240px, 42vw);
+    gap: 18px;
+  }
+
+  .splash-home {
+    width: 100%;
     aspect-ratio: 1;
-    background: #8fcbe6;
+    background: #060daa;
     -webkit-mask: url(/ejdersted-mark.png) center / contain no-repeat;
     mask: url(/ejdersted-mark.png) center / contain no-repeat;
     -webkit-mask-mode: luminance;
     mask-mode: luminance;
+  }
+
+  .splash-word {
+    display: block;
+    width: 100%;
+    height: auto;
   }
 
   /* ── Dim overlay (kiosk sleep) ────────────────────────────────────────────── */

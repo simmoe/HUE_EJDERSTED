@@ -31,7 +31,7 @@
 				background: #fff;
 			}
 			#hue-boot-splash .mark-garden,
-			#hue-boot-splash .mark-home {
+			#hue-boot-splash .mark-home-stack {
 				display: none;
 			}
 			html[data-hue-site='garden'] #hue-boot-splash .mark-garden {
@@ -39,16 +39,27 @@
 				width: min(420px, 72vw);
 				height: auto;
 			}
-			html[data-hue-site='home'] #hue-boot-splash .mark-home,
-			html:not([data-hue-site]) #hue-boot-splash .mark-home {
-				display: block;
+			html[data-hue-site='home'] #hue-boot-splash .mark-home-stack,
+			html:not([data-hue-site]) #hue-boot-splash .mark-home-stack {
+				display: flex;
+				flex-direction: column;
+				align-items: stretch;
 				width: min(240px, 42vw);
+				gap: 18px;
+			}
+			#hue-boot-splash .mark-home {
+				width: 100%;
 				aspect-ratio: 1;
-				background: #8fcbe6;
+				background: #060daa;
 				-webkit-mask: url(/ejdersted-mark.png) center / contain no-repeat;
 				mask: url(/ejdersted-mark.png) center / contain no-repeat;
 				-webkit-mask-mode: luminance;
 				mask-mode: luminance;
+			}
+			#hue-boot-splash .mark-word {
+				display: block;
+				width: 100%;
+				height: auto;
 			}
 		</style>
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -67,7 +78,7 @@
 		<link rel="manifest" href="/manifest.json" />
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-		<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300&display=swap" rel="stylesheet" />
+		<link href="https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@200&family=Roboto:wght@100;300&display=swap" rel="stylesheet" />
 		<!-- Spotify SDK: callback SKAL findes før script indlæses (ellers AnthemError). -->
 		<script>
 			window.onSpotifyWebPlaybackSDKReady = function () {
@@ -89,7 +100,12 @@
 	<body data-sveltekit-preload-data="hover">
 		<div id="hue-boot-splash" role="button" tabindex="0">
 			<img class="mark-garden" src="/web-app-manifest-512x512.png" alt="haven" />
-			<div class="mark-home" role="img" aria-label="Ejdersted"></div>
+			<div class="mark-home-stack">
+				<div class="mark-home" role="img" aria-label="Ejdersted"></div>
+				<svg class="mark-word" viewBox="0 0 1000 110" role="img" aria-label="Ejderstedgade">
+					<text x="0" y="82" textLength="1000" lengthAdjust="spacing" fill="#060daa" font-family="Lexend Deca, Roboto, sans-serif" font-weight="200" font-size="72">EJDERSTEDGADE</text>
+				</svg>
+			</div>
 		</div>
 		<script>
 			(function () {
