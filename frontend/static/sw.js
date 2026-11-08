@@ -1,4 +1,4 @@
-const CACHE = 'hue-v108';
+const CACHE = 'hue-v109';
 const PRECACHE = ['/', '/manifest.json'];
 
 self.addEventListener('install', (e) => {

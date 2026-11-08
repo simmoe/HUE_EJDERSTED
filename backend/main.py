@@ -3870,6 +3870,12 @@ _ICON_FILES = (
     ("favicon-32x32.png", "image/png"),
     ("favicon-96x96.png", "image/png"),
     ("haven-icon-v4.png", "image/png"),
+    ("ejdersted-icon-v2.png", "image/png"),
+    ("ejdersted-manifest-192.png", "image/png"),
+    ("ejdersted-manifest-512.png", "image/png"),
+    ("ejdersted-favicon-32.png", "image/png"),
+    ("ejdersted-favicon-96.png", "image/png"),
+    ("ejdersted-favicon.ico", "image/x-icon"),
     ("web-app-manifest-192x192.png", "image/png"),
     ("web-app-manifest-512x512.png", "image/png"),
 )
@@ -3915,6 +3921,7 @@ class _IconCacheMiddleware:
         if not (
             path.startswith("/favicon")
             or path.startswith("/haven-icon")
+            or path.startswith("/ejdersted-")
             or "apple-touch-icon" in path
         ):
             await self.app(scope, receive, send)
