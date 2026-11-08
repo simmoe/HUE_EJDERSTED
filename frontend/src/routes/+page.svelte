@@ -1534,7 +1534,12 @@
   <!-- Splash screen for fullscreen entry -->
   {#if showSplash}
     <div class="splash" onclick={dismissSplash} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && dismissSplash()}>
-      <img class="splash-garden" src="/web-app-manifest-512x512.png" alt="haven" />
+      <div class="splash-garden-stack">
+        <img class="splash-garden" src="/web-app-manifest-512x512.png" alt="" />
+        <svg class="splash-word" viewBox="0 0 1000 110" role="img" aria-label="Haven">
+          <text x="0" y="82" textLength="1000" lengthAdjust="spacing" fill="#141414" font-family="Lexend Deca, Roboto, sans-serif" font-weight="200" font-size="72">HAVEN</text>
+        </svg>
+      </div>
       <div class="splash-home-stack">
         <div class="splash-home" role="img" aria-label="Ejdersted"></div>
         <svg class="splash-word" viewBox="0 0 1000 110" role="img" aria-label="Ejderstedgade">
@@ -2550,14 +2555,22 @@
     background: #fff;
   }
 
-  .splash-garden,
+  .splash-garden-stack,
   .splash-home-stack {
     display: none;
   }
 
-  :global(html[data-hue-site='garden']) .splash-garden {
-    display: block;
+  :global(html[data-hue-site='garden']) .splash-garden-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     width: min(420px, 72vw);
+    gap: 18px;
+  }
+
+  .splash-garden {
+    display: block;
+    width: 100%;
     height: auto;
   }
 
