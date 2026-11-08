@@ -292,8 +292,19 @@ def stage_backend(source: Path, dest: Path) -> None:
         _die("backend stage contains a page directory. Refusing to upload.")
 
 
+def _meta_content(text: str, name: str, value: str) -> str:
+    pattern = re.compile(
+        rf'(<meta\b[^>]*\bname="{re.escape(name)}"[^>]*\bcontent=")[^"]*(")',
+        re.I,
+    )
+    updated, count = pattern.subn(rf"\g<1>{value}\2", text, count=1)
+    if count != 1:
+        _die(f"build index.html has no meta {name}")
+    return updated
+
+
 def stamp_site(index: Path, site: str) -> None:
-    """Write which hub this page belongs to into the HTML the kiosk paints first."""
+    """Write which hub this page belongs to, including the home-screen name and icons."""
     if site not in {"home", "garden"}:
         _die(f"refusing to stamp site {site!r}")
     if not index.is_file():
@@ -305,6 +316,38 @@ def stamp_site(index: Path, site: str) -> None:
     text = html_tag.sub(f'<html lang="da" data-hue-site="{site}">', text, count=1)
     if f'data-hue-site="{site}"' not in text:
         _die("site stamp missing from index.html")
+    name = "Ejderstedgade" if site == "home" else "Haven"
+    title, count = re.subn(r"<title>[^<]*</title>", f"<title>{name}</title>", text, count=1)
+    if count != 1:
+        _die("build index.html has no title")
+    text = _meta_content(title, "application-name", name)
+    text = _meta_content(text, "apple-mobile-web-app-title", name)
+    if site == "home":
+        swaps = {
+            'href="/haven-icon-v4.png"': 'href="/ejdersted-icon-v1.png"',
+            'href="/favicon-32x32.png?v=4"': 'href="/ejdersted-favicon-32.png?v=1"',
+            'href="/favicon-96x96.png?v=4"': 'href="/ejdersted-favicon-96.png?v=1"',
+            'href="/favicon.ico?v=4"': 'href="/ejdersted-favicon.ico?v=1"',
+        }
+        for old, new in swaps.items():
+            if old not in text:
+                _die(f"build index.html has no {old}")
+            text = text.replace(old, new)
+        manifest = {
+            "name": name,
+            "short_name": name,
+            "start_url": "/",
+            "display": "fullscreen",
+            "orientation": "any",
+            "background_color": "#000000",
+            "theme_color": "#000000",
+            "icons": [
+                {"src": "/ejdersted-icon-v1.png", "sizes": "180x180", "type": "image/png", "purpose": "any"},
+                {"src": "/ejdersted-manifest-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/ejdersted-manifest-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            ],
+        }
+        (index.parent / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     index.write_text(text, encoding="utf-8")
 
 
@@ -497,6 +540,15 @@ def cmd_backend(args: list[str]) -> None:
         shutil.rmtree(parent, ignore_errors=True)
 
 
+def _status_serial(body: str) -> str:
+    """Wireless debugging picks a new port after a reboot. The hub reports it."""
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return ""
+    return str(data.get("serial") or "").strip()
+
+
 def cmd_reload(args: list[str]) -> None:
     if not args or args[0] not in SITES:
         _die("hubctl reload home|garden")
@@ -506,7 +558,7 @@ def cmd_reload(args: list[str]) -> None:
         print(f"{site} kiosk not on ADB — skip reload")
         print(kiosk)
         raise SystemExit(1)
-    adb = SITES[site]["adb"]
+    adb = _status_serial(kiosk) or SITES[site]["adb"]
     if site == "home":
         subprocess.run(["adb", "connect", adb], check=False, capture_output=True)
         subprocess.run(["adb", "-s", adb, "forward", "--remove", "tcp:9222"], check=False)

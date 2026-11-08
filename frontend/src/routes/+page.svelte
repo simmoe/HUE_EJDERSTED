@@ -1515,9 +1515,9 @@
 </script>
 
 <svelte:head>
-  <title>{isGarden() ? 'Haven · Ejdersted' : 'Ejdersted · HUE'}</title>
-  <meta name="application-name" content={isGarden() ? 'Haven · Ejdersted' : 'Ejdersted · HUE'} />
-  <meta name="apple-mobile-web-app-title" content={isGarden() ? 'Haven' : 'Ejdersted'} />
+  <title>{isGarden() ? 'Haven · Ejdersted' : 'Ejderstedgade'}</title>
+  <meta name="application-name" content={isGarden() ? 'Haven · Ejdersted' : 'Ejderstedgade'} />
+  <meta name="apple-mobile-web-app-title" content={isGarden() ? 'Haven' : 'Ejderstedgade'} />
 </svelte:head>
 
 <svelte:window
