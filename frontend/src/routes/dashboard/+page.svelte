@@ -312,8 +312,11 @@
   .evidence-modal {
     position: relative;
     z-index: 1;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
     width: min(960px, 94vw);
-    max-height: 88vh;
+    height: min(88vh, 900px);
     padding: 18px;
     border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 24px;
@@ -322,11 +325,15 @@
 
   .evidence-frame {
     position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: hidden;
     border-radius: 16px;
+    background: #050505;
   }
 
   .evidence-caption {
+    flex: 0 0 auto;
     margin: 10px 4px 0;
     color: #d0d0d0;
     font-size: 0.95rem;
@@ -335,11 +342,13 @@
   }
 
   .evidence-modal img {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
-    max-height: 78vh;
+    height: 100%;
     object-fit: contain;
-    border-radius: 16px;
+    object-position: center;
   }
 
   .modal-close {
