@@ -3870,7 +3870,7 @@ _ICON_FILES = (
     ("favicon-32x32.png", "image/png"),
     ("favicon-96x96.png", "image/png"),
     ("haven-icon-v4.png", "image/png"),
-    ("ejdersted-icon-v2.png", "image/png"),
+    ("ejdersted-icon-v3.png", "image/png"),
     ("ejdersted-manifest-192.png", "image/png"),
     ("ejdersted-manifest-512.png", "image/png"),
     ("ejdersted-favicon-32.png", "image/png"),
