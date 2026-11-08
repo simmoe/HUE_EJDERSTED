@@ -171,6 +171,41 @@
     evidenceIndex = (evidenceIndex + delta + evidenceItems.length) % evidenceItems.length;
   }
 
+  let deletingEvidence = $state(false);
+
+  async function deleteCurrentEvidence() {
+    const id = currentEvidence?.id || '';
+    if (!id || id === 'latest' || id.includes('/') || id.includes('..') || deletingEvidence) return;
+    deletingEvidence = true;
+    try {
+      const res = await fetch(`/api/security/evidence/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.ok === false) return;
+      const next = evidenceItems.filter((item) => item.id !== id);
+      evidenceItems = next;
+      if (!next.length) {
+        latestPresence = { ...latestPresence, lastEventId: '', lastEvidenceUrl: '', evidenceUrl: '' };
+        closeEvidence();
+        return;
+      }
+      evidenceIndex = Math.min(evidenceIndex, next.length - 1);
+      const shown = next[evidenceIndex];
+      if (shown) {
+        latestPresence = {
+          ...latestPresence,
+          lastEventId: shown.id,
+          lastEvidenceUrl: shown.url,
+          lastEvidenceAt: shown.createdAt,
+          lastEvidenceAtIso: shown.createdAtIso,
+        };
+      }
+    } catch {
+      /* garden unreachable */
+    } finally {
+      deletingEvidence = false;
+    }
+  }
+
   async function loadEvidenceList() {
     const fallback: EvidenceItem[] = evidenceUrl()
       ? [{ id: 'latest', createdAt: latestPresence.lastEvidenceAt ?? null, createdAtIso: latestPresence.lastEvidenceAtIso, url: evidenceUrl() }]
@@ -787,8 +822,8 @@
           >›</button>
         {/if}
       </div>
-      {#if evidenceWhen || evidenceCount > 1}
-        <div class="evidence-meta">
+      <div class="evidence-meta">
+        <div class="evidence-meta-main">
           {#if evidenceWhen}
             <p class="evidence-caption">{evidenceWhen}</p>
           {/if}
@@ -796,7 +831,18 @@
             <p class="evidence-count">{evidenceIndex + 1} / {evidenceCount}</p>
           {/if}
         </div>
-      {/if}
+        <button
+          type="button"
+          class="evidence-delete"
+          aria-label="Slet billede"
+          disabled={deletingEvidence || !currentEvidence?.id || currentEvidence.id === 'latest'}
+          onclick={(e) => { e.stopPropagation(); void deleteCurrentEvidence(); }}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h16M9 7V5h6v2M8 7l1 13h6l1-13" />
+          </svg>
+        </button>
+      </div>
       <button type="button" class="modal-close" onclick={closeEvidence}>luk</button>
     </div>
   </div>
@@ -1110,10 +1156,18 @@
 
   .evidence-meta {
     display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 10px 4px 0;
+  }
+
+  .evidence-meta-main {
+    flex: 1;
+    display: flex;
     align-items: baseline;
     justify-content: center;
     gap: 14px;
-    margin: 10px 4px 0;
+    min-width: 0;
   }
 
   .evidence-caption {
@@ -1130,6 +1184,35 @@
     font-size: 0.95rem;
     font-weight: 500;
     letter-spacing: 0.06em;
+  }
+
+  .evidence-delete {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: #d0d0d0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .evidence-delete svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .evidence-delete:disabled {
+    opacity: 0.35;
   }
 
   .evidence-nav {

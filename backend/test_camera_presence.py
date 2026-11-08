@@ -196,6 +196,24 @@ class EvidenceListTests(unittest.TestCase):
             self.assertEqual([row["id"] for row in items], ["person-new", "person-old"])
             self.assertEqual(items[0]["url"], "/api/security/evidence/person-new.jpg")
 
+    def test_delete_removes_the_still_and_points_at_the_next(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = CameraPresenceStateMachineTests().make_service(root)
+            older = root / "events" / "person-old"
+            newer = root / "events" / "person-new"
+            older.mkdir(parents=True)
+            newer.mkdir(parents=True)
+            (older / "snapshot.jpg").write_bytes(b"old")
+            (newer / "snapshot.jpg").write_bytes(b"new")
+            (older / "metadata.json").write_text('{"createdAt": 100}', encoding="utf-8")
+            (newer / "metadata.json").write_text('{"createdAt": 200}', encoding="utf-8")
+            service._write_state({"presence": "empty", "lastEventId": "person-new", "eventId": "person-new"})
+            self.assertTrue(service.delete_evidence("person-new"))
+            self.assertFalse(newer.exists())
+            self.assertEqual(service._read_state()["lastEventId"], "person-old")
+            self.assertFalse(service.delete_evidence("../person-old"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3645,6 +3645,24 @@ async def _garden_camera_get(path: str) -> httpx.Response | JSONResponse:
     return response
 
 
+async def _garden_camera_delete(path: str) -> dict | JSONResponse:
+    upstream = hub_config.garden_hub_url()
+    if not upstream:
+        return JSONResponse({"ok": False, "error": "Garden camera upstream is not configured"}, status_code=503)
+    try:
+        response = await _camera_http.delete(f"{upstream}{path}")
+    except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        return JSONResponse({"ok": False, "error": f"Garden camera unavailable: {type(exc).__name__}"}, status_code=502)
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"ok": response.status_code < 300}
+    if response.status_code >= 400:
+        detail = payload.get("error") if isinstance(payload, dict) else None
+        return JSONResponse({"ok": False, "error": detail or f"HTTP {response.status_code}"}, status_code=response.status_code)
+    return payload if isinstance(payload, dict) else {"ok": True}
+
+
 async def _garden_camera_json(path: str) -> dict | JSONResponse:
     response = await _garden_camera_get(path)
     if isinstance(response, JSONResponse):
@@ -3793,6 +3811,17 @@ async def garden_security_evidence_list():
     if hub_config.camera_mode() == "viewer":
         return await _garden_camera_json("/api/security/evidence")
     return {"ok": True, "items": camera_security.list_evidence()}
+
+
+@app.delete("/api/security/evidence/{event_id}")
+async def garden_security_evidence_delete(event_id: str):
+    if not hub_config.feature_enabled("camera"):
+        return JSONResponse({"ok": False, "error": "Camera disabled"}, status_code=404)
+    if hub_config.camera_mode() == "viewer":
+        return await _garden_camera_delete(f"/api/security/evidence/{event_id}")
+    if not camera_security.delete_evidence(event_id):
+        return JSONResponse({"ok": False, "error": "Evidence not found"}, status_code=404)
+    return {"ok": True, "id": event_id}
 
 
 @app.get("/api/security/evidence/{event_id}.jpg")

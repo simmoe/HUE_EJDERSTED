@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import shutil
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -877,6 +878,39 @@ class CameraPresenceService:
             await http_client.patch(url, params=params, headers=headers, json=body, timeout=8)
         except Exception:
             pass
+
+    def delete_evidence(self, event_id: str) -> bool:
+        """Remove one still from the local archive. The card then points at the next newest."""
+        if not event_id or "/" in event_id or "\\" in event_id or ".." in event_id:
+            return False
+        event_dir = self.evidence_dir / event_id
+        snap = event_dir / "snapshot.jpg"
+        if not event_dir.is_dir() or not snap.is_file():
+            return False
+        shutil.rmtree(event_dir)
+        state = self._read_state()
+        if state.get("lastEventId") == event_id or state.get("eventId") == event_id:
+            remaining = self.list_evidence()
+            if remaining:
+                newest = remaining[0]
+                state["lastEventId"] = newest["id"]
+                state["eventId"] = newest["id"]
+                state["lastEvidenceUrl"] = newest["url"]
+                state["evidenceUrl"] = newest["url"]
+                state["lastEvidenceAt"] = newest["createdAt"]
+            else:
+                for key in (
+                    "lastEventId",
+                    "eventId",
+                    "lastEvidenceUrl",
+                    "evidenceUrl",
+                    "lastEvidencePath",
+                    "evidencePath",
+                    "lastEvidenceAt",
+                ):
+                    state.pop(key, None)
+            self._write_state(state)
+        return True
 
     def evidence_file(self, event_id: str) -> Path | None:
         if "/" in event_id or "\\" in event_id or ".." in event_id:
