@@ -27,18 +27,28 @@
 				cursor: pointer;
 				-webkit-tap-highlight-color: transparent;
 			}
-			#hue-boot-splash span {
-				font-size: 1.1rem;
-				font-weight: 300;
-				letter-spacing: 0.35em;
-				text-transform: uppercase;
-				color: #9b9b9b;
-				font-family: Roboto, sans-serif;
+			html[data-hue-site='garden'] #hue-boot-splash {
+				background: #fff;
 			}
-			html[data-hue-site='garden'] #hue-boot-splash .name-home,
-			html[data-hue-site='home'] #hue-boot-splash .name-garden,
-			html:not([data-hue-site]) #hue-boot-splash .name-garden {
+			#hue-boot-splash .mark-garden,
+			#hue-boot-splash .mark-home {
 				display: none;
+			}
+			html[data-hue-site='garden'] #hue-boot-splash .mark-garden {
+				display: block;
+				width: min(420px, 72vw);
+				height: auto;
+			}
+			html[data-hue-site='home'] #hue-boot-splash .mark-home,
+			html:not([data-hue-site]) #hue-boot-splash .mark-home {
+				display: block;
+				width: min(240px, 42vw);
+				aspect-ratio: 1;
+				background: #8fcbe6;
+				-webkit-mask: url(/ejdersted-mark.png) center / contain no-repeat;
+				mask: url(/ejdersted-mark.png) center / contain no-repeat;
+				-webkit-mask-mode: luminance;
+				mask-mode: luminance;
 			}
 		</style>
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -78,8 +88,8 @@
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<div id="hue-boot-splash" role="button" tabindex="0">
-			<span class="name-garden">HAVEN</span>
-			<span class="name-home">EJDERSTED</span>
+			<img class="mark-garden" src="/web-app-manifest-512x512.png" alt="haven" />
+			<div class="mark-home" role="img" aria-label="Ejdersted"></div>
 		</div>
 		<script>
 			(function () {

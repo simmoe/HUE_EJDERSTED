@@ -1534,7 +1534,8 @@
   <!-- Splash screen for fullscreen entry -->
   {#if showSplash}
     <div class="splash" onclick={dismissSplash} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && dismissSplash()}>
-      <span class="splash-title">{isGarden() ? 'HAVEN' : 'EJDERSTED'}</span>
+      <img class="splash-garden" src="/web-app-manifest-512x512.png" alt="haven" />
+      <div class="splash-home" role="img" aria-label="Ejdersted"></div>
     </div>
   {/if}
 
@@ -2540,17 +2541,31 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  .splash-title {
-    font-size: 1.1rem;
-    font-weight: 300;
-    letter-spacing: 0.35em;
-    text-transform: uppercase;
-    color: #9b9b9b;
-    transition: color 0.3s;
+  :global(html[data-hue-site='garden']) .splash {
+    background: #fff;
   }
 
-  .splash:active .splash-title {
-    color: #f2f2f2;
+  .splash-garden,
+  .splash-home {
+    display: none;
+  }
+
+  :global(html[data-hue-site='garden']) .splash-garden {
+    display: block;
+    width: min(420px, 72vw);
+    height: auto;
+  }
+
+  :global(html[data-hue-site='home']) .splash-home,
+  :global(html:not([data-hue-site])) .splash-home {
+    display: block;
+    width: min(240px, 42vw);
+    aspect-ratio: 1;
+    background: #8fcbe6;
+    -webkit-mask: url(/ejdersted-mark.png) center / contain no-repeat;
+    mask: url(/ejdersted-mark.png) center / contain no-repeat;
+    -webkit-mask-mode: luminance;
+    mask-mode: luminance;
   }
 
   /* ── Dim overlay (kiosk sleep) ────────────────────────────────────────────── */
