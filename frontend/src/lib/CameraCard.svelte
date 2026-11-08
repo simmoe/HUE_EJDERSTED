@@ -773,9 +773,6 @@
       >
         <img src={currentEvidenceUrl} alt="Evidence fra person-detektion" />
         {#if evidenceCount > 1}
-          <div class="evidence-count">{evidenceIndex + 1} / {evidenceCount}</div>
-        {/if}
-        {#if evidenceCount > 1}
           <button
             type="button"
             class="evidence-nav prev"
@@ -790,8 +787,15 @@
           >›</button>
         {/if}
       </div>
-      {#if evidenceWhen}
-        <p class="evidence-caption">{evidenceWhen}</p>
+      {#if evidenceWhen || evidenceCount > 1}
+        <div class="evidence-meta">
+          {#if evidenceWhen}
+            <p class="evidence-caption">{evidenceWhen}</p>
+          {/if}
+          {#if evidenceCount > 1}
+            <p class="evidence-count">{evidenceIndex + 1} / {evidenceCount}</p>
+          {/if}
+        </div>
       {/if}
       <button type="button" class="modal-close" onclick={closeEvidence}>luk</button>
     </div>
@@ -1104,27 +1108,28 @@
     border-radius: 16px;
   }
 
-  .evidence-caption {
+  .evidence-meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 14px;
     margin: 10px 4px 0;
+  }
+
+  .evidence-caption {
+    margin: 0;
     color: #d0d0d0;
     font-size: 0.95rem;
     font-weight: 500;
     letter-spacing: 0.02em;
-    text-align: center;
   }
 
   .evidence-count {
-    position: absolute;
-    right: 12px;
-    top: 12px;
-    padding: 6px 10px;
-    border-radius: 999px;
-    background: rgba(0, 0, 0, 0.55);
-    color: #f7f7f7;
-    font-size: 0.8rem;
+    margin: 0;
+    color: #9a9a9a;
+    font-size: 0.95rem;
     font-weight: 500;
     letter-spacing: 0.06em;
-    pointer-events: none;
   }
 
   .evidence-nav {
